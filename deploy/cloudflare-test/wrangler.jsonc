@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "honeyos-pm-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "containers": [
+    {
+      "class_name": "HoneyOSContainer",
+      "image": "./Dockerfile",
+      "image_build_context": ".",
+      "instance_type": "basic",
+      "max_instances": 1,
+      "name": "honeyos-pm-test-container"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "HONEYOS_CONTAINER",
+        "class_name": "HoneyOSContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["HoneyOSContainer"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "STATE_BUCKET",
+      "bucket_name": "honeyos-pm-test-state"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
