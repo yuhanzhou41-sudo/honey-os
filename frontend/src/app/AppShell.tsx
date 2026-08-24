@@ -1,4 +1,5 @@
 import {
+  BookOpenIcon,
   ChatCircleIcon,
   HeartIcon,
   SlidersHorizontalIcon,
@@ -12,6 +13,7 @@ import { useHoneyStore } from "../runtime/honey-store";
 
 const navigation = [
   { to: "/", label: "聊天", icon: ChatCircleIcon, end: true },
+  { to: "/stories", label: "Story", icon: BookOpenIcon },
   { to: "/memories", label: "记得的事", icon: SparkleIcon },
   { to: "/relationship", label: "我们", icon: HeartIcon },
   { to: "/settings", label: "设置", icon: SlidersHorizontalIcon },
@@ -20,7 +22,7 @@ const navigation = [
 function PortraitNavigation() {
   return (
     <nav
-      className="grid w-fit grid-cols-4 gap-1 rounded-[var(--radius-lg)] border border-white/15 bg-[#171a21]/88 p-1.5 shadow-[0_18px_50px_rgba(10,12,18,0.28)] backdrop-blur-xl"
+      className="grid w-fit grid-cols-5 gap-1 rounded-[var(--radius-lg)] border border-white/15 bg-[#171a21]/88 p-1.5 shadow-[0_18px_50px_rgba(10,12,18,0.28)] backdrop-blur-xl"
       aria-label="主要页面"
     >
       {navigation.map(({ to, label, icon: Icon, end }) => (
@@ -45,7 +47,7 @@ function PortraitNavigation() {
 function MobileNavigation() {
   return (
     <nav
-      className="fixed inset-x-0 bottom-0 z-20 grid grid-cols-4 border-t border-[var(--border)] bg-[color-mix(in_srgb,var(--surface-raised)_94%,transparent)] px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden"
+      className="fixed inset-x-0 bottom-0 z-20 grid grid-cols-5 border-t border-[var(--border)] bg-[color-mix(in_srgb,var(--surface-raised)_94%,transparent)] px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden"
       aria-label="主要页面"
     >
       {navigation.map(({ to, label, icon: Icon, end }) => (

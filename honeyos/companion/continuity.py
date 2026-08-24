@@ -81,6 +81,9 @@ class StructuredMemoryItem:
     importance: str = "medium"
     created_by: str = "foreground"
     distillation_run_id: str | None = None
+    source_type: str = "reality"
+    canon_scope: str = "reality"
+    story_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +169,9 @@ class StructuredMemoryStore:
             "importance": "TEXT NOT NULL DEFAULT 'medium'",
             "created_by": "TEXT NOT NULL DEFAULT 'foreground'",
             "distillation_run_id": "TEXT",
+            "source_type": "TEXT NOT NULL DEFAULT 'reality'",
+            "canon_scope": "TEXT NOT NULL DEFAULT 'reality'",
+            "story_session_id": "TEXT",
         }
         for column, declaration in migrations.items():
             if column not in existing_columns:
@@ -214,6 +220,9 @@ class StructuredMemoryStore:
             importance=row["importance"],
             created_by=row["created_by"],
             distillation_run_id=row["distillation_run_id"],
+            source_type=row["source_type"],
+            canon_scope=row["canon_scope"],
+            story_session_id=row["story_session_id"],
         )
 
     def _expiry_for(
@@ -271,6 +280,9 @@ class StructuredMemoryStore:
         importance: str = "medium",
         created_by: str = "foreground",
         distillation_run_id: str | None = None,
+        source_type: str = "reality",
+        canon_scope: str = "reality",
+        story_session_id: str | None = None,
         now: datetime | None = None,
     ) -> StructuredMemoryItem | None:
         """Record one explicit/factual item; inferred and unknown lanes fail closed."""
@@ -306,16 +318,26 @@ class StructuredMemoryStore:
             normalized_created_by = str(created_by or "foreground").strip().lower()
             if normalized_created_by not in {"foreground", "background"}:
                 return None
+            normalized_source_type = str(source_type or "reality").strip()[:32] or "reality"
+            normalized_canon_scope = str(canon_scope or "reality").strip()[:32] or "reality"
+            normalized_story_session_id = str(story_session_id or "").strip()[:64] or None
             with self._connect() as connection:
                 self._purge_expired(connection, timestamp)
                 existing = connection.execute(
                     """
                     SELECT * FROM structured_memories
                     WHERE lane_key = ? AND kind = ? AND normalized_content = ?
+                          AND source_type = ? AND canon_scope = ?
                           AND status = 'active'
                     LIMIT 1
                     """,
-                    (lane_key, normalized_kind, normalized_content),
+                    (
+                        lane_key,
+                        normalized_kind,
+                        normalized_content,
+                        normalized_source_type,
+                        normalized_canon_scope,
+                    ),
                 ).fetchone()
                 item_id = existing["id"] if existing is not None else uuid.uuid4().hex[:12]
                 created_at = (
@@ -325,6 +347,9 @@ class StructuredMemoryStore:
                 effective_importance = normalized_importance
                 effective_created_by = normalized_created_by
                 effective_run_id = distillation_run_id
+                effective_source_type = normalized_source_type
+                effective_canon_scope = normalized_canon_scope
+                effective_story_session_id = normalized_story_session_id
                 if existing is not None:
                     try:
                         previous_ids = tuple(
@@ -345,6 +370,10 @@ class StructuredMemoryStore:
                     if existing["created_by"] == "foreground":
                         effective_created_by = "foreground"
                         effective_run_id = existing["distillation_run_id"]
+                    if existing["source_type"] != "reality":
+                        effective_source_type = existing["source_type"]
+                        effective_canon_scope = existing["canon_scope"]
+                        effective_story_session_id = existing["story_session_id"]
                     previous_expiry = existing["expires_at"]
                     if previous_expiry is None:
                         resolved_expires_at = None
@@ -358,8 +387,9 @@ class StructuredMemoryStore:
                     INSERT OR REPLACE INTO structured_memories (
                         id, lane_key, kind, content, normalized_content, status,
                         evidence, source_session_id, created_at, updated_at, expires_at,
-                        source_message_ids, importance, created_by, distillation_run_id
-                    ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source_message_ids, importance, created_by, distillation_run_id,
+                        source_type, canon_scope, story_session_id
+                    ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         item_id,
@@ -376,6 +406,9 @@ class StructuredMemoryStore:
                         effective_importance,
                         effective_created_by,
                         effective_run_id,
+                        effective_source_type,
+                        effective_canon_scope,
+                        effective_story_session_id,
                     ),
                 )
                 row = connection.execute(
@@ -386,7 +419,11 @@ class StructuredMemoryStore:
             return None
 
     def list_active(
-        self, *, lane_key: str, now: datetime | None = None
+        self,
+        *,
+        lane_key: str,
+        now: datetime | None = None,
+        canon_scope: str | None = None,
     ) -> tuple[StructuredMemoryItem, ...]:
         if not lane_key:
             return ()
@@ -394,15 +431,26 @@ class StructuredMemoryStore:
         try:
             with self._connect() as connection:
                 self._purge_expired(connection, timestamp)
-                rows = connection.execute(
-                    """
-                    SELECT * FROM structured_memories
-                    WHERE lane_key = ? AND status = 'active'
-                    ORDER BY updated_at DESC
-                    LIMIT ?
-                    """,
-                    (lane_key, self.max_items),
-                ).fetchall()
+                if canon_scope is None:
+                    rows = connection.execute(
+                        """
+                        SELECT * FROM structured_memories
+                        WHERE lane_key = ? AND status = 'active'
+                        ORDER BY updated_at DESC
+                        LIMIT ?
+                        """,
+                        (lane_key, self.max_items),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        """
+                        SELECT * FROM structured_memories
+                        WHERE lane_key = ? AND status = 'active' AND canon_scope = ?
+                        ORDER BY updated_at DESC
+                        LIMIT ?
+                        """,
+                        (lane_key, str(canon_scope), self.max_items),
+                    ).fetchall()
             return tuple(self._row_to_item(row) for row in rows)
         except (OSError, sqlite3.Error, ValueError, TypeError):
             return ()
@@ -693,7 +741,11 @@ class StructuredMemoryStore:
         ]
         remaining = self.max_chars
         for item in items:
-            line = f"- [{item.id}] {labels[item.kind]}：{item.content}"
+            if item.canon_scope == "fictional_shared":
+                item_label = "Story 虚构共同经历（不是现实事实）"
+            else:
+                item_label = labels[item.kind]
+            line = f"- [{item.id}] {item_label}：{item.content}"
             if len(line) > remaining:
                 break
             lines.append(line)

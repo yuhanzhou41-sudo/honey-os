@@ -29,6 +29,11 @@ _LEGACY_CONFIRMED_NAME = re.compile(
     r"(?P<nickname>[\w\u3400-\u9fff·_-]{1,24})给我取了名字叫"
     r"(?P<name>[\w\u3400-\u9fff·_-]{1,24})"
 )
+_LEGACY_COMPANION_NAME_ONLY = re.compile(
+    r"伴侣的名字是[\s\"“”'‘’「」]*"
+    r"(?P<name>[\w\u3400-\u9fff·_-]{1,24})"
+    r"[\s\"“”'‘’「」]*(?:（[^）]{0,80}(?:确认|亲自起)[^）]{0,80}）)?"
+)
 
 
 @dataclass(frozen=True)
@@ -241,17 +246,20 @@ def migrate_confirmed_profile_from_memory(home: Path) -> CompanionProfile | None
         return None
     memory = _read(Path(home).expanduser().resolve() / "memories" / "MEMORY.md")
     match = _LEGACY_CONFIRMED_NAME.search(memory)
-    if not match:
+    name_only_match = _LEGACY_COMPANION_NAME_ONLY.search(memory)
+    if not match and not name_only_match:
         return None
-    nickname = match.group("nickname")
-    name = match.group("name")
-    relationship_match = re.search(
-        rf"我是{re.escape(nickname)}的([^。\n§]{{1,80}})", memory
+    nickname = match.group("nickname") if match else ""
+    name = match.group("name") if match else name_only_match.group("name")
+    relationship_match = (
+        re.search(rf"我是{re.escape(nickname)}的([^。\n§]{{1,80}})", memory)
+        if nickname
+        else None
     )
     return update_companion_profile(
         home,
         companion_name=name,
-        user_nickname=nickname,
+        user_nickname=nickname or None,
         relationship=(relationship_match.group(1).strip() if relationship_match else None),
         source="migration",
     )
@@ -298,10 +306,62 @@ def companion_profile_note(home: Path) -> str | None:
     )
 
 
+def companion_story_snapshot(home: Path) -> dict[str, Any]:
+    """Build a reality-canon companion snapshot for an isolated Story session."""
+
+    resolved = Path(home).expanduser().resolve()
+    profile = load_companion_profile(resolved)
+    if not profile.companion_name:
+        migrated = migrate_confirmed_profile_from_memory(resolved)
+        if migrated is not None:
+            profile = migrated
+
+    from honeyos.companion.continuity import StructuredMemoryStore
+    from honeyos.companion.persistent_memory import list_persistent_memories
+
+    lane_key = "agent:main:api_server:dm:local-owner"
+    durable_memories: list[dict[str, str]] = []
+    remaining = 7000
+    sources = (
+        *list_persistent_memories(resolved),
+        *StructuredMemoryStore(resolved).list_active(
+            lane_key=lane_key,
+            canon_scope="reality",
+        ),
+    )
+    for item in sources:
+        content = redact_sensitive_text(
+            str(getattr(item, "content", "") or ""),
+            force=True,
+            redact_url_credentials=True,
+        ).strip()
+        if not content or remaining <= 0:
+            continue
+        content = content[: min(1200, remaining)]
+        durable_memories.append(
+            {"kind": str(getattr(item, "kind", "memory")), "content": content}
+        )
+        remaining -= len(content)
+
+    legacy_context = "\n".join(item["content"] for item in durable_memories)
+    return {
+        "origin": "companion_snapshot",
+        "name": profile.companion_name or "Honey",
+        "personality": profile.personality,
+        "speaking_style": profile.speaking_style,
+        "relationship": profile.relationship,
+        "user_nickname": profile.user_nickname,
+        "boundaries": profile.boundaries,
+        "durable_context": legacy_context,
+        "durable_memories": durable_memories,
+    }
+
+
 __all__ = [
     "CompanionProfile",
     "capture_explicit_profile_assignment",
     "companion_profile_note",
+    "companion_story_snapshot",
     "load_companion_profile",
     "migrate_confirmed_profile_from_memory",
     "permission_narration",

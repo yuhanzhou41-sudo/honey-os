@@ -37,6 +37,9 @@ export async function streamChat(options: {
   sessionId: string;
   sessionKey: string;
   message: ChatInput;
+  systemMessage?: string;
+  isolatedContext?: boolean;
+  storySessionId?: string;
   signal?: AbortSignal;
   onEvent: (event: HoneyEvent) => void;
 }): Promise<void> {
@@ -51,7 +54,12 @@ export async function streamChat(options: {
         "X-HoneyOS-Session-Key": options.sessionKey,
         "X-HoneyOS-Companion-View": "1",
       },
-      body: JSON.stringify({ message: options.message }),
+      body: JSON.stringify({
+        message: options.message,
+        system_message: options.systemMessage,
+        isolated_context: options.isolatedContext,
+        story_session_id: options.storySessionId,
+      }),
     },
   );
   if (!response.ok || !response.body) throw await responseError(response);

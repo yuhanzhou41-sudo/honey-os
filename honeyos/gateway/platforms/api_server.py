@@ -1308,11 +1308,11 @@ def _security_headers_for_path(path: str) -> Dict[str, str]:
     """Return strict API headers or the bundled UI's same-origin CSP."""
 
     headers = dict(_SECURITY_HEADERS)
-    if path in {"/", "/memories", "/relationship", "/settings", "/onboarding"} or path.startswith(
+    if path in {"/", "/memories", "/relationship", "/stories", "/settings", "/onboarding"} or path.startswith(
         "/assets/"
-    ) or path.startswith("/new-ui") or bool(
+    ) or path.startswith("/stories/") or path.startswith("/new-ui") or bool(
         re.match(
-            r"^/p/[^/]+/(?:new-ui(?:/|$)|assets/|memories$|relationship$|settings$|onboarding$|$)",
+            r"^/p/[^/]+/(?:new-ui(?:/|$)|assets/|memories$|relationship$|stories(?:/|$)|settings$|onboarding$|$)",
             path,
         )
     ):
@@ -2161,6 +2161,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/", self._handle_companion_react),
             ("GET", "/memories", self._handle_companion_react),
             ("GET", "/relationship", self._handle_companion_react),
+            ("GET", "/stories", self._handle_companion_react),
+            ("GET", "/stories/{story_path:.*}", self._handle_companion_react),
             ("GET", "/settings", self._handle_companion_react),
             ("GET", "/onboarding", self._handle_companion_react),
             ("GET", "/{asset_path:assets/.*}", self._handle_companion_react),
@@ -2169,6 +2171,15 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/new-ui/{asset_path:.*}", self._handle_companion_react),
             ("GET", "/api/companion/bootstrap", self._handle_companion_bootstrap),
             ("GET", "/api/companion/memories", self._handle_companion_memories),
+            ("GET", "/api/companion/stories", self._handle_companion_stories),
+            ("POST", "/api/companion/stories/generate", self._handle_companion_story_generate),
+            ("POST", "/api/companion/stories/characters/generate", self._handle_companion_character_generate),
+            ("POST", "/api/companion/stories/characters/import", self._handle_companion_character_import),
+            ("POST", "/api/companion/stories/sessions", self._handle_companion_story_create),
+            ("GET", "/api/companion/stories/sessions/{story_session_id}", self._handle_companion_story_session),
+            ("POST", "/api/companion/stories/sessions/{story_session_id}/turns", self._handle_companion_story_turn),
+            ("POST", "/api/companion/stories/sessions/{story_session_id}/finish", self._handle_companion_story_finish),
+            ("POST", "/api/companion/stories/chapters/{chapter_id}/save", self._handle_companion_story_save),
             ("GET", "/api/companion/settings", self._handle_companion_settings),
             ("GET", "/api/companion/avatar", self._handle_companion_avatar),
             ("GET", "/api/companion/avatar/status", self._handle_companion_avatar_status),
@@ -2317,6 +2328,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _request_is_loopback(request: "web.Request") -> bool:
+        if os.environ.get("HONEYOS_ALLOW_REMOTE_COMPANION_UI", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            return True
         remote = str(getattr(request, "remote", "") or "").split("%", 1)[0]
         try:
             return ipaddress.ip_address(remote).is_loopback
@@ -2495,6 +2512,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "evidence": item.evidence,
                 "importance": item.importance,
                 "created_by": item.created_by,
+                "source_type": getattr(item, "source_type", "reality"),
+                "canon_scope": getattr(item, "canon_scope", "reality"),
+                "story_session_id": getattr(item, "story_session_id", None),
                 "source_session_id": item.source_session_id,
                 "source_message_ids": list(item.source_message_ids),
                 "created_at": item.created_at.isoformat(),
@@ -2569,6 +2589,368 @@ class APIServerAdapter(BasePlatformAdapter):
             }
         )
 
+    async def _handle_companion_stories(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.companion.profile import companion_story_snapshot
+        from honeyos.companion.story_runtime import StoryStore, story_session_payload
+        from honeyos.core.constants import get_honeyos_home
+
+        home = get_honeyos_home()
+        store = StoryStore(home)
+        catalog = store.catalog()
+        snapshot = companion_story_snapshot(home)
+        catalog["companion"] = {
+            "id": "my-honey",
+            "name": snapshot["name"],
+            "tagline": snapshot["relationship"] or "和你一起生活，也可以和你一起进入故事",
+            "profile": snapshot["personality"],
+            "speaking_style": snapshot["speaking_style"],
+            "relationship_hook": snapshot["relationship"] or "你们已经在现实中认识并共同生活了一段时间。",
+            "first_message": "",
+            "source": "companion",
+            "background": "来自你当前 HoneyOS 的人格与关系快照。",
+            "default_story_id": "",
+            "example_dialogue": "",
+        }
+        sessions = []
+        for item in store.list_sessions(limit=12):
+            if item.actor_source == "companion":
+                item = await asyncio.to_thread(
+                    store.refresh_companion_snapshot,
+                    item.id,
+                    snapshot,
+                )
+            sessions.append(story_session_payload(store, item))
+        catalog["sessions"] = sessions
+        return web.json_response(catalog)
+
+    async def _handle_companion_story_generate(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        return await self._handle_companion_story_asset_generate(request, kind="story")
+
+    async def _handle_companion_character_generate(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        return await self._handle_companion_story_asset_generate(request, kind="character")
+
+    async def _handle_companion_story_asset_generate(
+        self, request: "web.Request", *, kind: str
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        idea = str(body.get("idea") or "").strip()
+        if len(idea) < 4:
+            return web.json_response(
+                _openai_error("Please describe the idea first", code="story_idea_too_short"),
+                status=400,
+            )
+
+        from honeyos.companion.story_runtime import (
+            StoryStore,
+            fallback_story_asset,
+            generate_story_asset,
+        )
+        from honeyos.core.constants import get_honeyos_home
+
+        store = StoryStore(get_honeyos_home())
+        try:
+            generated = await generate_story_asset(kind, idea)
+            if kind == "story":
+                item = await asyncio.to_thread(store.save_story, generated)
+            else:
+                item = await asyncio.to_thread(store.save_character, generated)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code=str(exc)), status=400)
+        except Exception:
+            logger.exception("Failed to generate Story asset")
+            generated = fallback_story_asset(kind, idea)
+            if kind == "story":
+                item = await asyncio.to_thread(store.save_story, generated)
+            else:
+                item = await asyncio.to_thread(store.save_character, generated)
+        return web.json_response(item.__dict__, status=201)
+
+    async def _handle_companion_character_import(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        raw = body.get("card")
+        if not isinstance(raw, dict):
+            return web.json_response(
+                _openai_error("Character card must be JSON", code="character_import_invalid"),
+                status=400,
+            )
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+        payload = {
+            "name": data.get("name"),
+            "tagline": data.get("tagline") or data.get("creator_notes"),
+            "profile": data.get("personality") or data.get("description"),
+            "background": data.get("description"),
+            "speaking_style": data.get("speaking_style") or "保持角色卡中的表达方式。",
+            "relationship_hook": data.get("relationship_hook") or data.get("scenario") or "你们第一次在故事中相遇。",
+            "first_message": data.get("first_mes"),
+            "example_dialogue": data.get("mes_example"),
+        }
+
+        from honeyos.companion.story_runtime import StoryStore
+        from honeyos.core.constants import get_honeyos_home
+
+        store = StoryStore(get_honeyos_home())
+        try:
+            character = await asyncio.to_thread(
+                store.save_character, payload, source="imported"
+            )
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code=str(exc)), status=400)
+        return web.json_response(character.__dict__, status=201)
+
+    async def _handle_companion_story_create(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        story_id = str(body.get("story_id") or "").strip()
+        actor_source = str(body.get("actor_source") or "companion").strip()
+        actor_id = str(body.get("actor_id") or "my-honey").strip()
+
+        from honeyos.companion.profile import companion_story_snapshot
+        from honeyos.companion.story_runtime import StoryStore, story_session_payload
+        from honeyos.core.constants import get_honeyos_home
+        from honeyos.gateway.session import SessionSource, build_session_key
+
+        home = get_honeyos_home()
+        store = StoryStore(home)
+        if store.story(story_id) is None:
+            return web.json_response(
+                _openai_error("Story not found", code="story_not_found"), status=404
+            )
+        if actor_source == "companion":
+            actor_snapshot = companion_story_snapshot(home)
+            actor_name = actor_snapshot["name"]
+            actor_id = "my-honey"
+        elif actor_source == "card":
+            character = store.character(actor_id)
+            if character is None:
+                return web.json_response(
+                    _openai_error("Character not found", code="character_not_found"),
+                    status=404,
+                )
+            actor_name = character.name
+            actor_snapshot = {
+                "origin": "character_card",
+                "name": character.name,
+                "personality": character.profile,
+                "speaking_style": character.speaking_style,
+                "relationship": character.relationship_hook,
+                "first_message": character.first_message,
+                "example_dialogue": character.example_dialogue,
+            }
+        else:
+            return web.json_response(
+                _openai_error("Invalid actor source", code="actor_source_invalid"),
+                status=400,
+            )
+
+        session_db = await self._ensure_session_db_async()
+        if session_db is None:
+            return web.json_response(
+                _openai_error("Story session store is unavailable", code="story_session_unavailable"),
+                status=503,
+            )
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id=f"story-{uuid.uuid4().hex[:12]}",
+            chat_type="dm",
+            user_id="local-owner",
+            user_name="主人",
+        )
+        try:
+            agent_session_id = f"story_agent_{uuid.uuid4().hex[:12]}"
+            await asyncio.to_thread(
+                session_db.create_session,
+                agent_session_id,
+                "api_server",
+                model=self._model_name or None,
+            )
+            await asyncio.to_thread(
+                session_db.set_session_title,
+                agent_session_id,
+                f"Story · {store.story(story_id).title}",
+            )
+            story_session = await asyncio.to_thread(
+                store.create_session,
+                story_id=story_id,
+                actor_source=actor_source,
+                actor_id=actor_id,
+                actor_name=actor_name,
+                actor_snapshot=actor_snapshot,
+                agent_session_id=agent_session_id,
+                agent_session_key=build_session_key(source),
+            )
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code=str(exc)), status=400)
+        except Exception:
+            logger.exception("Failed to create Story session")
+            return web.json_response(
+                _openai_error("Could not create Story session", code="story_session_unavailable"),
+                status=503,
+            )
+        return web.json_response(
+            story_session_payload(store, story_session, include_prompt=True), status=201
+        )
+
+    async def _handle_companion_story_session(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.companion.profile import companion_story_snapshot
+        from honeyos.companion.story_runtime import StoryStore, story_session_payload
+        from honeyos.core.constants import get_honeyos_home
+
+        store = StoryStore(get_honeyos_home())
+        session = await asyncio.to_thread(
+            store.get_session, request.match_info["story_session_id"]
+        )
+        if session is None:
+            return web.json_response(
+                _openai_error("Story session not found", code="story_session_not_found"),
+                status=404,
+            )
+        if session.actor_source == "companion":
+            session = await asyncio.to_thread(
+                store.refresh_companion_snapshot,
+                session.id,
+                companion_story_snapshot(get_honeyos_home()),
+            )
+        return web.json_response(story_session_payload(store, session, include_prompt=True))
+
+    async def _handle_companion_story_turn(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        from honeyos.companion.story_runtime import StoryStore, story_session_payload
+        from honeyos.core.constants import get_honeyos_home
+
+        store = StoryStore(get_honeyos_home())
+        try:
+            session = await asyncio.to_thread(
+                store.record_turn,
+                session_id=request.match_info["story_session_id"],
+                user_content=str(body.get("user_content") or ""),
+                assistant_content=str(body.get("assistant_content") or ""),
+            )
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code=str(exc)), status=400)
+        return web.json_response(story_session_payload(store, session, include_prompt=True))
+
+    async def _handle_companion_story_finish(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.companion.story_runtime import (
+            StoryStore,
+            generate_story_chapter_summary,
+        )
+        from honeyos.core.constants import get_honeyos_home
+
+        store = StoryStore(get_honeyos_home())
+        try:
+            generated = await generate_story_chapter_summary(
+                store, request.match_info["story_session_id"]
+            )
+            chapter = await asyncio.to_thread(
+                store.finish_chapter,
+                request.match_info["story_session_id"],
+                summary=generated.get("summary", ""),
+                relationship_change=generated.get("relationship_change", ""),
+            )
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code=str(exc)), status=400)
+        return web.json_response({"chapter": chapter})
+
+    async def _handle_companion_story_save(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.companion.continuity import StructuredMemoryStore
+        from honeyos.companion.story_runtime import StoryStore, source_message_ids, story_episode_content
+        from honeyos.core.constants import get_honeyos_home
+        from honeyos.gateway.session import SessionSource, build_session_key
+
+        home = get_honeyos_home()
+        story_store = StoryStore(home)
+        chapter = await asyncio.to_thread(
+            story_store.chapter, request.match_info["chapter_id"]
+        )
+        if chapter is None:
+            return web.json_response(
+                _openai_error("Story chapter not found", code="story_chapter_not_found"),
+                status=404,
+            )
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id="local-owner",
+            chat_type="dm",
+            user_id="local-owner",
+            user_name="主人",
+        )
+        item = await asyncio.to_thread(
+            StructuredMemoryStore(home).record,
+            lane_key=build_session_key(source),
+            kind="episode",
+            content=story_episode_content(chapter),
+            evidence="conversation_event",
+            source_session_id=str(chapter["story_session_id"]),
+            source_message_ids=source_message_ids(chapter["source_message_ids"]),
+            importance="high",
+            source_type="story",
+            canon_scope="fictional_shared",
+            story_session_id=str(chapter["story_session_id"]),
+        )
+        if item is None:
+            return web.json_response(
+                _openai_error("Could not save Story memory", code="story_memory_unavailable"),
+                status=500,
+            )
+        await asyncio.to_thread(story_store.mark_chapter_saved, chapter["id"])
+        return web.json_response(
+            {
+                "saved": True,
+                "memory_id": item.id,
+                "source_type": item.source_type,
+                "canon_scope": item.canon_scope,
+            }
+        )
+
     async def _handle_companion_memories(
         self, request: "web.Request"
     ) -> "web.Response":
@@ -2609,6 +2991,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "evidence": item.evidence,
                 "importance": item.importance,
                 "created_by": item.created_by,
+                "source_type": getattr(item, "source_type", "reality"),
+                "canon_scope": getattr(item, "canon_scope", "reality"),
+                "story_session_id": getattr(item, "story_session_id", None),
                 "source_session_id": item.source_session_id,
                 "source_message_ids": list(item.source_message_ids),
                 "created_at": item.created_at.isoformat(),
@@ -4074,6 +4459,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
+        isolated_context: bool = False,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -4341,7 +4727,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._last_resolved_model["*"] = model
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        enabled_toolsets = (
+            []
+            if isolated_context
+            else sorted(_get_platform_tools(user_config, "api_server"))
+        )
 
         max_iterations = _current_max_iterations()
 
@@ -4373,6 +4763,18 @@ class APIServerAdapter(BasePlatformAdapter):
             "reasoning_config": reasoning_config,
             "gateway_session_key": gateway_session_key,
         }
+        if isolated_context:
+            # Story/card sessions are intentionally unable to inherit the
+            # companion's SOUL, project instructions, durable memory, or
+            # real-world tools. Their complete identity is supplied by the
+            # Story Runtime prompt for this isolated session.
+            agent_kwargs.update(
+                {
+                    "skip_context_files": True,
+                    "load_soul_identity": False,
+                    "skip_memory": True,
+                }
+            )
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
 
@@ -5182,6 +5584,42 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        isolated_context = body.get("isolated_context") is True
+        story_session_id = str(body.get("story_session_id") or "").strip()
+        story_store = None
+        if story_session_id:
+            if not isolated_context:
+                return web.json_response(
+                    _openai_error(
+                        "Story session requires isolated context",
+                        code="story_isolation_required",
+                    ),
+                    status=400,
+                )
+            from honeyos.companion.story_runtime import StoryStore
+            from honeyos.core.constants import get_honeyos_home
+
+            story_store = StoryStore(get_honeyos_home())
+            story_session = await asyncio.to_thread(
+                story_store.get_session,
+                story_session_id,
+            )
+            if story_session is None or story_session.agent_session_id != session_id:
+                return web.json_response(
+                    _openai_error(
+                        "Story session does not match this chat session",
+                        code="story_session_mismatch",
+                    ),
+                    status=409,
+                )
+            if story_session.agent_session_key != gateway_session_key:
+                return web.json_response(
+                    _openai_error(
+                        "Story session key does not match",
+                        code="story_session_key_mismatch",
+                    ),
+                    status=403,
+                )
         # Runtime selection. A backend-acknowledged Browser model lock
         # (require_model_lock in the body, or a previously confirmed lock
         # persisted on the session row) is an execution contract and wins.
@@ -5245,10 +5683,18 @@ class APIServerAdapter(BasePlatformAdapter):
             requested_runtime=runtime_request.get("requested") or {},
             route_source=runtime_request.get("route_source") or "global",
             confirmed_runtime_lock=lock_active,
+            isolated_context=isolated_context,
             **agent_overrides,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
+        if story_store is not None:
+            await asyncio.to_thread(
+                story_store.record_turn,
+                session_id=story_session_id,
+                user_content=str(user_message),
+                assistant_content=final_response,
+            )
         headers = {"X-HoneyOS-Session-Id": effective_session_id or session_id}
         if gateway_session_key:
             headers["X-HoneyOS-Session-Key"] = gateway_session_key
@@ -5263,13 +5709,14 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
         review_runtime = dict(runtime)
         review_session_id = effective_session_id or session_id
-        loop.call_soon(
-            lambda review_runtime=review_runtime, review_session_id=review_session_id: self._schedule_companion_memory_distillation(
-                gateway_session_key=gateway_session_key,
-                session_id=review_session_id,
-                main_runtime=review_runtime,
+        if not isolated_context:
+            loop.call_soon(
+                lambda review_runtime=review_runtime, review_session_id=review_session_id: self._schedule_companion_memory_distillation(
+                    gateway_session_key=gateway_session_key,
+                    session_id=review_session_id,
+                    main_runtime=review_runtime,
+                )
             )
-        )
         runtime = self._sanitize_runtime_metadata(
             runtime=runtime,
             requested_runtime=runtime_request.get("requested"),
@@ -5317,6 +5764,42 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        isolated_context = body.get("isolated_context") is True
+        story_session_id = str(body.get("story_session_id") or "").strip()
+        story_store = None
+        if story_session_id:
+            if not isolated_context:
+                return web.json_response(
+                    _openai_error(
+                        "Story session requires isolated context",
+                        code="story_isolation_required",
+                    ),
+                    status=400,
+                )
+            from honeyos.companion.story_runtime import StoryStore
+            from honeyos.core.constants import get_honeyos_home
+
+            story_store = StoryStore(get_honeyos_home())
+            story_session = await asyncio.to_thread(
+                story_store.get_session,
+                story_session_id,
+            )
+            if story_session is None or story_session.agent_session_id != session_id:
+                return web.json_response(
+                    _openai_error(
+                        "Story session does not match this chat session",
+                        code="story_session_mismatch",
+                    ),
+                    status=409,
+                )
+            if story_session.agent_session_key != gateway_session_key:
+                return web.json_response(
+                    _openai_error(
+                        "Story session key does not match",
+                        code="story_session_key_mismatch",
+                    ),
+                    status=403,
+                )
         # Runtime selection — mirrors _handle_session_chat (lock wins,
         # otherwise session-persisted model then per-request values).
         runtime_request = self._effective_session_runtime_request(
@@ -5497,12 +5980,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     requested_runtime=runtime_request.get("requested") or {},
                     route_source=runtime_request.get("route_source") or "global",
                     confirmed_runtime_lock=lock_active,
+                    isolated_context=isolated_context,
                     approval_callback=_approval_notify if companion_view else None,
                     **agent_overrides,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
+                if story_store is not None:
+                    await asyncio.to_thread(
+                        story_store.record_turn,
+                        session_id=story_session_id,
+                        user_content=str(user_message),
+                        assistant_content=final_response,
+                    )
                 effective_runtime = {}
                 if isinstance(result, dict):
                     effective_runtime = result.get("runtime") or {}
@@ -5511,11 +6002,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 # Store the review request, but do not schedule it yet.  The
                 # streaming loop schedules it only after the completed answer
                 # has been written to the browser.
-                memory_review = {
-                    "gateway_session_key": gateway_session_key,
-                    "session_id": effective_session_id,
-                    "main_runtime": effective_runtime,
-                }
+                if not isolated_context:
+                    memory_review = {
+                        "gateway_session_key": gateway_session_key,
+                        "session_id": effective_session_id,
+                        "main_runtime": effective_runtime,
+                    }
                 effective_runtime = self._sanitize_runtime_metadata(
                     runtime=effective_runtime,
                     requested_runtime=runtime_request.get("requested"),
@@ -7767,6 +8259,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route_source: str = "global",
         confirmed_runtime_lock: bool = False,
         approval_callback=None,
+        isolated_context: bool = False,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -7835,6 +8328,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         route=route,
                         session_model=session_model,
                         confirmed_runtime_lock=confirmed_runtime_lock,
+                        isolated_context=isolated_context,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent

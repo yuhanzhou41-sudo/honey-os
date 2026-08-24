@@ -224,6 +224,40 @@ def test_exact_duplicate_updates_existing_item_instead_of_growing(tmp_path):
     assert len(store.list_active(lane_key=LANE, now=NOW + timedelta(hours=1))) == 1
 
 
+def test_story_memory_stays_distinct_and_is_explicitly_labeled_fictional(tmp_path):
+    store = StructuredMemoryStore(tmp_path)
+    reality = store.record(
+        lane_key=LANE,
+        kind="episode",
+        content="我们一起在末班地铁重逢",
+        evidence="conversation_event",
+        source_session_id="reality-session",
+        now=NOW,
+    )
+    story = store.record(
+        lane_key=LANE,
+        kind="episode",
+        content="我们一起在末班地铁重逢",
+        evidence="conversation_event",
+        source_session_id="story-session",
+        source_type="story",
+        canon_scope="fictional_shared",
+        story_session_id="story-1",
+        now=NOW + timedelta(minutes=1),
+    )
+
+    assert reality is not None and story is not None
+    assert reality.id != story.id
+    assert store.list_active(
+        lane_key=LANE,
+        now=NOW + timedelta(minutes=1),
+        canon_scope="reality",
+    ) == (reality,)
+    note = store.context_for_lane(lane_key=LANE, now=NOW + timedelta(minutes=1))
+    assert note is not None
+    assert "Story 虚构共同经历（不是现实事实）" in note
+
+
 def test_background_duplicate_never_downgrades_foreground_memory(tmp_path):
     store = StructuredMemoryStore(tmp_path)
     foreground = store.record(

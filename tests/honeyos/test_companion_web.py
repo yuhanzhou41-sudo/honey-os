@@ -481,6 +481,19 @@ def test_session_model_agent_refresh_does_not_replace_named_provider_credentials
     assert captured["base_url"] == "https://configured.example/v1"
     assert captured["requested_provider"] == "honeyos-model"
 
+    captured.clear()
+    adapter._create_agent(
+        session_id="story-session-1",
+        gateway_session_key="story-owner",
+        session_model="deepseek-v4-flash",
+        isolated_context=True,
+    )
+
+    assert captured["enabled_toolsets"] == []
+    assert captured["skip_context_files"] is True
+    assert captured["load_soul_identity"] is False
+    assert captured["skip_memory"] is True
+
 
 def test_companion_stream_payloads_never_include_raw_tool_or_reasoning_data():
     tool_payload = _companion_tool_event_payload(
@@ -536,11 +549,18 @@ def test_api_server_registers_companion_web_routes():
     assert ("GET", "/new-ui/{asset_path:.*}") in routes
     assert ("GET", "/memories") in routes
     assert ("GET", "/relationship") in routes
+    assert ("GET", "/stories") in routes
     assert ("GET", "/settings") in routes
     assert ("GET", "/onboarding") in routes
     assert ("GET", "/{asset_path:assets/.*}") in routes
     assert ("GET", "/api/companion/bootstrap") in routes
     assert ("GET", "/api/companion/memories") in routes
+    assert ("GET", "/api/companion/stories") in routes
+    assert ("POST", "/api/companion/stories/sessions") in routes
+    assert (
+        "POST",
+        "/api/companion/stories/sessions/{story_session_id}/finish",
+    ) in routes
     assert ("GET", "/api/companion/settings") in routes
     assert ("GET", "/api/companion/avatar") in routes
     assert ("GET", "/api/companion/avatar/status") in routes
@@ -919,6 +939,8 @@ def test_same_origin_loopback_browser_request_is_allowed():
 def test_companion_page_csp_allows_only_its_own_assets_and_stream():
     page_policy = _security_headers_for_path("/")["Content-Security-Policy"]
     onboarding_policy = _security_headers_for_path("/onboarding")["Content-Security-Policy"]
+    stories_policy = _security_headers_for_path("/stories")["Content-Security-Policy"]
+    story_session_policy = _security_headers_for_path("/stories/session/example")["Content-Security-Policy"]
     react_policy = _security_headers_for_path("/new-ui/assets/app.js")["Content-Security-Policy"]
     api_policy = _security_headers_for_path("/v1/models")["Content-Security-Policy"]
 
@@ -926,6 +948,8 @@ def test_companion_page_csp_allows_only_its_own_assets_and_stream():
     assert "connect-src 'self'" in page_policy
     assert "script-src 'self'" in page_policy
     assert "script-src 'self'" in onboarding_policy
+    assert "script-src 'self'" in stories_policy
+    assert "script-src 'self'" in story_session_policy
     assert "script-src 'self'" in react_policy
     assert api_policy == "default-src 'none'; frame-ancestors 'none'"
 
@@ -1585,3 +1609,84 @@ async def test_companion_stream_chat_schedules_background_memory_distillation(
     scheduler.assert_called_once()
     assert delivery_order == ["reply_completed", "memory"]
     assert scheduler.call_args.kwargs["session_id"] == "shared-session"
+
+
+@pytest.mark.asyncio
+async def test_story_stream_persists_turn_before_reply_completion(
+    monkeypatch,
+    tmp_path,
+):
+    from honeyos.companion.story_runtime import StoryStore
+
+    monkeypatch.setattr("honeyos.core.constants.get_honeyos_home", lambda: tmp_path)
+    store = StoryStore(tmp_path)
+    story = store.create_session(
+        story_id="last-train",
+        actor_source="companion",
+        actor_id="my-honey",
+        actor_name="Honey",
+        actor_snapshot={"name": "Honey"},
+        agent_session_id="story-agent",
+        agent_session_key="story-key",
+    )
+    adapter = _api_adapter()
+    adapter._parse_session_key_header = MagicMock(return_value=("story-key", None))
+    adapter._get_existing_session_or_404 = AsyncMock(
+        return_value=({"id": "story-agent", "model": "deepseek-v4-flash"}, None)
+    )
+    adapter._read_json_body = AsyncMock(return_value=({
+        "message": "你为什么避开我的视线？",
+        "system_message": store.compose_prompt(story.id),
+        "isolated_context": True,
+        "story_session_id": story.id,
+    }, None))
+    adapter._effective_session_runtime_request = MagicMock(return_value={
+        "requested": {},
+        "route_source": "global",
+        "require_model_lock": False,
+    })
+    adapter._persist_session_runtime_lock = MagicMock(return_value=True)
+    adapter._resolve_route = MagicMock(return_value=None)
+    adapter._request_route_conflict_error = MagicMock(return_value=None)
+    adapter._conversation_history_for_session = AsyncMock(return_value=[])
+    adapter._turn_transcript_messages = MagicMock(return_value=[])
+    adapter._run_agent = AsyncMock(return_value=({
+        "session_id": "story-agent",
+        "final_response": "因为我怕你一开口，我就舍不得再走。",
+        "runtime": {"provider": "custom", "model": "deepseek-v4-flash"},
+    }, {}))
+
+    delivery_order = []
+
+    class FakeStreamResponse:
+        def __init__(self, *, status, headers):
+            self.status = status
+            self.headers = headers
+
+        async def prepare(self, _request):
+            return self
+
+        async def write(self, frame):
+            if b"event: assistant.completed" in frame:
+                delivery_order.append(len(store.list_messages(story.id)))
+
+    monkeypatch.setattr(
+        "honeyos.gateway.platforms.api_server.web.StreamResponse",
+        FakeStreamResponse,
+    )
+    request = SimpleNamespace(
+        match_info={"session_id": "story-agent"},
+        headers={
+            "X-HoneyOS-Session-Key": "story-key",
+            "X-HoneyOS-Companion-View": "1",
+        },
+    )
+
+    response = await adapter._handle_session_chat_stream.__wrapped__(adapter, request)
+
+    assert response.status == 200
+    assert delivery_order == [2]
+    assert [item["role"] for item in store.list_messages(story.id)] == [
+        "user",
+        "assistant",
+    ]

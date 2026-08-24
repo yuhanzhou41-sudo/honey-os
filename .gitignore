@@ -9,5 +9,6 @@ __pycache__/
 .honeyos/
 .worktrees/
 dist/
+/build/
 frontend/node_modules/
 frontend/*.tsbuildinfo
