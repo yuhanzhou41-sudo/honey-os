@@ -176,6 +176,12 @@ export default {
     const headers = new Headers(upstreamRequest.headers);
     headers.set("authorization", `Bearer ${env.API_SERVER_KEY}`);
     headers.set("x-forwarded-proto", "https");
+    // The public Worker has already authenticated the browser session.  The
+    // container only trusts its bundled loopback UI origin, so forwarding the
+    // workers.dev Origin would make every browser POST fail its CSRF/CORS
+    // guard with 403.  Treat this hop as the internal authenticated request it
+    // is; the browser never talks to the container directly.
+    headers.delete("origin");
     const forwardedCookies = (request.headers.get("cookie") ?? "")
       .split(/;\s*/)
       .filter((item) => item && !item.startsWith("honeyos_local="))
