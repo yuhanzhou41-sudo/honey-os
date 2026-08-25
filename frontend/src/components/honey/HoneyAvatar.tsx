@@ -8,6 +8,7 @@ import { cn } from "../../lib/utils";
 import {
   getHoneyAvatarImage,
   HONEYOS_AVATAR_EVENT,
+  notifyHoneyAvatarChanged,
   type HoneyAvatarSurface,
 } from "./avatar-storage";
 
@@ -24,6 +25,7 @@ export function HoneyAvatar({ name, className, surface = "companion" }: HoneyAva
 
   useEffect(() => {
     let active = true;
+    let retryTimer: number | undefined;
     const update = () => setLocalImage(getHoneyAvatarImage(surface));
     const onAvatar = (event: Event) => {
       const detail = (event as CustomEvent<{ surface?: HoneyAvatarSurface; version?: string }>).detail;
@@ -31,16 +33,24 @@ export function HoneyAvatar({ name, className, surface = "companion" }: HoneyAva
       update();
       if (surface === "companion") setServerVersion(detail?.version || String(Date.now()));
     };
-    if (surface === "companion") {
+    const loadServerAvatar = (attempt = 0) => {
       void getCompanionAvatarStatus().then((status) => {
-        if (active) setServerVersion(status.exists ? status.version : "");
-      }).catch(() => undefined);
-    }
+        if (!active) return;
+        const version = status.exists ? status.version : "";
+        setServerVersion(version);
+        if (version) notifyHoneyAvatarChanged("companion", version);
+      }).catch(() => {
+        if (!active || attempt >= 2) return;
+        retryTimer = window.setTimeout(() => loadServerAvatar(attempt + 1), 1_000 * (attempt + 1));
+      });
+    };
+    if (surface === "companion") loadServerAvatar();
     window.addEventListener(HONEYOS_AVATAR_EVENT, onAvatar);
     window.addEventListener("storage", update);
     update();
     return () => {
       active = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       window.removeEventListener(HONEYOS_AVATAR_EVENT, onAvatar);
       window.removeEventListener("storage", update);
     };

@@ -41,7 +41,7 @@ backup_state() {
   for path in \
     SOUL.md channel_directory.json config.yaml continuity.db story_runtime.db \
     state.db response_store.db kanban.db memories sessions cron kanban hooks \
-    pairing pending_messages platforms skills; do
+    pairing pending_messages platforms skills projects; do
     if [ -e "/data/$path" ]; then
       set -- "$@" "$path"
     fi

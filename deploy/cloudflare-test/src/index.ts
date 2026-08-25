@@ -21,6 +21,7 @@ export class HoneyOSContainer extends Container<Env> {
   enableInternet = true;
   envVars = {
     HONEYOS_HOME: "/data",
+    HONEYOS_PROJECTS_HOME: "/data/projects",
     HONEYOS_ALLOW_REMOTE_COMPANION_UI: "1",
     API_SERVER_KEY: this.env.API_SERVER_KEY,
     DEEPSEEK_API_KEY: this.env.DEEPSEEK_API_KEY,
