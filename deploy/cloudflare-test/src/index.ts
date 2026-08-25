@@ -9,7 +9,8 @@ interface Env {
   STATE_BUCKET: R2Bucket;
   API_SERVER_KEY: string;
   DEEPSEEK_API_KEY: string;
-  ACCESS_TOKEN: string;
+  BASIC_USERNAME: string;
+  BASIC_PASSWORD: string;
 }
 
 export class HoneyOSContainer extends Container<Env> {
@@ -56,27 +57,32 @@ HoneyOSContainer.outbound = (request: Request): Promise<Response> => fetch(reque
 
 export { ContainerProxy };
 
+function hasValidBasicAuth(request: Request, env: Env): boolean {
+  const authorization = request.headers.get("authorization") ?? "";
+  if (!authorization.startsWith("Basic ")) return false;
+  try {
+    const decoded = atob(authorization.slice(6).trim());
+    const separator = decoded.indexOf(":");
+    if (separator < 0) return false;
+    return (
+      decoded.slice(0, separator) === env.BASIC_USERNAME &&
+      decoded.slice(separator + 1) === env.BASIC_PASSWORD
+    );
+  } catch {
+    return false;
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const suppliedToken = url.searchParams.get("access");
-    if (suppliedToken && suppliedToken === env.ACCESS_TOKEN) {
-      url.searchParams.delete("access");
-      return new Response(null, {
-        status: 302,
+    if (!hasValidBasicAuth(request, env)) {
+      return new Response("Authentication required", {
+        status: 401,
         headers: {
-          location: `${url.pathname}${url.search}${url.hash}`,
-          "set-cookie": `honeyos_pm_access=${env.ACCESS_TOKEN}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=604800`,
+          "www-authenticate": 'Basic realm="HoneyOS PM Test", charset="UTF-8"',
           "cache-control": "no-store",
         },
-      });
-    }
-
-    const cookie = request.headers.get("cookie") ?? "";
-    if (!cookie.split(/;\s*/).includes(`honeyos_pm_access=${env.ACCESS_TOKEN}`)) {
-      return new Response("Not found", {
-        status: 404,
-        headers: { "cache-control": "no-store" },
       });
     }
 
@@ -94,7 +100,7 @@ export default {
     const headers = new Headers(request.headers);
     headers.set("authorization", `Bearer ${env.API_SERVER_KEY}`);
     headers.set("x-forwarded-proto", "https");
-    const forwardedCookies = cookie
+    const forwardedCookies = (request.headers.get("cookie") ?? "")
       .split(/;\s*/)
       .filter((item) => item && !item.startsWith("honeyos_local="))
       .join("; ");
