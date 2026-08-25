@@ -94,6 +94,15 @@ export default {
     const headers = new Headers(request.headers);
     headers.set("authorization", `Bearer ${env.API_SERVER_KEY}`);
     headers.set("x-forwarded-proto", "https");
+    const forwardedCookies = cookie
+      .split(/;\s*/)
+      .filter((item) => item && !item.startsWith("honeyos_local="))
+      .join("; ");
+    if (forwardedCookies) {
+      headers.set("cookie", forwardedCookies);
+    } else {
+      headers.delete("cookie");
+    }
     const proxied = new Request(request, { headers });
     return getContainer(env.HONEYOS_CONTAINER, "pm-single-tester").fetch(proxied);
   },
