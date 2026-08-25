@@ -120,6 +120,12 @@ function loginPage(invalid = false): Response {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const isPublicAsset =
+      url.pathname.startsWith("/assets/") ||
+      url.pathname === "/__bundle" ||
+      url.pathname === "/__style" ||
+      url.pathname === "/favicon.ico" ||
+      url.pathname === "/manifest.webmanifest";
     if (url.pathname === "/__login" && request.method === "POST") {
       const form = await request.formData();
       const username = String(form.get("username") ?? "");
@@ -137,7 +143,7 @@ export default {
       });
     }
 
-    if (!hasValidSession(request, env)) {
+    if (!isPublicAsset && !hasValidSession(request, env)) {
       if (url.pathname.startsWith("/api/")) {
         return Response.json({ error: "Authentication required" }, { status: 401 });
       }
@@ -155,7 +161,19 @@ export default {
       });
     }
 
-    const headers = new Headers(request.headers);
+    let upstreamRequest = request;
+    if (url.pathname === "/__bundle" || url.pathname === "/__style") {
+      const file = url.searchParams.get("file") ?? "";
+      if (!/^[A-Za-z0-9._-]+$/.test(file)) {
+        return new Response("invalid asset", { status: 400 });
+      }
+      const upstreamUrl = new URL(request.url);
+      upstreamUrl.pathname = `/assets/${file}`;
+      upstreamUrl.search = "";
+      upstreamRequest = new Request(upstreamUrl, request);
+    }
+
+    const headers = new Headers(upstreamRequest.headers);
     headers.set("authorization", `Bearer ${env.API_SERVER_KEY}`);
     headers.set("x-forwarded-proto", "https");
     const forwardedCookies = (request.headers.get("cookie") ?? "")
@@ -167,7 +185,7 @@ export default {
     } else {
       headers.delete("cookie");
     }
-    const proxied = new Request(request, { headers });
+    const proxied = new Request(upstreamRequest, { headers });
     const response = await getContainer(
       env.HONEYOS_CONTAINER,
       "pm-single-tester",
@@ -178,8 +196,60 @@ export default {
     if (csp) {
       responseHeaders.set(
         "content-security-policy",
-        csp.replace(/frame-ancestors\s+[^;]+/, "frame-ancestors *"),
+        csp
+          .replace(/frame-ancestors\s+[^;]+/, "frame-ancestors *")
+          .replace("script-src 'self'", "script-src 'self' 'unsafe-inline'")
+          .replace("style-src 'self'", "style-src 'self' 'unsafe-inline'"),
       );
+    }
+    const contentType = responseHeaders.get("content-type") ?? "";
+    if (contentType.includes("text/html")) {
+      let html = await response.text();
+      const scriptMatch = html.match(
+        /<script[^>]*src="(?:\.\/|\/)assets\/([A-Za-z0-9._-]+\.js)"[^>]*><\/script>/,
+      );
+      if (scriptMatch) {
+        const bundleUrl = new URL(request.url);
+        bundleUrl.pathname = `/assets/${scriptMatch[1]}`;
+        bundleUrl.search = "";
+        const bundleResponse = await getContainer(
+          env.HONEYOS_CONTAINER,
+          "pm-single-tester",
+        ).fetch(new Request(bundleUrl, { headers }));
+        if (bundleResponse.ok) {
+          const bundle = (await bundleResponse.text()).replace(
+            /<\/script/gi,
+            "\\u003C/script",
+          );
+          html = html.replace(
+            scriptMatch[0],
+            () => `<script type="module">${bundle}</script>`,
+          );
+        }
+      }
+      const styleMatch = html.match(
+        /<link[^>]*href="(?:\.\/|\/)assets\/([A-Za-z0-9._-]+\.css)"[^>]*>/,
+      );
+      if (styleMatch) {
+        const styleUrl = new URL(request.url);
+        styleUrl.pathname = `/assets/${styleMatch[1]}`;
+        styleUrl.search = "";
+        const styleResponse = await getContainer(
+          env.HONEYOS_CONTAINER,
+          "pm-single-tester",
+        ).fetch(new Request(styleUrl, { headers }));
+        if (styleResponse.ok) {
+          const stylesheet = await styleResponse.text();
+          html = html.replace(styleMatch[0], () => `<style>${stylesheet}</style>`);
+        }
+      }
+      responseHeaders.delete("content-length");
+      responseHeaders.delete("content-encoding");
+      return new Response(html, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+      });
     }
     return new Response(response.body, {
       status: response.status,

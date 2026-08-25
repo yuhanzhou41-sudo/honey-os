@@ -27,6 +27,15 @@ if ! restore_state; then
 fi
 rm -f /tmp/honeyos-state.tar.gz /tmp/honeyos-state.manifest /tmp/honeyos-state.chunk.*
 
+# The PM environment receives its model credential from a Cloudflare secret.
+# Mirror it into HoneyOS' local settings file so the web UI recognizes that
+# onboarding has already been completed without exposing the key to the client.
+if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+  touch /data/.env
+  chmod 600 /data/.env
+  printf '\nDEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_API_KEY" >> /data/.env
+fi
+
 backup_state() {
   set --
   for path in \
