@@ -2769,6 +2769,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        existing_session = await asyncio.to_thread(
+            store.find_session,
+            story_id=story_id,
+            actor_source=actor_source,
+            actor_id=actor_id,
+        )
+        if existing_session is not None:
+            if actor_source == "companion":
+                existing_session = await asyncio.to_thread(
+                    store.refresh_companion_snapshot,
+                    existing_session.id,
+                    actor_snapshot,
+                )
+            return web.json_response(
+                story_session_payload(store, existing_session, include_prompt=True),
+                status=200,
+            )
+
         session_db = await self._ensure_session_db_async()
         if session_db is None:
             return web.json_response(

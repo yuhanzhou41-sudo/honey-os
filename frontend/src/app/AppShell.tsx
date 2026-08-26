@@ -5,6 +5,7 @@ import {
   SlidersHorizontalIcon,
   SparkleIcon,
 } from "@phosphor-icons/react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
 import { HoneyAvatar } from "../components/honey/HoneyAvatar";
@@ -18,6 +19,42 @@ const navigation = [
   { to: "/relationship", label: "我们", icon: HeartIcon },
   { to: "/settings", label: "设置", icon: SlidersHorizontalIcon },
 ];
+
+function isTextEntry(element: Element | null): boolean {
+  if (!(element instanceof HTMLElement)) return false;
+  if (element instanceof HTMLTextAreaElement) return true;
+  if (element instanceof HTMLInputElement) {
+    return !["button", "checkbox", "file", "hidden", "radio", "range", "reset", "submit"].includes(element.type);
+  }
+  return element.isContentEditable;
+}
+
+function useMobileKeyboardLayout() {
+  const [textEntryFocused, setTextEntryFocused] = useState(false);
+  const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const updateViewport = () => setViewportHeight(viewport ? Math.round(viewport.height) : null);
+    const updateFocus = () => setTextEntryFocused(isTextEntry(document.activeElement));
+    const handleFocusIn = (event: FocusEvent) => setTextEntryFocused(isTextEntry(event.target as Element | null));
+    const handleFocusOut = () => window.setTimeout(updateFocus, 0);
+
+    updateViewport();
+    document.addEventListener("focusin", handleFocusIn);
+    document.addEventListener("focusout", handleFocusOut);
+    viewport?.addEventListener("resize", updateViewport);
+    viewport?.addEventListener("scroll", updateViewport);
+    return () => {
+      document.removeEventListener("focusin", handleFocusIn);
+      document.removeEventListener("focusout", handleFocusOut);
+      viewport?.removeEventListener("resize", updateViewport);
+      viewport?.removeEventListener("scroll", updateViewport);
+    };
+  }, []);
+
+  return { textEntryFocused, viewportHeight };
+}
 
 function PortraitNavigation() {
   return (
@@ -71,9 +108,17 @@ function MobileNavigation() {
 export function AppShell() {
   const name = useHoneyStore((state) => state.name);
   const status = useHoneyStore((state) => state.status);
+  const { textEntryFocused, viewportHeight } = useMobileKeyboardLayout();
+  const shellStyle = viewportHeight
+    ? { "--honey-viewport-height": `${viewportHeight}px` } as CSSProperties
+    : undefined;
 
   return (
-    <div className="grid min-h-[100dvh] grid-cols-1 bg-[var(--background)] lg:grid-cols-[clamp(22rem,32vw,38rem)_minmax(0,1fr)]">
+    <div
+      className="honey-app-shell grid h-[var(--honey-viewport-height,100dvh)] min-h-0 grid-cols-1 overflow-hidden bg-[var(--background)] lg:grid-cols-[clamp(22rem,32vw,38rem)_minmax(0,1fr)]"
+      data-keyboard-open={textEntryFocused}
+      style={shellStyle}
+    >
       <aside className="relative hidden h-[100dvh] min-w-0 overflow-hidden bg-[#25282f] lg:flex lg:flex-col">
         <HoneyAvatar
           name={name}
@@ -97,11 +142,14 @@ export function AppShell() {
         </div>
       </aside>
 
-      <main className="h-[100dvh] min-w-0 overflow-y-auto pb-[calc(4rem+env(safe-area-inset-bottom))] lg:pb-0">
+      <main className={cn(
+        "h-full min-h-0 min-w-0 overflow-y-auto lg:pb-0",
+        textEntryFocused ? "pb-0" : "pb-[calc(4rem+env(safe-area-inset-bottom))]",
+      )}>
         <Outlet />
       </main>
 
-      <MobileNavigation />
+      {textEntryFocused ? null : <MobileNavigation />}
     </div>
   );
 }
