@@ -65,6 +65,56 @@ def test_channel_setup_feishu_routes_through_honeyos(monkeypatch, tmp_path):
     assert observed == [tmp_path.resolve()]
 
 
+def test_channel_setup_photon_routes_to_embedded_runtime(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr("honeyos.cli.main._initialize_embedded", lambda home: None)
+    monkeypatch.setattr(
+        "honeyos.cli.main._run_embedded",
+        lambda arguments, home: calls.append((arguments, home)) or 0,
+    )
+
+    assert main(["--home", str(tmp_path), "channel", "setup", "photon"]) == 0
+    assert calls == [(["photon", "setup"], tmp_path.resolve())]
+
+
+def test_photon_command_is_forwarded_to_embedded_runtime(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr("honeyos.cli.main._initialize_embedded", lambda home: None)
+    monkeypatch.setattr(
+        "honeyos.cli.main._run_embedded",
+        lambda arguments, home: calls.append((arguments, home)) or 0,
+    )
+
+    assert main(["--home", str(tmp_path), "photon", "status"]) == 0
+    assert calls == [(["photon", "status"], tmp_path.resolve())]
+
+
+def test_config_command_is_forwarded_to_embedded_runtime(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr("honeyos.cli.main._initialize_embedded", lambda home: None)
+    monkeypatch.setattr(
+        "honeyos.cli.main._run_embedded",
+        lambda arguments, home: calls.append((arguments, home)) or 0,
+    )
+
+    assert (
+        main(
+            [
+                "--home",
+                str(tmp_path),
+                "config",
+                "set",
+                "GOOGLE_MAPS_API_KEY",
+                "test-key",
+            ]
+        )
+        == 0
+    )
+    assert calls == [
+        (["config", "set", "GOOGLE_MAPS_API_KEY", "test-key"], tmp_path.resolve())
+    ]
+
+
 def test_pairing_approve_stays_inside_honeyos_home(monkeypatch, tmp_path):
     observed = []
     monkeypatch.setattr(

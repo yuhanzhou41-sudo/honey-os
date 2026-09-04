@@ -31,6 +31,11 @@ from typing import List, Dict, Any, Set, Optional
 _HONEYOS_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
+    # Local life. Keep these model-visible whenever their check_fn says they
+    # are configured. Nearby-place requests should not require the model to
+    # discover the native Google Places tool via tool_describe first; doing so
+    # made it incorrectly fall back to web_search/terminal on the first turn.
+    "google_maps_search", "local_life_search",
     # Terminal + process management
     "terminal", "process",
     # Desktop GUI affordances: read the embedded terminal pane, close an agent's
@@ -109,6 +114,12 @@ TOOLSETS = {
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],
+        "includes": []
+    },
+
+    "local_life": {
+        "description": "Native Google Places and private local business discovery",
+        "tools": ["google_maps_search", "local_life_search"],
         "includes": []
     },
 

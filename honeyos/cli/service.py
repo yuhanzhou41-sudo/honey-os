@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from honeyos import default_home
+from honeyos import PRODUCT_NAME, RUNTIME_ID, default_home
 
 
 Runner = Callable[..., object]
@@ -70,7 +70,15 @@ def _current_slot_source(identity: ServiceIdentity) -> Path | None:
 
 
 def _service_environment(identity: ServiceIdentity) -> dict[str, str]:
-    environment = {"HONEYOS_HOME": str(identity.data_home)}
+    # LaunchAgent/systemd services do not pass through the temporary CLI
+    # environment.  Persist the product identity here so companion-only tools
+    # (memory, profile, Google Maps/local life) remain available after reboot
+    # or a later `honeyos gateway restart`.
+    environment = {
+        "HONEYOS_HOME": str(identity.data_home),
+        "HONEYOS_RUNTIME_ID": RUNTIME_ID,
+        "HONEYOS_PRODUCT_NAME": PRODUCT_NAME,
+    }
     source = _current_slot_source(identity)
     if source is not None:
         # The slot is a complete source tree.  Keeping the interpreter/venv

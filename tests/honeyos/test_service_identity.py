@@ -72,6 +72,10 @@ def test_generated_service_definitions_contain_only_honeyos_runtime(
     for definition in (launchd, systemd):
         assert "honeyos" in definition.lower()
         assert str(identity.data_home) in definition
+        assert "HONEYOS_RUNTIME_ID" in definition
+        assert "honeyos-companion-v0.3" in definition
+        assert "HONEYOS_PRODUCT_NAME" in definition
+        assert "HoneyOS" in definition
         assert "springbrand" not in definition.lower()
         assert "h2os" not in definition.lower()
         assert "hermes" not in definition.lower()

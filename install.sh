@@ -3,7 +3,8 @@ set -eu
 
 VERSION=0.3.1
 REPOSITORY=springbrand-lab/honey-os
-ARCHIVE_URL="https://github.com/$REPOSITORY/archive/refs/heads/main.tar.gz"
+INSTALL_REF=${HONEYOS_INSTALL_REF:-main}
+ARCHIVE_URL="https://github.com/$REPOSITORY/archive/refs/heads/$INSTALL_REF.tar.gz"
 INSTALL_ROOT="$HOME/.local/share/honeyos"
 INSTALL_DIR="$INSTALL_ROOT/app"
 STAGING_DIR="$INSTALL_ROOT/.app-new"
@@ -36,7 +37,7 @@ done
 
 mkdir -p "$INSTALL_ROOT"
 ARCHIVE="$TEMP_DIR/honeyos-$VERSION.tar.gz"
-echo "Downloading HoneyOS v$VERSION from GitHub…"
+echo "Downloading HoneyOS v$VERSION ($INSTALL_REF) from GitHub…"
 curl -fsSL "$ARCHIVE_URL" -o "$ARCHIVE"
 
 rm -rf "$STAGING_DIR"

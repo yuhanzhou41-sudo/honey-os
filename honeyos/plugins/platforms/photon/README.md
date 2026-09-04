@@ -47,6 +47,10 @@ talks to it over loopback.
 # One-shot setup: device login (opens browser) + project + user + sidecar deps
 honeyos photon setup --phone +15551234567
 
+# Or connect an existing Spectrum project (the same project id accepted by
+# create-spectrum-project) instead of creating/finding one by name
+honeyos photon setup --project-id YOUR_PHOTON_PROJECT_ID --phone +15551234567
+
 # Start the gateway
 honeyos gateway start
 ```

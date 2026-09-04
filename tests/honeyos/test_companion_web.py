@@ -102,6 +102,25 @@ def test_activity_projection_hides_raw_tool_details():
     assert "secret" not in str(activity)
 
 
+def test_activity_projection_gives_local_life_search_companion_copy():
+    active = project_activity("tool.started", "local_life_search")
+    completed = project_activity("tool.completed", "local_life_search")
+
+    assert active["kind"] == "checking"
+    assert active["tool_key"] == "local_life_search"
+    assert active["title"] == "正在找附近合适的地方"
+    assert completed["title"] == "已经找到合适的地方了"
+
+
+def test_activity_projection_gives_google_places_companion_copy():
+    active = project_activity("tool.started", "google_maps_search")
+    completed = project_activity("tool.completed", "google_maps_search")
+
+    assert active["title"] == "正在用地图找附近的地方"
+    assert active["tool_key"] == "google_maps_search"
+    assert completed["title"] == "已经在地图上找到合适的地方了"
+
+
 def test_presence_projection_never_contains_reasoning():
     presence = project_presence(preview="private chain of thought")
 

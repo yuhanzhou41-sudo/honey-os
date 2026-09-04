@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/springbrand-lab/honey-os/main/insta
 
 1. 配置自己的模型、Base URL 和 API Key；
 2. 从可用模型中选择一个模型；
-3. 连接本地网页、微信或飞书；
+3. 连接本地网页、微信、飞书或 iMessage；
 4. 直接开始和自己的 AI 伴侣相处。
 
 模型配置、聊天历史、伴侣记忆、Skill 和项目默认保存在你自己的电脑上。
@@ -85,7 +85,7 @@ HoneyOS 针对长期关系重新设计了记忆系统。
 * **共同经历：**你们真正一起发生过、完成过的事情；
 * **原始历史：**需要回忆过去时，可以查找真实聊天，而不是编造。
 
-本地网页、微信和飞书连接的是同一个伴侣和同一份长期记忆。
+本地网页、微信、飞书和 iMessage 连接的是同一个伴侣和同一份长期记忆。
 
 发送 `/new`、重启 HoneyOS 或更换模型，不代表重新认识一次。
 
@@ -356,7 +356,7 @@ API Key、登录 Token、Cookie、密码和其他凭据不会被自动迁移。�
 
 | 能力     | 当前支持                             |
 | ------ | -------------------------------- |
-| 聊天入口   | 本地网页、微信、飞书                       |
+| 聊天入口   | 本地网页、微信、飞书、iMessage              |
 | 模型     | 自定义 Base URL、API Key、模型选择与自然语言切换 |
 | 人格     | 用户可以通过自然语言形成和修改名字、性格、称呼与相处方式     |
 | 记忆     | 身份、关系、用户信息、共同经历、短期连续和历史搜索        |
@@ -372,7 +372,7 @@ API Key、登录 Token、Cookie、密码和其他凭据不会被自动迁移。�
 
 ---
 
-## 微信、飞书和本地网页
+## 微信、飞书、iMessage 和本地网页
 
 ### 本地网页
 
@@ -403,6 +403,19 @@ HoneyOS 会将扫码用户设为唯一允许私聊的用户，群聊默认关闭
 HoneyOS 支持通过飞书 Bot 私聊，可以扫码创建机器人，也可以配置已有的 App ID 和 App Secret。
 
 飞书默认使用长连接，不要求用户准备公网回调地址。群聊默认关闭，避免私人记忆进入工作群。
+
+---
+
+### iMessage（Photon）
+
+HoneyOS 可以通过 Photon 的 Spectrum 长连接收发 iMessage，无需自建公网回调或 Mac 中继。
+
+```bash
+honeyos photon setup --phone +15551234567
+honeyos photon status
+```
+
+首次设置会打开 Photon 的设备授权页，然后创建或连接项目、注册测试者手机号并显示分配的 iMessage 收件号码。密钥和允许列表只保存在 `~/.honeyos`。
 
 ---
 
@@ -501,7 +514,7 @@ curl -fsSL https://raw.githubusercontent.com/springbrand-lab/honey-os/main/insta
 
 ## 当前状态
 
-HoneyOS 目前处于 Beta 阶段。
+HoneyOS 目前处于 Beta 阶段，当前版本为 `v0.3.1`。
 
 我们正在持续优化：
 

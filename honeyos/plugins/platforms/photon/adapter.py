@@ -604,6 +604,37 @@ def _richlink_candidate(text: str) -> Optional[str]:
     return _url_only_candidate(text)
 
 
+def _split_local_life_richlinks(text: str) -> tuple[str, List[str]]:
+    """Extract standalone Maps/Yelp URLs for native iMessage shop cards.
+
+    URLs embedded in prose or Markdown are left untouched. Only a URL occupying
+    its own line and pointing to a known local-life host is promoted.
+    """
+    body_lines: List[str] = []
+    rich_urls: List[str] = []
+    for line in (text or "").splitlines():
+        candidate = _url_only_candidate(line.strip())
+        if not candidate:
+            body_lines.append(line)
+            continue
+        try:
+            parsed = urlparse(candidate)
+        except ValueError:
+            body_lines.append(line)
+            continue
+        host = (parsed.hostname or "").lower()
+        is_maps = host in {"maps.google.com", "www.google.com", "google.com"} and (
+            host == "maps.google.com" or parsed.path.startswith("/maps")
+        )
+        is_yelp = (host == "yelp.com" or host.endswith(".yelp.com")) and parsed.path.startswith("/biz/")
+        if is_maps or is_yelp:
+            if candidate not in rich_urls:
+                rich_urls.append(candidate)
+        else:
+            body_lines.append(line)
+    return "\n".join(body_lines).strip(), rich_urls
+
+
 def _format_richlink_content(content: Dict[str, Any]) -> str:
     url = str(content.get("url") or "").strip()
     title = str(content.get("title") or "").strip()
@@ -1949,7 +1980,25 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        formatted = self.format_message(content)
+        body, rich_urls = _split_local_life_richlinks(formatted)
+        if not rich_urls:
+            return await self._sidecar_send(chat_id, formatted)
+
+        last_result = SendResult(success=True)
+        if body:
+            last_result = await self._sidecar_send(chat_id, body)
+            if not last_result.success:
+                return last_result
+        for url in rich_urls:
+            last_result = await self._sidecar_send_richlink(chat_id, url)
+            if not last_result.success:
+                last_result = await self._sidecar_send(
+                    chat_id, url, richlink=False, markdown=False
+                )
+                if not last_result.success:
+                    return last_result
+        return last_result
 
     # -- Clarify (native iMessage poll) ------------------------------------
     #

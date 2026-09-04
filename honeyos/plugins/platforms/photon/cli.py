@@ -73,6 +73,11 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     )
     p_setup.add_argument("--project-name", default=None,
                          help="Project name (default: 'HoneyOS')")
+    p_setup.add_argument(
+        "--project-id",
+        default=None,
+        help="Use an existing Spectrum Cloud project instead of finding or creating one",
+    )
     p_setup.add_argument("--phone", default=None,
                          help="Your E.164 phone number (e.g. +15551234567)")
     p_setup.add_argument("--first-name", default=None)
@@ -183,9 +188,11 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     # 2. Find or create the "HoneyOS" project.
     name = args.project_name or photon_auth.DEFAULT_PROJECT_NAME
-    dashboard_id = photon_auth.load_dashboard_project_id()
+    dashboard_id = str(args.project_id or "").strip() or photon_auth.load_dashboard_project_id()
     try:
-        if dashboard_id:
+        if args.project_id and dashboard_id:
+            print(f"[2/5] Using Spectrum project {dashboard_id}")
+        elif dashboard_id:
             print("[2/5] Reusing configured Photon project")
         else:
             existing = photon_auth.find_project_by_name(token, name)
@@ -220,7 +227,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         existing_id, existing_secret = photon_auth.load_project_credentials()
         secret: str = ""
         reused = False
-        if existing_id and existing_secret:
+        if existing_id == spectrum_id and existing_secret:
             # Validate the existing credential with a lightweight API call.
             try:
                 photon_auth.list_users(existing_id, existing_secret)
@@ -515,6 +522,7 @@ def gateway_setup() -> None:
     args = argparse.Namespace(
         photon_command="setup",
         project_name=None,
+        project_id=None,
         phone=None,
         first_name=None,
         last_name=None,

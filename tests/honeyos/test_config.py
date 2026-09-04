@@ -32,6 +32,7 @@ def test_initialize_home_creates_companion_contract(tmp_path, monkeypatch):
     assert config["platform_toolsets"]["weixin"] == [
         "companion_profile",
         "companion_memory",
+        "local_life",
         "proactive_companion",
         "memory",
         "session_search",
@@ -99,7 +100,7 @@ def test_initialize_home_creates_companion_contract(tmp_path, monkeypatch):
         "celebration-and-surprise",
         "date-and-life-ideas",
         "honeyos-self-extension",
-        "maps",
+        "google-maps",
         "youtube-content",
         "ocr-and-documents",
         "grounded-citations",
@@ -237,7 +238,8 @@ def test_upgrade_companion_capabilities_is_idempotent_and_preserves_user_state(
     assert migrated["memory"]["distillation"]["trigger_messages"] == 20
     assert migrated["memory"]["distillation"]["max_daily_runs"] == 12
     assert migrated["auxiliary"]["memory_distillation"]["provider"] == "auto"
-    assert first_soul.startswith("# My formed identity")
+    assert "# My formed identity" in first_soul
+    assert "Keep me." in first_soul
     assert first_soul.count("# Capability Growth") == 1
     assert (tmp_path / "skills" / "relationship-continuity" / "SKILL.md").exists()
 

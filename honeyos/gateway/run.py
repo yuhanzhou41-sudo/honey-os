@@ -1525,6 +1525,11 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech_tool",
     "image_generate",
     "bfl_flux3_get_result",
+    # Google/local-life results carry a cached business photo in
+    # results[*].image_path. Attach one automatically so delivery does not
+    # depend on the model remembering to echo a MEDIA: directive.
+    "google_maps_search",
+    "local_life_search",
 }
 
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
@@ -1638,6 +1643,7 @@ def _collect_auto_append_media_tags(
                 tool_name_by_call_id[str(call_id)] = name
 
     media_tags: List[str] = []
+    local_life_media_tag: Optional[str] = None
     has_voice_directive = False
     for msg in new_messages:
         if msg.get("role") not in ("tool", "function"):
@@ -1647,6 +1653,25 @@ def _collect_auto_append_media_tags(
             continue
         content = str(msg.get("content") or "")
         tool_name = tool_name_by_call_id.get(call_id)
+        if tool_name in {"google_maps_search", "local_life_search"} and "MEDIA:" not in content:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                for result_item in payload.get("results") or []:
+                    if not isinstance(result_item, dict):
+                        continue
+                    path = result_item.get("image_path")
+                    if (isinstance(path, str)
+                            and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
+                            and path not in history_media_paths):
+                        # Prefer the most recent successful Maps lookup. Models
+                        # sometimes refine a broad search with a second call;
+                        # that last result is the one reflected in the answer.
+                        local_life_media_tag = f"MEDIA:{path}"
+                        break
+            continue
         # JSON-payload tools (image_generate) return a local-file path in a
         # known field rather than a MEDIA: tag. Extract it so delivery is
         # deterministic even when the model omits the path from its reply.
@@ -1672,6 +1697,9 @@ def _collect_auto_append_media_tags(
                 media_tags.append(f"MEDIA:{path}")
         if "[[audio_as_voice]]" in content:
             has_voice_directive = True
+
+    if local_life_media_tag and local_life_media_tag not in media_tags:
+        media_tags.append(local_life_media_tag)
 
     return media_tags, has_voice_directive
 
@@ -1726,7 +1754,8 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
             _add_text_media_paths(content)
             continue
         cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(cid) == "image_generate":
+        tool_name = tool_name_by_call_id.get(cid)
+        if tool_name == "image_generate":
             try:
                 payload = json.loads(content)
             except Exception:
@@ -1737,6 +1766,18 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
                     if isinstance(jp, str) and jp:
                         paths.add(jp)
                         break
+        elif tool_name in {"google_maps_search", "local_life_search"}:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                for result_item in payload.get("results") or []:
+                    if not isinstance(result_item, dict):
+                        continue
+                    image_path = result_item.get("image_path")
+                    if isinstance(image_path, str) and image_path:
+                        paths.add(image_path)
     return paths
 
 # ---------------------------------------------------------------------------
@@ -3838,6 +3879,24 @@ class TurnRunner:
             return
         ctx.last_tool[0] = tool_name
 
+        # iMessage has no editable progress bubble.  Send at most one safe,
+        # companion-voiced status per turn instead of exposing raw tool names,
+        # queries, code, file paths, or model scratch reasoning.  The sender
+        # recognises this structured marker and drops every later update.
+        if getattr(ctx.source.platform, "value", None) == "photon":
+            from honeyos.companion.activity import project_activity
+
+            activity = project_activity(
+                event_type,
+                tool_name,
+                preview=preview,
+                args=args,
+            )
+            status_text = activity.get("detail") or activity.get("title")
+            if status_text:
+                ctx.progress_queue.put(("__permanent_once__", status_text))
+            return
+
         # Build progress message with primary argument preview
         from honeyos.agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
@@ -3982,20 +4041,44 @@ class TurnRunner:
         if not adapter:
             return
 
-        # Skip tool progress for platforms that don't support message
-        # editing (e.g. iMessage/BlueBubbles) — each progress update
-        # would become a separate message bubble, which is noisy.
+        # Platforms without message editing normally drop progress because
+        # every update would become a permanent bubble. Photon is the one
+        # exception: its callback queues a safe ``__permanent_once__`` marker,
+        # and we deliver only the first such status for the whole turn.
         # getattr, not attribute access: duck-typed adapters (test fakes,
         # minimal plugin adapters) may not define edit_message at all —
         # "missing" means the same thing as "base no-op": can't edit.
         _adapter_edit = getattr(type(adapter), "edit_message", None)
         if _adapter_edit is None or _adapter_edit is BasePlatformAdapter.edit_message:
-            while not ctx.progress_queue.empty():
+            _sent_permanent_status = False
+            while True:
                 try:
-                    ctx.progress_queue.get_nowait()
-                except Exception:
-                    break
-            return
+                    if not ctx._run_still_current():
+                        return
+                    raw = ctx.progress_queue.get_nowait()
+                    if (
+                        not _sent_permanent_status
+                        and isinstance(raw, tuple)
+                        and len(raw) == 2
+                        and raw[0] == "__permanent_once__"
+                    ):
+                        result = await adapter.send(
+                            chat_id=ctx.source.chat_id,
+                            content=str(raw[1]),
+                            reply_to=ctx._progress_reply_to,
+                            metadata=ctx._progress_metadata,
+                        )
+                        _sent_permanent_status = bool(
+                            getattr(result, "success", False)
+                        )
+                    # All raw progress and later one-shot markers are dropped.
+                except queue.Empty:
+                    await asyncio.sleep(0.3)
+                except asyncio.CancelledError:
+                    return
+                except Exception as exc:
+                    logger.debug("Permanent progress status failed: %s", exc)
+                    await asyncio.sleep(0.3)
 
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
         progress_msg_id = None   # ID of the current progress message to edit

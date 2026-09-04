@@ -31,10 +31,12 @@ from honeyos.companion.projects import (
 
 DEFAULT_IM_PLATFORMS = ("weixin", "feishu")
 COMPANION_WEB_PLATFORM = "api_server"
+COMPANION_OPTIONAL_CHANNELS = ("photon",)
 _SUPPORTED_PLATFORMS = frozenset(DEFAULT_IM_PLATFORMS)
 COMPANION_TOOLSETS = (
     "companion_profile",
     "companion_memory",
+    "local_life",
     "proactive_companion",
     "memory",
     "session_search",
@@ -93,7 +95,7 @@ _COMPANION_SKILLS = (
     ("date-and-life-ideas", "honeyos", None),
     ("honeyos-self-extension", "honeyos", None),
     ("honeyos-builder", "honeyos", None),
-    ("maps", "honeyos", None),
+    ("google-maps", "honeyos", None),
     ("youtube-content", "honeyos", None),
     ("ocr-and-documents", "honeyos", None),
     ("grounded-citations", "honeyos", None),
@@ -164,11 +166,23 @@ def _invalidate_companion_session_prompts(home: Path) -> bool:
             }
             if "sessions" not in tables:
                 return False
+            session_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(sessions)")
+            }
+            source_clause = (
+                " OR source IN ('api_server', 'photon', 'weixin', 'feishu')"
+                if "source" in session_columns
+                else ""
+            )
             cursor = connection.execute(
-                """
+                f"""
                 UPDATE sessions
                 SET system_prompt = NULL, system_prompt_hash = NULL
-                WHERE session_key LIKE 'agent:main:companion:%'
+                WHERE (
+                    session_key LIKE 'agent:main:companion:%'
+                    {source_clause}
+                )
                   AND (system_prompt IS NOT NULL OR system_prompt_hash IS NOT NULL)
                 """
             )
@@ -332,7 +346,7 @@ def companion_config(
         "compression": {"enabled": True, "in_place": True},
         "platform_toolsets": {
             name: list(COMPANION_TOOLSETS)
-            for name in (*platforms, COMPANION_WEB_PLATFORM)
+            for name in (*platforms, *COMPANION_OPTIONAL_CHANNELS, COMPANION_WEB_PLATFORM)
         },
         "web": {
             "backend": "ddgs",
@@ -517,7 +531,16 @@ def upgrade_companion_capabilities(home: Path) -> bool:
     if not isinstance(platform_toolsets, dict):
         platform_toolsets = {}
         config["platform_toolsets"] = platform_toolsets
-    for platform in (*DEFAULT_IM_PLATFORMS, COMPANION_WEB_PLATFORM):
+    companion_platforms = (
+        *DEFAULT_IM_PLATFORMS,
+        *COMPANION_OPTIONAL_CHANNELS,
+        COMPANION_WEB_PLATFORM,
+    )
+    tool_contract_changed = any(
+        platform_toolsets.get(platform) != list(COMPANION_TOOLSETS)
+        for platform in companion_platforms
+    )
+    for platform in companion_platforms:
         platform_toolsets[platform] = list(COMPANION_TOOLSETS)
 
     platforms = config.setdefault("platforms", {})
@@ -648,7 +671,7 @@ def upgrade_companion_capabilities(home: Path) -> bool:
 
     rendered_config = yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
     changed = credential_migrated or bool(recovery.copied) or rendered_config != original_config
-    prompt_contract_changed = False
+    prompt_contract_changed = tool_contract_changed
     if changed:
         _atomic_replace(config_path, rendered_config, mode=0o600)
 

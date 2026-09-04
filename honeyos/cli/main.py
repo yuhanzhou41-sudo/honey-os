@@ -45,6 +45,8 @@ def _parser() -> argparse.ArgumentParser:
         "tools": "Configure companion capabilities",
         "computer-use": "Install and check desktop control",
         "mcp": "Install, authorize, and manage MCP servers",
+        "config": "View and edit local configuration",
+        "photon": "Set up and manage iMessage via Photon",
     }
     for command, help_text in passthrough_commands.items():
         passthrough = commands.add_parser(command, help=help_text, add_help=False)
@@ -54,7 +56,7 @@ def _parser() -> argparse.ArgumentParser:
     channel = commands.add_parser("channel", help="Connect a private chat channel")
     channel_commands = channel.add_subparsers(dest="channel_command", required=True)
     channel_setup = channel_commands.add_parser("setup")
-    channel_setup.add_argument("platform", choices=("weixin", "feishu"))
+    channel_setup.add_argument("platform", choices=("weixin", "feishu", "photon"))
 
     pairing = commands.add_parser("pairing", help="Manage private-chat access")
     pairing_commands = pairing.add_subparsers(dest="pairing_action", required=True)
@@ -141,7 +143,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as exc:
         return int(exc.code or 0)
 
-    passthrough_names = {"skills", "model", "tools", "computer-use", "mcp"}
+    passthrough_names = {
+        "skills",
+        "model",
+        "tools",
+        "computer-use",
+        "mcp",
+        "config",
+        "photon",
+    }
     if unknown and args.command not in passthrough_names:
         print(
             f"honeyos: error: unrecognized arguments: {' '.join(unknown)}",
@@ -226,6 +236,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_embedded(runtime_arguments, home)
     if args.command == "channel":
         _initialize_embedded(home)
+        if args.platform == "photon":
+            return _run_embedded(["photon", "setup"], home)
         from honeyos.companion.channels import setup_feishu, setup_weixin
 
         setup_channel = setup_weixin if args.platform == "weixin" else setup_feishu
