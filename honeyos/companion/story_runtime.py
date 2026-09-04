@@ -809,6 +809,23 @@ class StoryStore:
             ).fetchone()
         return self._row_to_session(row) if row is not None else None
 
+    def find_session(
+        self, *, story_id: str, actor_source: str, actor_id: str
+    ) -> StorySession | None:
+        """Return the latest conversation for one exact Story/actor pairing."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM story_sessions
+                WHERE story_id = ? AND actor_source = ? AND actor_id = ?
+                ORDER BY updated_at DESC, created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (story_id, actor_source, actor_id),
+            ).fetchone()
+        return self._row_to_session(row) if row is not None else None
+
     def refresh_companion_snapshot(
         self, session_id: str, actor_snapshot: Mapping[str, Any]
     ) -> StorySession:

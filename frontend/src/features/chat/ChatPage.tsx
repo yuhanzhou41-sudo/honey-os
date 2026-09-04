@@ -12,6 +12,7 @@ import { Button } from "../../components/ui/Button";
 import type { PermissionChoice } from "../../runtime/honey-events";
 import { useHoneyStore } from "../../runtime/honey-store";
 import { HoneyRun } from "./HoneyRun";
+import { shouldSubmitChatOnEnter } from "./mobile-interactions";
 
 type ChatAttachment = { id: string; name: string; dataUrl: string };
 
@@ -261,7 +262,7 @@ export function ChatPage() {
         ) : null}
       </div>
 
-      <form className="mx-auto w-full max-w-[56rem] shrink-0 pb-[calc(14px+env(safe-area-inset-bottom))] pt-2" onSubmit={send}>
+      <form className="honey-chat-composer mx-auto w-full max-w-[56rem] shrink-0 pb-[calc(14px+env(safe-area-inset-bottom))] pt-2" onSubmit={send}>
         {attachments.length ? (
           <div className="mb-2 flex gap-2 overflow-x-auto" aria-label="待发送图片">
             {attachments.map((item) => (
@@ -283,7 +284,12 @@ export function ChatPage() {
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              if (shouldSubmitChatOnEnter({
+                key: event.key,
+                shiftKey: event.shiftKey,
+                isComposing: event.nativeEvent.isComposing,
+                coarsePointer: window.matchMedia?.("(pointer: coarse)").matches ?? false,
+              })) {
                 event.preventDefault();
                 event.currentTarget.form?.requestSubmit();
               }

@@ -51,6 +51,10 @@ body {
     var(--background);
 }
 
+.honey-app-shell[data-keyboard-open="true"] .honey-chat-composer {
+  padding-bottom: 8px;
+}
+
 .honey-rich-text {
   min-width: 0;
   overflow-wrap: anywhere;

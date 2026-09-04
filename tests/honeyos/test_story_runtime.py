@@ -51,6 +51,66 @@ def test_story_session_keeps_companion_snapshot_and_reality_separate(tmp_path):
     assert refreshed.actor_snapshot["durable_memories"][0]["kind"] == "commitment"
 
 
+def test_story_session_lookup_reuses_same_story_and_actor(tmp_path):
+    store = StoryStore(tmp_path)
+    original = store.create_session(
+        story_id="last-train",
+        actor_source="card",
+        actor_id="reiko",
+        actor_name="Reikō",
+        actor_snapshot={"origin": "character_card", "name": "Reikō"},
+        agent_session_id="agent-story-reuse",
+        agent_session_key="agent:main:api_server:dm:story-reuse",
+    )
+
+    reopened = store.find_session(
+        story_id="last-train",
+        actor_source="card",
+        actor_id="reiko",
+    )
+
+    assert reopened == original
+
+
+def test_story_session_lookup_isolates_same_story_by_actor(tmp_path):
+    store = StoryStore(tmp_path)
+    first = store.create_session(
+        story_id="last-train",
+        actor_source="card",
+        actor_id="reiko",
+        actor_name="Reikō",
+        actor_snapshot={"origin": "character_card", "name": "Reikō"},
+        agent_session_id="agent-story-reiko",
+        agent_session_key="agent:main:api_server:dm:story-reiko",
+    )
+    second = store.create_session(
+        story_id="last-train",
+        actor_source="card",
+        actor_id="lucien",
+        actor_name="Lucien",
+        actor_snapshot={"origin": "character_card", "name": "Lucien"},
+        agent_session_id="agent-story-lucien",
+        agent_session_key="agent:main:api_server:dm:story-lucien",
+    )
+
+    assert (
+        store.find_session(
+            story_id="last-train",
+            actor_source="card",
+            actor_id="reiko",
+        )
+        == first
+    )
+    assert (
+        store.find_session(
+            story_id="last-train",
+            actor_source="card",
+            actor_id="lucien",
+        )
+        == second
+    )
+
+
 def test_story_turns_are_raw_source_of_truth_and_create_chapter(tmp_path):
     store = StoryStore(tmp_path)
     session = store.create_session(

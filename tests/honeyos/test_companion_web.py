@@ -591,6 +591,86 @@ def test_api_server_registers_companion_web_routes():
 
 
 @pytest.mark.asyncio
+async def test_story_create_reopens_existing_story_for_same_actor(monkeypatch, tmp_path):
+    from honeyos.companion.story_runtime import StoryStore
+
+    monkeypatch.setattr("honeyos.core.constants.get_honeyos_home", lambda: tmp_path)
+    store = StoryStore(tmp_path)
+    existing = store.create_session(
+        story_id="last-train",
+        actor_source="card",
+        actor_id="reiko",
+        actor_name="Reikō",
+        actor_snapshot={"origin": "character_card", "name": "Reikō"},
+        agent_session_id="agent-existing-story",
+        agent_session_key="agent:main:api_server:dm:existing-story",
+    )
+    adapter = _api_adapter()
+    adapter._check_auth = MagicMock(return_value=None)
+    adapter._read_json_body = AsyncMock(
+        return_value=(
+            {
+                "story_id": "last-train",
+                "actor_source": "card",
+                "actor_id": "reiko",
+            },
+            None,
+        )
+    )
+    adapter._ensure_session_db_async = AsyncMock(
+        side_effect=AssertionError("reopening must not create another agent session")
+    )
+
+    response = await adapter._handle_companion_story_create(SimpleNamespace())
+    payload = json.loads(response.text)
+
+    assert response.status == 200
+    assert payload["id"] == existing.id
+
+
+@pytest.mark.asyncio
+async def test_story_create_keeps_same_story_isolated_for_different_actor(
+    monkeypatch, tmp_path
+):
+    from honeyos.companion.story_runtime import StoryStore
+
+    monkeypatch.setattr("honeyos.core.constants.get_honeyos_home", lambda: tmp_path)
+    store = StoryStore(tmp_path)
+    existing = store.create_session(
+        story_id="last-train",
+        actor_source="card",
+        actor_id="reiko",
+        actor_name="Reikō",
+        actor_snapshot={"origin": "character_card", "name": "Reikō"},
+        agent_session_id="agent-existing-reiko",
+        agent_session_key="agent:main:api_server:dm:existing-reiko",
+    )
+    session_db = MagicMock()
+    adapter = _api_adapter()
+    adapter._check_auth = MagicMock(return_value=None)
+    adapter._read_json_body = AsyncMock(
+        return_value=(
+            {
+                "story_id": "last-train",
+                "actor_source": "card",
+                "actor_id": "lin",
+            },
+            None,
+        )
+    )
+    adapter._ensure_session_db_async = AsyncMock(return_value=session_db)
+
+    response = await adapter._handle_companion_story_create(SimpleNamespace())
+    payload = json.loads(response.text)
+
+    assert response.status == 201
+    assert payload["id"] != existing.id
+    assert payload["story_id"] == existing.story_id
+    assert payload["actor_id"] == "lin"
+    session_db.create_session.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_companion_memory_snapshot_returns_live_chapters_and_status(
     monkeypatch, tmp_path
 ):
