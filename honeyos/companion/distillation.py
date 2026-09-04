@@ -670,7 +670,7 @@ class MemoryDistiller:
             for message in job.messages
         }
         active = {item.id: item for item in self.memories.list_active(
-            lane_key=job.lane_key, now=job.now
+            lane_key=job.lane_key, now=job.now, canon_scope="reality"
         )}
         applied = rejected = 0
         for operation in operations:
@@ -778,7 +778,11 @@ class MemoryDistiller:
                 (timestamp.isoformat(), job.run_id),
             )
         try:
-            active_items = self.memories.list_active(lane_key=lane_key, now=timestamp)
+            active_items = self.memories.list_active(
+                lane_key=lane_key,
+                now=timestamp,
+                canon_scope="reality",
+            )
             raw = await self.extractor(job, active_items, dict(main_runtime or {}))
             operations = self._parse_operations(raw, self.settings.max_operations)
             chapter = self._record_chapter(job, raw)
@@ -866,6 +870,37 @@ class MemoryDistiller:
             except sqlite3.Error:
                 pass
             return DistillationResult(run_id=job.run_id, status="failed", error=error)
+
+    def latest_status(self, *, lane_key: str) -> dict[str, Any]:
+        """Return a compact, JSON-safe snapshot for the companion memory UI."""
+
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    """
+                    SELECT id, status, error, created_at, completed_at,
+                           applied_count, rejected_count, chapter_id
+                    FROM distillation_runs
+                    WHERE lane_key = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (lane_key,),
+                ).fetchone()
+        except sqlite3.Error:
+            row = None
+        if row is None:
+            return {"status": "idle"}
+        return {
+            "run_id": str(row["id"]),
+            "status": str(row["status"]),
+            "error": str(row["error"] or ""),
+            "created_at": str(row["created_at"]),
+            "completed_at": str(row["completed_at"] or ""),
+            "applied": int(row["applied_count"] or 0),
+            "rejected": int(row["rejected_count"] or 0),
+            "chapter_id": str(row["chapter_id"] or ""),
+        }
 
 
 def repair_legacy_distillation_failures(home: Path) -> int:

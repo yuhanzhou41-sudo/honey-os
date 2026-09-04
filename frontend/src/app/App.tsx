@@ -9,6 +9,7 @@ import { MemoriesPage } from "../features/memories/MemoriesPage";
 import { OnboardingPage } from "../features/onboarding/OnboardingPage";
 import { RelationshipPage } from "../features/relationship/RelationshipPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { StoryPage, StorySessionPage } from "../features/stories/StoryPage";
 import { AppShell } from "./AppShell";
 
 export function App() {
@@ -22,6 +23,8 @@ export function App() {
             <Route index element={<ChatPage />} />
             <Route path="memories" element={<MemoriesPage />} />
             <Route path="relationship" element={<RelationshipPage />} />
+            <Route path="stories" element={<StoryPage />} />
+            <Route path="stories/:storySessionId" element={<StorySessionPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

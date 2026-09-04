@@ -4,6 +4,7 @@ import json
 
 from honeyos.companion.config import initialize_home
 from honeyos.companion.profile import (
+    companion_story_snapshot,
     capture_explicit_profile_assignment,
     load_companion_profile,
     migrate_confirmed_profile_from_memory,
@@ -120,6 +121,20 @@ def test_existing_confirmed_name_and_nickname_migrate_from_generic_memory(tmp_pa
     assert migrated.companion_name == "小意"
     assert migrated.user_nickname == "小酒"
     assert migrated.relationship == "恋爱伴侣"
+
+
+def test_confirmed_companion_name_only_migrates_and_enters_story_snapshot(tmp_path):
+    initialize_home(tmp_path)
+    (tmp_path / "memories" / "MEMORY.md").write_text(
+        '伴侣的名字是"贱登西"（用户亲自起的，2026-08-20 确认）。用户喊"贱登西"时要答应。\n',
+        encoding="utf-8",
+    )
+
+    snapshot = companion_story_snapshot(tmp_path)
+
+    assert snapshot["name"] == "贱登西"
+    assert any("贱登西" in item["content"] for item in snapshot["durable_memories"])
+    assert load_companion_profile(tmp_path).companion_name == "贱登西"
 
 
 def test_profile_tool_requires_an_exact_quote_from_the_current_user_turn(

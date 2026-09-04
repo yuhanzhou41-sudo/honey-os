@@ -54,6 +54,7 @@ DEFAULT_PROTECTED_PATHS = (
     "honeyos/companion/memory_policy.py",
     "honeyos/companion/persistent_memory.py",
     "honeyos/companion/profile.py",
+    "honeyos/companion/story_runtime.py",
     "honeyos/companion/topic_pool.py",
     "honeyos/companion/topic_delivery.py",
     "honeyos/companion/templates/companion_soul.md",

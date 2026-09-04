@@ -13,6 +13,77 @@ export type MemoryItem = {
   created_at?: string | null;
   expires_at?: string | null;
   updated_at?: string | null;
+  source_type?: "reality" | "story" | string;
+  canon_scope?: "reality" | "fictional_shared" | string;
+  story_session_id?: string | null;
+};
+
+export type StoryTemplate = {
+  id: string;
+  title: string;
+  premise: string;
+  setting: string;
+  opening: string;
+  relationship_setup: string;
+  world_rules: string[];
+  cover_tone: "copper" | "blue" | "green" | string;
+  genre: string;
+  tension: string;
+  source: string;
+  inspiration: string;
+};
+
+export type StoryCharacter = {
+  id: string;
+  name: string;
+  tagline: string;
+  profile: string;
+  speaking_style: string;
+  relationship_hook: string;
+  first_message: string;
+  source: string;
+  background: string;
+  default_story_id: string;
+  example_dialogue: string;
+  inspiration: string;
+};
+
+export type StorySession = {
+  id: string;
+  story_id: string;
+  actor_source: "companion" | "card";
+  actor_id: string;
+  actor_name: string;
+  agent_session_id: string;
+  agent_session_key: string;
+  status: "active" | "chapter_ended";
+  current_scene: string;
+  turn_count: number;
+  actor_snapshot: Record<string, unknown>;
+  ledger: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  story: StoryTemplate;
+  messages: Array<{ id: number; role: "user" | "assistant"; content: string; created_at: string }>;
+  system_prompt?: string;
+};
+
+export type StoryCatalog = {
+  stories: StoryTemplate[];
+  characters: StoryCharacter[];
+  companion: StoryCharacter;
+  sessions: StorySession[];
+};
+
+export type StoryChapter = {
+  id: string;
+  story_session_id: string;
+  title: string;
+  summary: string;
+  relationship_change: string;
+  source_message_ids: number[];
+  saved_to_memory: boolean;
+  created_at: string;
 };
 
 export type RecentChapter = {
@@ -197,3 +268,53 @@ export const updateCompanionAvatar = (dataUrl: string) =>
 
 export const deleteCompanionAvatar = () =>
   requestJson<{ success: true }>("/api/companion/avatar", { method: "DELETE" });
+
+export const fetchStoryCatalog = () =>
+  requestJson<StoryCatalog>("/api/companion/stories");
+
+export const generateStory = (idea: string) =>
+  requestJson<StoryTemplate>("/api/companion/stories/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idea }),
+  });
+
+export const generateStoryCharacter = (idea: string) =>
+  requestJson<StoryCharacter>("/api/companion/stories/characters/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idea }),
+  });
+
+export const importStoryCharacter = (card: Record<string, unknown>) =>
+  requestJson<StoryCharacter>("/api/companion/stories/characters/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ card }),
+  });
+
+export const createStorySession = (options: {
+  story_id: string;
+  actor_source: "companion" | "card";
+  actor_id: string;
+}) => requestJson<StorySession>("/api/companion/stories/sessions", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(options),
+});
+
+export const fetchStorySession = (sessionId: string) =>
+  requestJson<StorySession>(`/api/companion/stories/sessions/${encodeURIComponent(sessionId)}`);
+
+export const finishStoryChapter = (sessionId: string) =>
+  requestJson<{ chapter: StoryChapter }>(`/api/companion/stories/sessions/${encodeURIComponent(sessionId)}/finish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+
+export const saveStoryChapter = (chapterId: string) =>
+  requestJson<{ saved: true; memory_id: string; source_type: string; canon_scope: string }>(
+    `/api/companion/stories/chapters/${encodeURIComponent(chapterId)}/save`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+  );
