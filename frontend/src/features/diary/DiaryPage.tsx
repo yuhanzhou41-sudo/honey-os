@@ -6,7 +6,9 @@ import {
   createCompanionDiaryEntry,
   deleteCompanionDiaryEntry,
   fetchCompanionDiary,
+  permanentlyDeleteCompanionDiaryEntry,
   retryCompanionDiary,
+  restoreCompanionDiaryEntry,
   updateCompanionDiaryEntry,
   type DiaryEntry,
 } from "../../api/companion";
@@ -53,6 +55,7 @@ export function DiaryPage() {
   const [editingId, setEditingId] = useState("");
   const [editingContent, setEditingContent] = useState("");
   const [notice, setNotice] = useState("");
+  const [showTrash, setShowTrash] = useState(false);
 
   const diary = useQuery({
     queryKey: diaryKey,
@@ -60,6 +63,7 @@ export function DiaryPage() {
     refetchInterval: (query) => query.state.data?.automation.status === "pending" ? 3000 : false,
   });
   const entries = diary.data?.entries ?? [];
+  const trash = diary.data?.trash ?? [];
   const groups = useMemo(() => {
     const result = new Map<string, DiaryEntry[]>();
     for (const entry of entries) {
@@ -109,6 +113,22 @@ export function DiaryPage() {
     },
     onError: () => setNotice("重新生成没有启动成功，请稍后再试"),
   });
+  const restoreEntry = useMutation({
+    mutationFn: restoreCompanionDiaryEntry,
+    onSuccess: async () => {
+      setNotice("日记已经恢复");
+      await queryClient.invalidateQueries({ queryKey: diaryKey });
+    },
+    onError: () => setNotice("恢复失败，请再试一次"),
+  });
+  const permanentlyDeleteEntry = useMutation({
+    mutationFn: permanentlyDeleteCompanionDiaryEntry,
+    onSuccess: async () => {
+      setNotice("日记已经永久删除");
+      await queryClient.invalidateQueries({ queryKey: diaryKey });
+    },
+    onError: () => setNotice("永久删除失败，请再试一次"),
+  });
 
   function submitNew(event: FormEvent) {
     event.preventDefault();
@@ -130,9 +150,14 @@ export function DiaryPage() {
     <PageFrame>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <PageHeader title="共同日记" description={`你和${companionName}写下的日常，会按日期一起留在这里。`} />
-        <Button type="button" onClick={() => setComposing(true)} disabled={composing}>
-          <PlusIcon size={17} />写一篇
-        </Button>
+        <div className="flex gap-2">
+          <Button type="button" variant="secondary" onClick={() => setShowTrash((value) => !value)}>
+            <TrashIcon size={17} />回收箱{trash.length ? ` (${trash.length})` : ""}
+          </Button>
+          <Button type="button" onClick={() => setComposing(true)} disabled={composing}>
+            <PlusIcon size={17} />写一篇
+          </Button>
+        </div>
       </div>
 
       {notice ? <p className="mt-4 text-sm text-[var(--foreground-muted)]" role="status">{notice}</p> : null}
@@ -173,6 +198,46 @@ export function DiaryPage() {
               {diary.data.automation.error}
             </p>
           ) : null}
+        </section>
+      ) : null}
+
+      {showTrash ? (
+        <section className="mt-5 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-4" aria-label="日记回收箱">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="font-semibold">回收箱</h2>
+              <p className="mt-1 text-sm text-[var(--foreground-muted)]">
+                删除的用户日记保留 {diary.data?.trash_retention_days ?? 30} 天，期间不会被 AI 查看或用于记忆整理。
+              </p>
+            </div>
+            <Button type="button" size="icon" variant="ghost" aria-label="关闭回收箱" onClick={() => setShowTrash(false)}>
+              <XIcon size={18} />
+            </Button>
+          </div>
+          <div className="mt-4 space-y-3">
+            {trash.map((entry) => (
+              <article key={entry.id} className="rounded-[var(--radius-md)] bg-[var(--surface)] p-4">
+                <p className="text-xs text-[var(--foreground-faint)]">{displayDate(entry.entry_date)} · 删除于 {displayDateTime(entry.deleted_at)}</p>
+                <p className="mt-2 line-clamp-4 whitespace-pre-wrap break-words text-sm leading-6">{entry.content}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button type="button" variant="secondary" disabled={restoreEntry.isPending} onClick={() => restoreEntry.mutate(entry.id)}>
+                    <ArrowClockwiseIcon size={16} />恢复
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={permanentlyDeleteEntry.isPending}
+                    onClick={() => {
+                      if (window.confirm("永久删除后无法恢复，确定继续吗？")) permanentlyDeleteEntry.mutate(entry.id);
+                    }}
+                  >
+                    <TrashIcon size={16} />永久删除
+                  </Button>
+                </div>
+              </article>
+            ))}
+            {!trash.length ? <p className="text-sm text-[var(--foreground-muted)]">回收箱是空的。</p> : null}
+          </div>
         </section>
       ) : null}
 

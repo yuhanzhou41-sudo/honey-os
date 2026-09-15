@@ -59,6 +59,43 @@ def test_user_entry_can_be_updated_and_deleted(tmp_path):
     assert updated.content == "修改后"
     assert store.delete_user_entry(entry.id) is True
     assert store.list_entries() == ()
+    assert store.list_deleted_entries()[0].id == entry.id
+
+
+def test_trashed_diary_can_be_restored_or_permanently_deleted(tmp_path):
+    store = DiaryStore(tmp_path)
+    entry = store.create_entry(
+        author="user", entry_date="2026-09-15", content="差点误删"
+    )
+    assert store.delete_user_entry(entry.id)
+
+    restored = store.restore_user_entry(entry.id)
+    assert restored is not None
+    assert restored.deleted_at is None
+    assert store.list_entries()[0].content == "差点误删"
+
+    assert store.delete_user_entry(entry.id)
+    assert store.permanently_delete_user_entry(entry.id)
+    assert store.list_deleted_entries() == ()
+
+
+def test_expired_trash_is_purged(tmp_path):
+    store = DiaryStore(tmp_path)
+    entry = store.create_entry(
+        author="user", entry_date="2026-08-01", content="过期回收内容"
+    )
+    assert store.delete_user_entry(entry.id)
+    old = datetime(2026, 8, 1, tzinfo=timezone.utc).isoformat()
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE diary_entries SET deleted_at = ? WHERE id = ?", (old, entry.id)
+        )
+
+    removed = store.purge_expired_trash(
+        now=datetime(2026, 9, 15, tzinfo=timezone.utc)
+    )
+    assert removed == 1
+    assert store.list_deleted_entries() == ()
 
 
 def test_diary_permissions_default_private_from_memory_and_enforce_view(tmp_path):

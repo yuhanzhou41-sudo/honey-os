@@ -2182,6 +2182,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._handle_companion_diary_retry,
             ),
             (
+                "POST",
+                "/api/companion/diary/{entry_id}/restore",
+                self._handle_companion_diary_restore,
+            ),
+            (
+                "DELETE",
+                "/api/companion/diary/{entry_id}/permanent",
+                self._handle_companion_diary_permanent_delete,
+            ),
+            (
                 "PATCH",
                 "/api/companion/diary/{entry_id}",
                 self._handle_companion_diary_update,
@@ -2617,7 +2627,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
         store = self._companion_diary_store()
+        from honeyos.companion.diary import DIARY_TRASH_RETENTION_DAYS
+
+        await asyncio.to_thread(store.purge_expired_trash)
         entries = await asyncio.to_thread(store.list_entries, limit=200)
+        trash = await asyncio.to_thread(store.list_deleted_entries, limit=200)
         from honeyos.companion.diary_automation import (
             local_now,
             next_generation_at,
@@ -2634,6 +2648,8 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(
             {
                 "entries": [entry.to_dict() for entry in entries],
+                "trash": [entry.to_dict() for entry in trash],
+                "trash_retention_days": DIARY_TRASH_RETENTION_DAYS,
                 "automation": {
                     **generation,
                     "next_generation_at": next_generation_at(now).isoformat(),
@@ -2763,6 +2779,34 @@ class APIServerAdapter(BasePlatformAdapter):
         entry_id = str(request.match_info.get("entry_id") or "")
         store = self._companion_diary_store()
         deleted = await asyncio.to_thread(store.delete_user_entry, entry_id)
+        if not deleted:
+            return self._companion_diary_error("diary_entry_not_found", status=404)
+        return web.json_response({"success": True, "id": entry_id})
+
+    async def _handle_companion_diary_restore(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        entry_id = str(request.match_info.get("entry_id") or "")
+        store = self._companion_diary_store()
+        entry = await asyncio.to_thread(store.restore_user_entry, entry_id)
+        if entry is None:
+            return self._companion_diary_error("diary_entry_not_found", status=404)
+        return web.json_response({"entry": entry.to_dict()})
+
+    async def _handle_companion_diary_permanent_delete(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        entry_id = str(request.match_info.get("entry_id") or "")
+        store = self._companion_diary_store()
+        deleted = await asyncio.to_thread(
+            store.permanently_delete_user_entry, entry_id
+        )
         if not deleted:
             return self._companion_diary_error("diary_entry_not_found", status=404)
         return web.json_response({"success": True, "id": entry_id})

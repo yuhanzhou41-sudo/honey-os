@@ -24,6 +24,7 @@ export type DiaryEntry = {
   updated_at: string;
   allow_ai_view: boolean;
   allow_memory: boolean;
+  deleted_at: string | null;
 };
 
 export type DiaryAutomationStatus = {
@@ -230,6 +231,8 @@ export const deleteCompanionAvatar = () =>
 export const fetchCompanionDiary = () =>
   requestJson<{
     entries: DiaryEntry[];
+    trash: DiaryEntry[];
+    trash_retention_days: number;
     automation: DiaryAutomationStatus;
     memory_progress: DiaryMemoryProgress;
   }>("/api/companion/diary");
@@ -269,5 +272,17 @@ export const updateCompanionDiaryEntry = (
 export const deleteCompanionDiaryEntry = (entryId: string) =>
   requestJson<{ success: true; id: string }>(
     `/api/companion/diary/${encodeURIComponent(entryId)}`,
+    { method: "DELETE" },
+  );
+
+export const restoreCompanionDiaryEntry = (entryId: string) =>
+  requestJson<{ entry: DiaryEntry }>(
+    `/api/companion/diary/${encodeURIComponent(entryId)}/restore`,
+    { method: "POST" },
+  );
+
+export const permanentlyDeleteCompanionDiaryEntry = (entryId: string) =>
+  requestJson<{ success: true; id: string }>(
+    `/api/companion/diary/${encodeURIComponent(entryId)}/permanent`,
     { method: "DELETE" },
   );

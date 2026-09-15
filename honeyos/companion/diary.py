@@ -19,6 +19,7 @@ from typing import Literal
 DiaryAuthor = Literal["user", "assistant"]
 MAX_DIARY_CONTENT_LENGTH = 20_000
 DIARY_MEMORY_WEIGHT = 3
+DIARY_TRASH_RETENTION_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class DiaryEntry:
     updated_at: str
     allow_ai_view: bool = True
     allow_memory: bool = False
+    deleted_at: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -72,7 +74,8 @@ class DiaryStore:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 allow_ai_view INTEGER NOT NULL DEFAULT 1,
-                allow_memory INTEGER NOT NULL DEFAULT 0
+                allow_memory INTEGER NOT NULL DEFAULT 0,
+                deleted_at TEXT
             )
             """
         )
@@ -88,6 +91,8 @@ class DiaryStore:
             connection.execute(
                 "ALTER TABLE diary_entries ADD COLUMN allow_memory INTEGER NOT NULL DEFAULT 0"
             )
+        if "deleted_at" not in columns:
+            connection.execute("ALTER TABLE diary_entries ADD COLUMN deleted_at TEXT")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS diary_entries_date_idx "
             "ON diary_entries(entry_date DESC, created_at DESC)"
@@ -183,8 +188,9 @@ class DiaryStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT id, author, entry_date, content, created_at, updated_at, "
-                "allow_ai_view, allow_memory "
-                "FROM diary_entries ORDER BY entry_date DESC, created_at DESC LIMIT ?",
+                "allow_ai_view, allow_memory, deleted_at FROM diary_entries "
+                "WHERE deleted_at IS NULL "
+                "ORDER BY entry_date DESC, created_at DESC LIMIT ?",
                 (bounded,),
             ).fetchall()
         return tuple(self._entry(row) for row in rows)
@@ -214,13 +220,15 @@ class DiaryStore:
             updated_at=now,
             allow_ai_view=can_view,
             allow_memory=can_remember,
+            deleted_at=None,
         )
         try:
             with self._connect() as connection:
                 connection.execute(
                     "INSERT INTO diary_entries "
                     "(id, author, entry_date, content, created_at, updated_at, "
-                    "allow_ai_view, allow_memory) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "allow_ai_view, allow_memory, deleted_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
                     (
                         entry.id,
                         entry.author,
@@ -250,7 +258,7 @@ class DiaryStore:
         with self._connect() as connection:
             existing = connection.execute(
                 "SELECT id, content, allow_ai_view, allow_memory FROM diary_entries "
-                "WHERE id = ? AND author = 'user'",
+                "WHERE id = ? AND author = 'user' AND deleted_at IS NULL",
                 (entry_id,),
             ).fetchone()
             if existing is None:
@@ -278,26 +286,84 @@ class DiaryStore:
             cursor = connection.execute(
                 "UPDATE diary_entries SET content = ?, allow_ai_view = ?, "
                 "allow_memory = ?, updated_at = ? "
-                "WHERE id = ? AND author = 'user'",
+                "WHERE id = ? AND author = 'user' AND deleted_at IS NULL",
                 (safe_content, int(can_view), int(can_remember), now, entry_id),
             )
             if cursor.rowcount != 1:
                 return None
             row = connection.execute(
                 "SELECT id, author, entry_date, content, created_at, updated_at, "
-                "allow_ai_view, allow_memory "
-                "FROM diary_entries WHERE id = ?",
+                "allow_ai_view, allow_memory, "
+                "deleted_at FROM diary_entries WHERE id = ?",
                 (entry_id,),
             ).fetchone()
         return self._entry(row)
 
     def delete_user_entry(self, entry_id: str) -> bool:
+        """Move one active user entry to the recoverable trash."""
+
+        deleted_at = datetime.now(timezone.utc).isoformat()
         with self._connect() as connection:
             cursor = connection.execute(
-                "DELETE FROM diary_entries WHERE id = ? AND author = 'user'",
+                "UPDATE diary_entries SET deleted_at = ?, updated_at = ? "
+                "WHERE id = ? AND author = 'user' AND deleted_at IS NULL",
+                (deleted_at, deleted_at, entry_id),
+            )
+        return cursor.rowcount == 1
+
+    def list_deleted_entries(self, *, limit: int = 100) -> tuple[DiaryEntry, ...]:
+        bounded = max(1, min(int(limit), 500))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, author, entry_date, content, created_at, updated_at, "
+                "allow_ai_view, allow_memory, deleted_at FROM diary_entries "
+                "WHERE author = 'user' AND deleted_at IS NOT NULL "
+                "ORDER BY deleted_at DESC LIMIT ?",
+                (bounded,),
+            ).fetchall()
+        return tuple(self._entry(row) for row in rows)
+
+    def restore_user_entry(self, entry_id: str) -> DiaryEntry | None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE diary_entries SET deleted_at = NULL, updated_at = ? "
+                "WHERE id = ? AND author = 'user' AND deleted_at IS NOT NULL",
+                (now, entry_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = connection.execute(
+                "SELECT id, author, entry_date, content, created_at, updated_at, "
+                "allow_ai_view, allow_memory, deleted_at FROM diary_entries "
+                "WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+        return self._entry(row)
+
+    def permanently_delete_user_entry(self, entry_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM diary_entries WHERE id = ? AND author = 'user' "
+                "AND deleted_at IS NOT NULL",
                 (entry_id,),
             )
         return cursor.rowcount == 1
+
+    def purge_expired_trash(
+        self, *, now: datetime | None = None, retention_days: int = DIARY_TRASH_RETENTION_DAYS
+    ) -> int:
+        cutoff = (
+            (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            - timedelta(days=max(1, int(retention_days)))
+        ).isoformat()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM diary_entries WHERE author = 'user' "
+                "AND deleted_at IS NOT NULL AND deleted_at <= ?",
+                (cutoff,),
+            )
+        return max(0, int(cursor.rowcount or 0))
 
     def pending_memory_buckets(self) -> tuple[DiaryMemoryBucket, ...]:
         """Return one pending, permission-filtered evidence bucket per local date."""
@@ -306,13 +372,15 @@ class DiaryStore:
         with self._connect() as connection:
             dates = connection.execute(
                 "SELECT DISTINCT entry_date FROM diary_entries "
-                "WHERE author = 'user' AND allow_memory = 1 ORDER BY entry_date"
+                "WHERE author = 'user' AND allow_memory = 1 "
+                "AND deleted_at IS NULL ORDER BY entry_date"
             ).fetchall()
             for date_row in dates:
                 entry_date = str(date_row["entry_date"])
                 rows = connection.execute(
                     "SELECT id, content, updated_at FROM diary_entries "
-                    "WHERE author = 'user' AND allow_memory = 1 AND entry_date = ? "
+                    "WHERE author = 'user' AND allow_memory = 1 "
+                    "AND deleted_at IS NULL AND entry_date = ? "
                     "ORDER BY created_at, id",
                     (entry_date,),
                 ).fetchall()
@@ -396,7 +464,7 @@ class DiaryStore:
                     "SELECT id, author, entry_date, content, created_at, updated_at, "
                     "allow_ai_view, allow_memory "
                     "FROM diary_entries WHERE author = 'user' "
-                    "AND allow_ai_view = 1 "
+                    "AND allow_ai_view = 1 AND deleted_at IS NULL "
                     "AND updated_at > ? AND updated_at <= ? "
                     "ORDER BY updated_at, created_at",
                     (previous_cutoff, claimed_at),
@@ -405,7 +473,8 @@ class DiaryStore:
                 rows = connection.execute(
                     "SELECT id, author, entry_date, content, created_at, updated_at, "
                     "allow_ai_view, allow_memory FROM diary_entries "
-                    "WHERE author = 'user' AND allow_ai_view = 1 AND updated_at <= ? "
+                    "WHERE author = 'user' AND allow_ai_view = 1 "
+                    "AND deleted_at IS NULL AND updated_at <= ? "
                     "ORDER BY updated_at, created_at",
                     (claimed_at,),
                 ).fetchall()

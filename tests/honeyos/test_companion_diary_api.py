@@ -40,6 +40,8 @@ def test_api_server_registers_diary_routes():
     assert ("GET", "/api/companion/diary") in routes
     assert ("POST", "/api/companion/diary") in routes
     assert ("POST", "/api/companion/diary/retry") in routes
+    assert ("POST", "/api/companion/diary/{entry_id}/restore") in routes
+    assert ("DELETE", "/api/companion/diary/{entry_id}/permanent") in routes
     assert ("PATCH", "/api/companion/diary/{entry_id}") in routes
     assert ("DELETE", "/api/companion/diary/{entry_id}") in routes
 
@@ -88,6 +90,12 @@ async def test_companion_diary_user_crud(monkeypatch, tmp_path):
 
     empty_response = await adapter._handle_companion_diary(_request(adapter))
     assert json.loads(empty_response.text)["entries"] == []
+    assert json.loads(empty_response.text)["trash"][0]["id"] == created["id"]
+
+    restore_response = await adapter._handle_companion_diary_restore(
+        _request(adapter, entry_id=created["id"])
+    )
+    assert json.loads(restore_response.text)["entry"]["deleted_at"] is None
 
 
 @pytest.mark.asyncio
