@@ -71,7 +71,8 @@ def companion_settings(home: Path | str) -> dict[str, Any]:
     if provider in PROVIDER_OPTIONS:
         key_env = PROVIDER_OPTIONS[provider].key_env
     display_provider = "custom" if provider == "honeyos-model" else provider
-    model_key_configured = bool(
+    # OpenAI Codex uses OAuth credentials stored separately, not an API key.
+    model_key_configured = provider == "openai-codex" or bool(
         env.get(key_env)
         or model_cfg.get("api_key")
         or provider_cfg.get("api_key")
