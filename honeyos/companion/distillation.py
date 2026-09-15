@@ -63,6 +63,7 @@ class DistillationJob:
     now: datetime
     max_operations: int
     companion_profile: Mapping[str, str]
+    diary_buckets: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -227,14 +228,17 @@ async def extract_with_auxiliary_model(
         {"id": item.id, "kind": item.kind, "content": item.content}
         for item in active_items
     ]
-    transcript = [
-        {
+    transcript = []
+    for message in job.messages:
+        item = {
             "message_id": int(message["_row_id"]),
             "role": message["role"],
             "content": message["content"],
         }
-        for message in job.messages
-    ]
+        if message.get("evidence_type") == "user_diary":
+            item["source"] = "user_diary"
+            item["entry_date"] = str(message.get("entry_date") or "")
+        transcript.append(item)
     try:
         from honeyos.core.time import get_timezone
 
@@ -280,6 +284,11 @@ Never use system-role labels in operation content either.
 Allowed kinds: open_loop, temporary_state, commitment, episode.
 Allowed actions: record, resolve, update. Never output forget.
 Every operation must cite one or more evidence_message_ids from the supplied transcript.
+Entries marked source=user_diary are user-authored diary evidence that the user
+explicitly allowed HoneyOS to remember. Treat them as user_stated evidence, but
+store only clearly real, durable, useful information. Do not turn dreams,
+fantasy, poetry, fiction, speculation, or momentary emotional expression into
+facts unless the entry explicitly identifies a separate real-world fact.
 Evidence must be user_stated for temporary_state, assistant_committed for commitment,
 and user_stated or conversation_event for open_loop/episode. Never infer love,
 dependency, diagnosis, identity, relationship status, personality, or boundaries.
@@ -421,8 +430,6 @@ class MemoryDistiller:
         if not self.settings.enabled or reason not in {"periodic", "new"}:
             return None
         conversational = self._conversational_messages(messages)
-        if not conversational:
-            return None
         with self._connect() as connection:
             day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             daily_runs = connection.execute(
@@ -443,19 +450,40 @@ class MemoryDistiller:
             ).fetchone()
             cursor = int(state[0]) if state is not None else 0
             pending = tuple(message for message in conversational if message["_row_id"] > cursor)
+            from honeyos.companion.diary import DiaryStore
+
+            diary_buckets = DiaryStore(self.home).pending_memory_buckets()
             minimum = (
                 self.settings.trigger_messages
                 if reason == "periodic"
                 else self.settings.min_tail_messages
             )
-            if len(pending) < minimum:
+            evidence_units = len(pending) + sum(
+                bucket.weight for bucket in diary_buckets
+            )
+            if evidence_units < minimum:
                 return None
             batch_size = (
                 self.settings.trigger_messages
                 if reason == "periodic"
                 else self.settings.max_batch_messages
             )
-            batch = pending[:batch_size]
+            selected_diary = diary_buckets[:batch_size]
+            remaining = max(0, batch_size - len(selected_diary))
+            chat_batch = pending[:remaining]
+            diary_messages = tuple(
+                {
+                    "_row_id": bucket.evidence_id,
+                    "role": "user",
+                    "content": bucket.content,
+                    "evidence_type": "user_diary",
+                    "entry_date": bucket.entry_date,
+                }
+                for bucket in selected_diary
+            )
+            batch = chat_batch + diary_messages
+            if not batch:
+                return None
             source_hash = self._source_hash(session_id, batch)
             existing = connection.execute(
                 "SELECT * FROM distillation_runs WHERE source_hash = ?",
@@ -492,8 +520,8 @@ class MemoryDistiller:
                         lane_key,
                         session_id,
                         reason,
-                        batch[0]["_row_id"],
-                        batch[-1]["_row_id"],
+                        chat_batch[0]["_row_id"] if chat_batch else cursor,
+                        chat_batch[-1]["_row_id"] if chat_batch else cursor,
                         source_hash,
                         now.isoformat(),
                     ),
@@ -505,8 +533,8 @@ class MemoryDistiller:
             session_id=session_id,
             reason=reason,
             messages=batch,
-            source_start_id=batch[0]["_row_id"],
-            source_end_id=batch[-1]["_row_id"],
+            source_start_id=chat_batch[0]["_row_id"] if chat_batch else cursor,
+            source_end_id=chat_batch[-1]["_row_id"] if chat_batch else cursor,
             source_hash=source_hash,
             now=now,
             max_operations=self.settings.max_operations,
@@ -518,6 +546,7 @@ class MemoryDistiller:
                 "relationship": profile.relationship,
                 "boundaries": profile.boundaries,
             },
+            diary_buckets=selected_diary,
         )
 
     @staticmethod
@@ -838,6 +867,12 @@ class MemoryDistiller:
                         chapter.id,
                         job.run_id,
                     ),
+                )
+            if job.diary_buckets:
+                from honeyos.companion.diary import DiaryStore
+
+                DiaryStore(self.home).mark_memory_buckets_processed(
+                    job.diary_buckets
                 )
             return DistillationResult(
                 run_id=job.run_id,

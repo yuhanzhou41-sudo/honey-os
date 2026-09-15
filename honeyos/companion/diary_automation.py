@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -14,6 +15,7 @@ from honeyos.companion.diary import DiaryEntry, DiaryStore
 DIARY_GENERATION_TIME = time(23, 30)
 DIARY_MAX_OUTPUT_TOKENS = 3000
 DIARY_RETRY_DELAY_SECONDS = 15 * 60
+logger = logging.getLogger(__name__)
 
 
 def local_now() -> datetime:
@@ -102,7 +104,7 @@ async def run_diary_clock(
     try:
         await generate(startup_target_date(now).isoformat())
     except Exception:
-        pass
+        logger.exception("Companion diary catch-up generation failed")
     while True:
         now = now_fn()
         delay = max(0.0, (next_generation_at(now) - now).total_seconds())
@@ -110,4 +112,5 @@ async def run_diary_clock(
         try:
             await generate(now_fn().date().isoformat())
         except Exception:
+            logger.exception("Scheduled companion diary generation failed")
             await asyncio.sleep(DIARY_RETRY_DELAY_SECONDS)

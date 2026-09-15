@@ -22,6 +22,26 @@ export type DiaryEntry = {
   content: string;
   created_at: string;
   updated_at: string;
+  allow_ai_view: boolean;
+  allow_memory: boolean;
+};
+
+export type DiaryAutomationStatus = {
+  entry_date: string;
+  status: "idle" | "pending" | "completed" | "failed";
+  started_at: string | null;
+  completed_at: string | null;
+  assistant_entry_id: string | null;
+  error: string;
+  user_read_at: string | null;
+  user_read_count: number;
+  next_generation_at: string;
+};
+
+export type DiaryMemoryProgress = {
+  diary_dates: number;
+  diary_units: number;
+  trigger_units: number;
 };
 
 export type RecentChapter = {
@@ -208,22 +228,41 @@ export const deleteCompanionAvatar = () =>
   requestJson<{ success: true }>("/api/companion/avatar", { method: "DELETE" });
 
 export const fetchCompanionDiary = () =>
-  requestJson<{ entries: DiaryEntry[] }>("/api/companion/diary");
+  requestJson<{
+    entries: DiaryEntry[];
+    automation: DiaryAutomationStatus;
+    memory_progress: DiaryMemoryProgress;
+  }>("/api/companion/diary");
 
-export const createCompanionDiaryEntry = (entry: { entry_date: string; content: string }) =>
+export const retryCompanionDiary = (entryDate: string) =>
+  requestJson<{ accepted: true; entry_date: string }>("/api/companion/diary/retry", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entry_date: entryDate }),
+  });
+
+export const createCompanionDiaryEntry = (entry: {
+  entry_date: string;
+  content: string;
+  allow_ai_view: boolean;
+  allow_memory: boolean;
+}) =>
   requestJson<{ entry: DiaryEntry }>("/api/companion/diary", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(entry),
   });
 
-export const updateCompanionDiaryEntry = (entryId: string, content: string) =>
+export const updateCompanionDiaryEntry = (
+  entryId: string,
+  changes: Partial<Pick<DiaryEntry, "content" | "allow_ai_view" | "allow_memory">>,
+) =>
   requestJson<{ entry: DiaryEntry }>(
     `/api/companion/diary/${encodeURIComponent(entryId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify(changes),
     },
   );
 

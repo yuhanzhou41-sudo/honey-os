@@ -2177,6 +2177,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._handle_companion_diary_create,
             ),
             (
+                "POST",
+                "/api/companion/diary/retry",
+                self._handle_companion_diary_retry,
+            ),
+            (
                 "PATCH",
                 "/api/companion/diary/{entry_id}",
                 self._handle_companion_diary_update,
@@ -2613,7 +2618,74 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
         store = self._companion_diary_store()
         entries = await asyncio.to_thread(store.list_entries, limit=200)
-        return web.json_response({"entries": [entry.to_dict() for entry in entries]})
+        from honeyos.companion.diary_automation import (
+            local_now,
+            next_generation_at,
+            startup_target_date,
+        )
+        from honeyos.companion.distillation import load_distillation_settings
+        from honeyos.core.constants import get_honeyos_home
+
+        now = local_now()
+        target_date = startup_target_date(now).isoformat()
+        generation = await asyncio.to_thread(store.generation_status, target_date)
+        memory_buckets = await asyncio.to_thread(store.pending_memory_buckets)
+        settings = load_distillation_settings(get_honeyos_home())
+        return web.json_response(
+            {
+                "entries": [entry.to_dict() for entry in entries],
+                "automation": {
+                    **generation,
+                    "next_generation_at": next_generation_at(now).isoformat(),
+                },
+                "memory_progress": {
+                    "diary_dates": len(memory_buckets),
+                    "diary_units": sum(bucket.weight for bucket in memory_buckets),
+                    "trigger_units": settings.trigger_messages,
+                },
+            }
+        )
+
+    async def _handle_companion_diary_retry(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        payload = await self._companion_diary_json(request)
+        if payload is None:
+            return self._companion_diary_error("invalid_json")
+        from honeyos.companion.diary_automation import local_now, startup_target_date
+
+        target_date = payload.get("entry_date")
+        if target_date is None:
+            target_date = startup_target_date(local_now()).isoformat()
+        if not isinstance(target_date, str):
+            return self._companion_diary_error("invalid_diary_date")
+        store = self._companion_diary_store()
+        try:
+            status = await asyncio.to_thread(store.generation_status, target_date)
+        except ValueError as exc:
+            return self._companion_diary_error(str(exc))
+        if status["status"] in {"pending", "completed"}:
+            return self._companion_diary_error(
+                "diary_generation_not_retryable", status=409
+            )
+
+        async def run_retry() -> None:
+            try:
+                await self._generate_scheduled_companion_diary(target_date)
+            except Exception:
+                logger.exception(
+                    "Manual companion diary retry failed for %s", target_date
+                )
+
+        task = asyncio.create_task(run_retry())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return web.json_response(
+            {"accepted": True, "entry_date": target_date}, status=202
+        )
 
     async def _handle_companion_diary_create(
         self, request: "web.Request"
@@ -2628,6 +2700,10 @@ class APIServerAdapter(BasePlatformAdapter):
         content = payload.get("content")
         if not isinstance(entry_date, str) or not isinstance(content, str):
             return self._companion_diary_error("invalid_diary_entry")
+        allow_ai_view = payload.get("allow_ai_view", True)
+        allow_memory = payload.get("allow_memory", False)
+        if not isinstance(allow_ai_view, bool) or not isinstance(allow_memory, bool):
+            return self._companion_diary_error("invalid_diary_permissions")
         store = self._companion_diary_store()
         try:
             entry = await asyncio.to_thread(
@@ -2635,6 +2711,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 author="user",
                 entry_date=entry_date,
                 content=content,
+                allow_ai_view=allow_ai_view,
+                allow_memory=allow_memory,
             )
         except ValueError as exc:
             return self._companion_diary_error(str(exc))
@@ -2650,7 +2728,15 @@ class APIServerAdapter(BasePlatformAdapter):
         if payload is None:
             return self._companion_diary_error("invalid_json")
         content = payload.get("content")
-        if not isinstance(content, str):
+        allow_ai_view = payload.get("allow_ai_view")
+        allow_memory = payload.get("allow_memory")
+        if content is not None and not isinstance(content, str):
+            return self._companion_diary_error("invalid_diary_entry")
+        if allow_ai_view is not None and not isinstance(allow_ai_view, bool):
+            return self._companion_diary_error("invalid_diary_permissions")
+        if allow_memory is not None and not isinstance(allow_memory, bool):
+            return self._companion_diary_error("invalid_diary_permissions")
+        if content is None and allow_ai_view is None and allow_memory is None:
             return self._companion_diary_error("invalid_diary_entry")
         entry_id = str(request.match_info.get("entry_id") or "")
         store = self._companion_diary_store()
@@ -2659,6 +2745,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 store.update_user_entry,
                 entry_id,
                 content=content,
+                allow_ai_view=allow_ai_view,
+                allow_memory=allow_memory,
             )
         except ValueError as exc:
             return self._companion_diary_error(str(exc))
@@ -8953,13 +9041,20 @@ class APIServerAdapter(BasePlatformAdapter):
             "relationship": profile.relationship,
             "boundaries": profile.boundaries,
         }
-        return await generate_diary_entry(
+        generated = await generate_diary_entry(
             home=get_honeyos_home(),
             target_date=target_date,
             companion_profile=profile_payload,
             transcript=transcript,
             main_runtime=main_runtime,
         )
+        if generated is not None:
+            self._schedule_companion_memory_distillation(
+                gateway_session_key=lane_key,
+                session_id=entry.session_id,
+                main_runtime=main_runtime,
+            )
+        return generated
 
     async def _run_companion_diary_clock(self) -> None:
         from honeyos.companion.diary_automation import run_diary_clock

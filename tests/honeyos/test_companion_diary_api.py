@@ -39,6 +39,7 @@ def test_api_server_registers_diary_routes():
     assert ("GET", "/diary") in routes
     assert ("GET", "/api/companion/diary") in routes
     assert ("POST", "/api/companion/diary") in routes
+    assert ("POST", "/api/companion/diary/retry") in routes
     assert ("PATCH", "/api/companion/diary/{entry_id}") in routes
     assert ("DELETE", "/api/companion/diary/{entry_id}") in routes
 
@@ -57,6 +58,8 @@ async def test_companion_diary_user_crud(monkeypatch, tmp_path):
     created = json.loads(create_response.text)["entry"]
     assert create_response.status == 201
     assert created["author"] == "user"
+    assert created["allow_ai_view"] is True
+    assert created["allow_memory"] is False
 
     list_response = await adapter._handle_companion_diary(_request(adapter))
     assert json.loads(list_response.text)["entries"] == [created]
@@ -67,13 +70,24 @@ async def test_companion_diary_user_crud(monkeypatch, tmp_path):
     updated = json.loads(update_response.text)["entry"]
     assert updated["content"] == "修改后的日记。"
 
+    permission_response = await adapter._handle_companion_diary_update(
+        _request(
+            adapter,
+            payload={"allow_memory": True},
+            entry_id=created["id"],
+        )
+    )
+    permitted = json.loads(permission_response.text)["entry"]
+    assert permitted["allow_ai_view"] is True
+    assert permitted["allow_memory"] is True
+
     delete_response = await adapter._handle_companion_diary_delete(
         _request(adapter, entry_id=created["id"])
     )
     assert json.loads(delete_response.text) == {"success": True, "id": created["id"]}
 
     empty_response = await adapter._handle_companion_diary(_request(adapter))
-    assert json.loads(empty_response.text) == {"entries": []}
+    assert json.loads(empty_response.text)["entries"] == []
 
 
 @pytest.mark.asyncio

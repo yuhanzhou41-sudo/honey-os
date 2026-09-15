@@ -1,4 +1,4 @@
-import { BookOpenTextIcon, CheckIcon, PencilSimpleIcon, PlusIcon, TrashIcon, XIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, BookOpenTextIcon, CheckIcon, PencilSimpleIcon, PlusIcon, TrashIcon, XIcon } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState, type FormEvent } from "react";
 
@@ -6,6 +6,7 @@ import {
   createCompanionDiaryEntry,
   deleteCompanionDiaryEntry,
   fetchCompanionDiary,
+  retryCompanionDiary,
   updateCompanionDiaryEntry,
   type DiaryEntry,
 } from "../../api/companion";
@@ -35,17 +36,29 @@ function displayDate(value: string): string {
   }).format(date);
 }
 
+function displayDateTime(value: string | null | undefined): string {
+  if (!value) return "尚无记录";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("zh-CN");
+}
+
 export function DiaryPage() {
   const companionName = useHoneyStore((state) => state.name);
   const queryClient = useQueryClient();
   const [composing, setComposing] = useState(false);
   const [entryDate, setEntryDate] = useState(localDate);
   const [draft, setDraft] = useState("");
+  const [allowAiView, setAllowAiView] = useState(true);
+  const [allowMemory, setAllowMemory] = useState(false);
   const [editingId, setEditingId] = useState("");
   const [editingContent, setEditingContent] = useState("");
   const [notice, setNotice] = useState("");
 
-  const diary = useQuery({ queryKey: diaryKey, queryFn: fetchCompanionDiary });
+  const diary = useQuery({
+    queryKey: diaryKey,
+    queryFn: fetchCompanionDiary,
+    refetchInterval: (query) => query.state.data?.automation.status === "pending" ? 3000 : false,
+  });
   const entries = diary.data?.entries ?? [];
   const groups = useMemo(() => {
     const result = new Map<string, DiaryEntry[]>();
@@ -68,7 +81,10 @@ export function DiaryPage() {
     onError: () => setNotice("刚才没有保存成功，请再试一次"),
   });
   const updateEntry = useMutation({
-    mutationFn: ({ id, content }: { id: string; content: string }) => updateCompanionDiaryEntry(id, content),
+    mutationFn: ({ id, changes }: {
+      id: string;
+      changes: Partial<Pick<DiaryEntry, "content" | "allow_ai_view" | "allow_memory">>;
+    }) => updateCompanionDiaryEntry(id, changes),
     onSuccess: async () => {
       setEditingId("");
       setEditingContent("");
@@ -85,13 +101,26 @@ export function DiaryPage() {
     },
     onError: () => setNotice("刚才没有删除成功，请再试一次"),
   });
+  const retryGeneration = useMutation({
+    mutationFn: retryCompanionDiary,
+    onSuccess: async () => {
+      setNotice("已经安排重新生成，页面会自动更新");
+      await queryClient.invalidateQueries({ queryKey: diaryKey });
+    },
+    onError: () => setNotice("重新生成没有启动成功，请稍后再试"),
+  });
 
   function submitNew(event: FormEvent) {
     event.preventDefault();
     const content = draft.trim();
     if (!content) return;
     setNotice("");
-    createEntry.mutate({ entry_date: entryDate, content });
+    createEntry.mutate({
+      entry_date: entryDate,
+      content,
+      allow_ai_view: allowAiView || allowMemory,
+      allow_memory: allowMemory,
+    });
   }
 
   if (diary.isLoading) return <PageFrame><LoadingState /></PageFrame>;
@@ -108,6 +137,45 @@ export function DiaryPage() {
 
       {notice ? <p className="mt-4 text-sm text-[var(--foreground-muted)]" role="status">{notice}</p> : null}
 
+      {diary.data?.automation ? (
+        <section className="mt-5 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-4" aria-label="晚间日记运行状态">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">晚间日记</h2>
+              <p className="mt-1 text-sm text-[var(--foreground-muted)]">
+                {diary.data.automation.status === "completed" ? "已经生成" :
+                  diary.data.automation.status === "pending" ? "正在生成" :
+                    diary.data.automation.status === "failed" ? "生成失败" : "等待生成"}
+                {` · 目标日期 ${diary.data.automation.entry_date}`}
+              </p>
+            </div>
+            {diary.data.automation.status === "failed" ? (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={retryGeneration.isPending}
+                onClick={() => retryGeneration.mutate(diary.data!.automation.entry_date)}
+              >
+                <ArrowClockwiseIcon size={16} />重新生成
+              </Button>
+            ) : null}
+          </div>
+          <div className="mt-3 grid gap-2 text-xs text-[var(--foreground-muted)] sm:grid-cols-3">
+            <span>开始：{displayDateTime(diary.data.automation.started_at)}</span>
+            <span>完成：{displayDateTime(diary.data.automation.completed_at)}</span>
+            <span>读取用户日记：{diary.data.automation.user_read_count} 篇</span>
+            <span>下次计划：{displayDateTime(diary.data.automation.next_generation_at)}</span>
+            <span>待整理日记：{diary.data.memory_progress.diary_dates} 天，{diary.data.memory_progress.diary_units} 单位</span>
+            <span>共享触发阈值：{diary.data.memory_progress.trigger_units} 单位</span>
+          </div>
+          {diary.data.automation.error ? (
+            <p className="mt-3 rounded-[var(--radius-md)] bg-[var(--surface)] p-3 text-xs text-[var(--danger,#b42318)]" role="alert">
+              {diary.data.automation.error}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       {composing ? (
         <form className="mt-6 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-5" onSubmit={submitNew}>
           <div className="flex items-center justify-between gap-3">
@@ -118,6 +186,30 @@ export function DiaryPage() {
           </div>
           <input id="diary-date" type="date" value={entryDate} onChange={(event) => setEntryDate(event.target.value)} className="mt-3 min-h-11 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 text-sm outline-none focus:ring-2 focus:ring-[var(--focus)]" />
           <textarea autoFocus value={draft} maxLength={20_000} rows={7} onChange={(event) => setDraft(event.target.value)} placeholder="今天发生了什么？" className="mt-3 w-full resize-y rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] p-4 text-[15px] leading-7 outline-none placeholder:text-[var(--foreground-faint)] focus:ring-2 focus:ring-[var(--focus)]" />
+          <div className="mt-3 grid gap-2 text-sm text-[var(--foreground-muted)] sm:grid-cols-2">
+            <label className="flex items-start gap-2 rounded-[var(--radius-md)] bg-[var(--surface)] p-3">
+              <input
+                type="checkbox"
+                checked={allowAiView}
+                onChange={(event) => {
+                  setAllowAiView(event.target.checked);
+                  if (!event.target.checked) setAllowMemory(false);
+                }}
+              />
+              <span><strong className="text-[var(--foreground)]">允许 AI 查看</strong><br />可用于今晚的共同日记。</span>
+            </label>
+            <label className="flex items-start gap-2 rounded-[var(--radius-md)] bg-[var(--surface)] p-3">
+              <input
+                type="checkbox"
+                checked={allowMemory}
+                onChange={(event) => {
+                  setAllowMemory(event.target.checked);
+                  if (event.target.checked) setAllowAiView(true);
+                }}
+              />
+              <span><strong className="text-[var(--foreground)]">允许记住</strong><br />作为长期记忆整理的事实证据。</span>
+            </label>
+          </div>
           <div className="mt-3 flex justify-end">
             <Button type="submit" disabled={!draft.trim() || createEntry.isPending}><CheckIcon size={17} />保存</Button>
           </div>
@@ -147,7 +239,7 @@ export function DiaryPage() {
                       <div className="mt-auto flex flex-wrap gap-2 pt-5">
                         {editing ? (
                           <>
-                            <Button type="button" variant="secondary" disabled={!editingContent.trim() || updateEntry.isPending} onClick={() => updateEntry.mutate({ id: entry.id, content: editingContent.trim() })}><CheckIcon size={16} />保存</Button>
+                            <Button type="button" variant="secondary" disabled={!editingContent.trim() || updateEntry.isPending} onClick={() => updateEntry.mutate({ id: entry.id, changes: { content: editingContent.trim() } })}><CheckIcon size={16} />保存</Button>
                             <Button type="button" variant="ghost" onClick={() => { setEditingId(""); setEditingContent(""); }}><XIcon size={16} />取消</Button>
                           </>
                         ) : (
@@ -156,6 +248,36 @@ export function DiaryPage() {
                             <Button type="button" variant="ghost" disabled={deleteEntry.isPending} onClick={() => { if (window.confirm("确定删除这篇日记吗？")) deleteEntry.mutate(entry.id); }}><TrashIcon size={16} />删除</Button>
                           </>
                         )}
+                        <label className="ml-auto flex items-center gap-2 text-xs text-[var(--foreground-muted)]">
+                          <input
+                            type="checkbox"
+                            checked={entry.allow_ai_view}
+                            disabled={updateEntry.isPending}
+                            onChange={(event) => updateEntry.mutate({
+                              id: entry.id,
+                              changes: {
+                                allow_ai_view: event.target.checked,
+                                ...(event.target.checked ? {} : { allow_memory: false }),
+                              },
+                            })}
+                          />
+                          AI 可查看
+                        </label>
+                        <label className="flex items-center gap-2 text-xs text-[var(--foreground-muted)]">
+                          <input
+                            type="checkbox"
+                            checked={entry.allow_memory}
+                            disabled={updateEntry.isPending}
+                            onChange={(event) => updateEntry.mutate({
+                              id: entry.id,
+                              changes: {
+                                allow_memory: event.target.checked,
+                                ...(event.target.checked ? { allow_ai_view: true } : {}),
+                              },
+                            })}
+                          />
+                          允许记住
+                        </label>
                       </div>
                     ) : null}
                   </article>

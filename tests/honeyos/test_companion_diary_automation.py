@@ -11,6 +11,7 @@ from honeyos.companion.diary_automation import (
     next_generation_at,
     startup_target_date,
 )
+from honeyos.companion.distillation import DistillationSettings, MemoryDistiller
 
 
 def test_clock_uses_2330_and_catches_up_yesterday_before_boundary():
@@ -57,3 +58,36 @@ async def test_generation_failure_releases_lease_for_retry(tmp_path):
     with pytest.raises(RuntimeError):
         await generate_diary_entry(home=tmp_path, target_date="2026-09-15", companion_profile={}, transcript=[], main_runtime={}, call_llm=fail)
     assert DiaryStore(tmp_path).begin_assistant_generation("2026-09-15") is True
+
+
+def test_diary_date_adds_three_units_to_existing_memory_trigger(tmp_path):
+    DiaryStore(tmp_path).create_entry(
+        author="user",
+        entry_date="2026-09-15",
+        content="允许进入长期记忆的现实记录",
+        allow_memory=True,
+    )
+    distiller = MemoryDistiller(
+        tmp_path,
+        settings=DistillationSettings(trigger_messages=5),
+    )
+    messages = [
+        {"_row_id": 1, "role": "user", "content": "第一条聊天"},
+        {"_row_id": 2, "role": "assistant", "content": "第二条聊天"},
+    ]
+
+    job = distiller._prepare(
+        lane_key="agent:main:api_server:dm:local-owner",
+        session_id="session-1",
+        messages=messages,
+        reason="periodic",
+        now=datetime.now(timezone.utc),
+    )
+
+    assert job is not None
+    assert len(job.diary_buckets) == 1
+    diary_message = next(
+        message for message in job.messages if message.get("evidence_type") == "user_diary"
+    )
+    assert diary_message["entry_date"] == "2026-09-15"
+    assert diary_message["_row_id"] < 0

@@ -61,6 +61,82 @@ def test_user_entry_can_be_updated_and_deleted(tmp_path):
     assert store.list_entries() == ()
 
 
+def test_diary_permissions_default_private_from_memory_and_enforce_view(tmp_path):
+    store = DiaryStore(tmp_path)
+    default = store.create_entry(
+        author="user", entry_date="2026-09-15", content="默认权限"
+    )
+    remembered = store.create_entry(
+        author="user",
+        entry_date="2026-09-15",
+        content="希望记住",
+        allow_ai_view=False,
+        allow_memory=True,
+    )
+
+    assert default.allow_ai_view is True
+    assert default.allow_memory is False
+    assert remembered.allow_ai_view is True
+    assert remembered.allow_memory is True
+
+    hidden = store.update_user_entry(
+        remembered.id, allow_ai_view=False
+    )
+    assert hidden is not None
+    assert hidden.allow_ai_view is False
+    assert hidden.allow_memory is False
+
+
+def test_daily_diary_claim_excludes_entries_without_view_permission(tmp_path):
+    store = DiaryStore(tmp_path)
+    store.create_entry(
+        author="user",
+        entry_date="2026-09-15",
+        content="不要给 AI 看",
+        allow_ai_view=False,
+    )
+    store.create_entry(
+        author="user",
+        entry_date="2026-09-15",
+        content="可以给 AI 看",
+        allow_ai_view=True,
+    )
+
+    claimed = store.claim_user_entries_for_day("2026-09-15")
+
+    assert [entry.content for entry in claimed] == ["可以给 AI 看"]
+
+
+def test_memory_entries_form_one_versioned_bucket_per_date(tmp_path):
+    store = DiaryStore(tmp_path)
+    first = store.create_entry(
+        author="user",
+        entry_date="2026-09-15",
+        content="现实事件一",
+        allow_memory=True,
+    )
+    store.create_entry(
+        author="user",
+        entry_date="2026-09-15",
+        content="现实事件二",
+        allow_memory=True,
+    )
+
+    pending = store.pending_memory_buckets()
+    assert len(pending) == 1
+    assert pending[0].weight == 3
+    assert "现实事件一" in pending[0].content
+    assert "现实事件二" in pending[0].content
+
+    store.mark_memory_buckets_processed(pending)
+    assert store.pending_memory_buckets() == ()
+
+    store.update_user_entry(first.id, content="现实事件一已更新")
+    changed = store.pending_memory_buckets()
+    assert len(changed) == 1
+    assert changed[0].version != pending[0].version
+
+
 @pytest.mark.parametrize("value", ["", "   ", "x" * 20_001])
 def test_diary_content_is_validated(tmp_path, value):
     with pytest.raises(ValueError):
@@ -128,3 +204,22 @@ def test_existing_assistant_entry_permanently_blocks_generation(tmp_path):
     store.finish_assistant_generation("2026-09-15", entry.id)
 
     assert store.begin_assistant_generation("2026-09-15") is False
+
+
+def test_generation_status_records_completion_and_user_read_count(tmp_path):
+    store = DiaryStore(tmp_path)
+    store.create_entry(
+        author="user", entry_date="2026-09-15", content="给今晚看的日记"
+    )
+    assert store.begin_assistant_generation("2026-09-15")
+    assert len(store.claim_user_entries_for_day("2026-09-15")) == 1
+    assistant = store.create_entry(
+        author="assistant", entry_date="2026-09-15", content="今晚写下的内容"
+    )
+    store.finish_assistant_generation("2026-09-15", assistant.id)
+
+    status = store.generation_status("2026-09-15")
+    assert status["status"] == "completed"
+    assert status["completed_at"]
+    assert status["assistant_entry_id"] == assistant.id
+    assert status["user_read_count"] == 1
