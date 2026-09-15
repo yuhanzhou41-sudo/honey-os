@@ -2160,6 +2160,7 @@ class APIServerAdapter(BasePlatformAdapter):
         routes: List[tuple] = [
             ("GET", "/", self._handle_companion_react),
             ("GET", "/memories", self._handle_companion_react),
+            ("GET", "/diary", self._handle_companion_react),
             ("GET", "/relationship", self._handle_companion_react),
             ("GET", "/settings", self._handle_companion_react),
             ("GET", "/onboarding", self._handle_companion_react),
@@ -2169,6 +2170,22 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/new-ui/{asset_path:.*}", self._handle_companion_react),
             ("GET", "/api/companion/bootstrap", self._handle_companion_bootstrap),
             ("GET", "/api/companion/memories", self._handle_companion_memories),
+            ("GET", "/api/companion/diary", self._handle_companion_diary),
+            (
+                "POST",
+                "/api/companion/diary",
+                self._handle_companion_diary_create,
+            ),
+            (
+                "PATCH",
+                "/api/companion/diary/{entry_id}",
+                self._handle_companion_diary_update,
+            ),
+            (
+                "DELETE",
+                "/api/companion/diary/{entry_id}",
+                self._handle_companion_diary_delete,
+            ),
             ("GET", "/api/companion/settings", self._handle_companion_settings),
             ("GET", "/api/companion/avatar", self._handle_companion_avatar),
             ("GET", "/api/companion/avatar/status", self._handle_companion_avatar_status),
@@ -2568,6 +2585,99 @@ class APIServerAdapter(BasePlatformAdapter):
                 },
             }
         )
+
+    @staticmethod
+    def _companion_diary_store():
+        from honeyos.companion.diary import DiaryStore
+        from honeyos.core.constants import get_honeyos_home
+
+        return DiaryStore(get_honeyos_home())
+
+    @staticmethod
+    async def _companion_diary_json(request: "web.Request") -> Dict[str, Any] | None:
+        try:
+            payload = await request.json()
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _companion_diary_error(message: str, *, status: int = 400) -> "web.Response":
+        return web.json_response({"error": message}, status=status)
+
+    async def _handle_companion_diary(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        store = self._companion_diary_store()
+        entries = await asyncio.to_thread(store.list_entries, limit=200)
+        return web.json_response({"entries": [entry.to_dict() for entry in entries]})
+
+    async def _handle_companion_diary_create(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        payload = await self._companion_diary_json(request)
+        if payload is None:
+            return self._companion_diary_error("invalid_json")
+        entry_date = payload.get("entry_date")
+        content = payload.get("content")
+        if not isinstance(entry_date, str) or not isinstance(content, str):
+            return self._companion_diary_error("invalid_diary_entry")
+        store = self._companion_diary_store()
+        try:
+            entry = await asyncio.to_thread(
+                store.create_entry,
+                author="user",
+                entry_date=entry_date,
+                content=content,
+            )
+        except ValueError as exc:
+            return self._companion_diary_error(str(exc))
+        return web.json_response({"entry": entry.to_dict()}, status=201)
+
+    async def _handle_companion_diary_update(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        payload = await self._companion_diary_json(request)
+        if payload is None:
+            return self._companion_diary_error("invalid_json")
+        content = payload.get("content")
+        if not isinstance(content, str):
+            return self._companion_diary_error("invalid_diary_entry")
+        entry_id = str(request.match_info.get("entry_id") or "")
+        store = self._companion_diary_store()
+        try:
+            entry = await asyncio.to_thread(
+                store.update_user_entry,
+                entry_id,
+                content=content,
+            )
+        except ValueError as exc:
+            return self._companion_diary_error(str(exc))
+        if entry is None:
+            return self._companion_diary_error("diary_entry_not_found", status=404)
+        return web.json_response({"entry": entry.to_dict()})
+
+    async def _handle_companion_diary_delete(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        entry_id = str(request.match_info.get("entry_id") or "")
+        store = self._companion_diary_store()
+        deleted = await asyncio.to_thread(store.delete_user_entry, entry_id)
+        if not deleted:
+            return self._companion_diary_error("diary_entry_not_found", status=404)
+        return web.json_response({"success": True, "id": entry_id})
 
     async def _handle_companion_memories(
         self, request: "web.Request"

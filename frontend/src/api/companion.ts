@@ -15,6 +15,15 @@ export type MemoryItem = {
   updated_at?: string | null;
 };
 
+export type DiaryEntry = {
+  id: string;
+  author: "user" | "assistant";
+  entry_date: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type RecentChapter = {
   id: string;
   title: string;
@@ -197,3 +206,29 @@ export const updateCompanionAvatar = (dataUrl: string) =>
 
 export const deleteCompanionAvatar = () =>
   requestJson<{ success: true }>("/api/companion/avatar", { method: "DELETE" });
+
+export const fetchCompanionDiary = () =>
+  requestJson<{ entries: DiaryEntry[] }>("/api/companion/diary");
+
+export const createCompanionDiaryEntry = (entry: { entry_date: string; content: string }) =>
+  requestJson<{ entry: DiaryEntry }>("/api/companion/diary", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entry),
+  });
+
+export const updateCompanionDiaryEntry = (entryId: string, content: string) =>
+  requestJson<{ entry: DiaryEntry }>(
+    `/api/companion/diary/${encodeURIComponent(entryId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+  );
+
+export const deleteCompanionDiaryEntry = (entryId: string) =>
+  requestJson<{ success: true; id: string }>(
+    `/api/companion/diary/${encodeURIComponent(entryId)}`,
+    { method: "DELETE" },
+  );
