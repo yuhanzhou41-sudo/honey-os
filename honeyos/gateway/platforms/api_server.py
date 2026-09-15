@@ -8900,6 +8900,72 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
         return True
 
+    async def _generate_scheduled_companion_diary(self, target_date: str):
+        """Generate one profile-local diary entry from the shared owner lane."""
+        from honeyos.companion.diary_automation import generate_diary_entry
+        from honeyos.companion.profile import load_companion_profile
+        from honeyos.core.constants import get_honeyos_home
+        from honeyos.gateway.session import SessionSource, build_session_key
+
+        runner = self.gateway_runner
+        session_store = getattr(runner, "async_session_store", None)
+        if runner is None or session_store is None:
+            raise RuntimeError("companion_session_unavailable")
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id="local-owner",
+            chat_type="dm",
+            user_id="local-owner",
+            user_name="主人",
+        )
+        lane_key = build_session_key(source)
+        entry = await session_store.get_or_create_session(source)
+        db = await self._ensure_session_db_async()
+        raw_messages = []
+        if db is not None:
+            resolved_id = await asyncio.to_thread(
+                db.resolve_resume_session_id, entry.session_id
+            )
+            raw_messages = await asyncio.to_thread(db.get_messages, resolved_id)
+        transcript = []
+        for item in raw_messages[-120:]:
+            if not self._is_companion_visible_message(item):
+                continue
+            transcript.append(
+                {
+                    "role": str(item.get("role") or ""),
+                    "content": self._companion_display_content(item.get("content")),
+                }
+            )
+        model, runtime = runner._resolve_session_agent_runtime(
+            source=source,
+            session_key=lane_key,
+            user_config=None,
+        )
+        main_runtime = dict(runtime or {})
+        main_runtime["model"] = model
+        profile = load_companion_profile(get_honeyos_home())
+        profile_payload = {
+            "companion_name": profile.companion_name,
+            "personality": profile.personality,
+            "speaking_style": profile.speaking_style,
+            "user_nickname": profile.user_nickname,
+            "relationship": profile.relationship,
+            "boundaries": profile.boundaries,
+        }
+        return await generate_diary_entry(
+            home=get_honeyos_home(),
+            target_date=target_date,
+            companion_profile=profile_payload,
+            transcript=transcript,
+            main_runtime=main_runtime,
+        )
+
+    async def _run_companion_diary_clock(self) -> None:
+        from honeyos.companion.diary_automation import run_diary_clock
+
+        await run_diary_clock(self._generate_scheduled_companion_diary)
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the aiohttp web server."""
         if not AIOHTTP_AVAILABLE:
@@ -9046,6 +9112,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 return False
 
             self._mark_connected()
+            diary_task = asyncio.create_task(self._run_companion_diary_clock())
+            try:
+                self._background_tasks.add(diary_task)
+            except TypeError:
+                pass
+            if hasattr(diary_task, "add_done_callback"):
+                diary_task.add_done_callback(self._background_tasks.discard)
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",
                 self.name, self._host, self._port, self._model_name,
