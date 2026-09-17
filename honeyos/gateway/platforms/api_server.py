@@ -1558,6 +1558,8 @@ class APIServerAdapter(BasePlatformAdapter):
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
+        self._companion_stream_controls: Dict[str, Dict[str, Any]] = {}
+        self._companion_run_results: Dict[str, Dict[str, Any]] = {}
         # Stop is cooperative: the executor thread may outlive the HTTP request.
         self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
@@ -2253,6 +2255,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._handle_companion_channel_link_status,
             ),
             ("POST", "/api/companion/new", self._handle_companion_new),
+            (
+                "POST",
+                "/api/companion/sessions/{session_id}/switch",
+                self._handle_companion_session_switch,
+            ),
             ("POST", "/api/companion/profile", self._handle_companion_profile_update),
             (
                 "POST",
@@ -2299,9 +2306,12 @@ class APIServerAdapter(BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("POST", "/api/sessions/{session_id}/timeline/rollback", self._handle_session_timeline_rollback),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
+            ("POST", "/api/sessions/{session_id}/chat/{run_id}/stop", self._handle_session_chat_stop),
+            ("GET", "/api/sessions/{session_id}/chat/{run_id}/status", self._handle_session_chat_status),
             ("POST", "/api/sessions/{session_id}/approval", self._handle_companion_approval),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
@@ -2443,30 +2453,26 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug("Failed to load companion web history", exc_info=True)
 
+        from honeyos.companion.distillation import MemoryDistiller
+        from honeyos.core.constants import get_honeyos_home
+
+        lane_key = build_session_key(source)
+        edit_state = await asyncio.to_thread(
+            MemoryDistiller(get_honeyos_home()).timeline_edit_state,
+            lane_key=lane_key,
+            session_id=resolved_id if raw_messages else entry.session_id,
+        )
         messages = []
         for item in raw_messages:
             if not self._is_companion_visible_message(item):
                 continue
-            display_content = self._companion_display_content(item.get("content"))
-            messages.append(
-                {
-                    "role": item["role"],
-                    "content": (
-                        _resolve_media_to_data_urls(display_content)
-                        if item["role"] == "assistant"
-                        else display_content
-                    ),
-                }
-            )
+            messages.append(self._companion_message_payload(item, cursor=edit_state["cursor"]))
 
         from honeyos.companion.continuity import StructuredMemoryStore
         from honeyos.companion.persistent_memory import list_persistent_memories
         from honeyos.companion.profile import load_companion_profile
         from honeyos.companion.web import companion_profile
-        from honeyos.core.constants import get_honeyos_home
-
         home = get_honeyos_home()
-        lane_key = build_session_key(source)
         managed_profile = load_companion_profile(home)
         memory_store = StructuredMemoryStore(home)
         structured_memory_items = await asyncio.to_thread(
@@ -2499,7 +2505,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_rows = await asyncio.to_thread(
                     db.list_sessions_rich,
                     session_key=lane_key,
-                    limit=30,
+                    limit=100,
                     order_by_last_active=True,
                 )
                 history = [
@@ -2575,6 +2581,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_id": entry.session_id,
                 "session_key": lane_key,
                 "messages": messages,
+                "timeline": edit_state,
                 "memories": [_memory_payload(item) for item in memory_items],
                 "chapters": [
                     {
@@ -3553,6 +3560,158 @@ class APIServerAdapter(BasePlatformAdapter):
                 "success": True,
                 "session_id": new_entry.session_id,
                 "session_key": lane_key,
+            }
+        )
+
+    async def _handle_companion_session_switch(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """Finalize the active companion session, then resume one owned history row."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        runner = self.gateway_runner or request.app.get("gateway_runner")
+        session_store = getattr(runner, "async_session_store", None)
+        if session_store is None:
+            return web.json_response(
+                _openai_error(
+                    "Companion session store is unavailable",
+                    code="companion_session_unavailable",
+                ),
+                status=503,
+            )
+
+        from honeyos.gateway.session import SessionSource, build_session_key
+
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id="local-owner",
+            chat_type="dm",
+            user_id="local-owner",
+            user_name="主人",
+        )
+        lane_key = build_session_key(source)
+        current_entry = await session_store.get_or_create_session(source)
+        target_session_id = str(request.match_info.get("session_id") or "").strip()
+        db = await self._ensure_session_db_async()
+        try:
+            owned_rows = await asyncio.to_thread(
+                db.list_sessions_rich,
+                session_key=lane_key,
+                limit=100,
+                order_by_last_active=True,
+            )
+        except Exception:
+            logger.exception("Failed to list companion sessions before switch")
+            return web.json_response(
+                _openai_error(
+                    "Could not load companion history",
+                    code="companion_history_unavailable",
+                ),
+                status=503,
+            )
+        if not any(str(row.get("id") or "") == target_session_id for row in owned_rows):
+            return web.json_response(
+                _openai_error(
+                    "Companion session was not found",
+                    code="companion_session_not_found",
+                ),
+                status=404,
+            )
+
+        if current_entry.session_id != target_session_id:
+            transcript = []
+            try:
+                transcript = await session_store.load_transcript(
+                    current_entry.session_id,
+                    include_row_ids=True,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to capture companion switch transcript",
+                    exc_info=True,
+                )
+            if transcript:
+                scheduler = getattr(
+                    runner,
+                    "_schedule_honeyos_memory_distillation",
+                    None,
+                )
+                if callable(scheduler):
+                    try:
+                        scheduler(
+                            lane_key=lane_key,
+                            chat_type="dm",
+                            session_id=current_entry.session_id,
+                            messages=transcript,
+                            reason="session_switch",
+                            main_runtime=None,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to schedule companion switch distillation",
+                            exc_info=True,
+                        )
+            switched = await session_store.switch_session(
+                lane_key,
+                target_session_id,
+            )
+            if switched is None:
+                return web.json_response(
+                    _openai_error(
+                        "Could not switch companion conversation",
+                        code="companion_session_switch_failed",
+                    ),
+                    status=409,
+                )
+            current_entry = switched
+
+        resolved_id = await asyncio.to_thread(
+            db.resolve_resume_session_id,
+            current_entry.session_id,
+        )
+        raw_messages = await asyncio.to_thread(db.get_messages, resolved_id)
+        from honeyos.companion.distillation import MemoryDistiller
+        from honeyos.core.constants import get_honeyos_home
+
+        edit_state = await asyncio.to_thread(
+            MemoryDistiller(get_honeyos_home()).timeline_edit_state,
+            lane_key=lane_key,
+            session_id=resolved_id,
+        )
+        messages = []
+        for item in raw_messages:
+            if not self._is_companion_visible_message(item):
+                continue
+            messages.append(self._companion_message_payload(item, cursor=edit_state["cursor"]))
+
+        session_rows = await asyncio.to_thread(
+            db.list_sessions_rich,
+            session_key=lane_key,
+            limit=100,
+            order_by_last_active=True,
+        )
+        history = [
+            {
+                "id": str(row.get("id") or ""),
+                "title": str(row.get("title") or "").strip(),
+                "preview": str(row.get("preview") or "").strip(),
+                "started_at": row.get("started_at"),
+                "last_active": row.get("last_active"),
+                "message_count": int(row.get("message_count") or 0),
+                "is_current": str(row.get("id") or "") == current_entry.session_id,
+            }
+            for row in session_rows
+            if row.get("id")
+        ]
+        return web.json_response(
+            {
+                "success": True,
+                "session_id": current_entry.session_id,
+                "session_key": lane_key,
+                "messages": messages,
+                "timeline": edit_state,
+                "history": history,
             }
         )
 
@@ -5003,6 +5162,20 @@ class APIServerAdapter(BasePlatformAdapter):
         return {key: message.get(key) for key in safe_keys if key in message}
 
     @staticmethod
+    def _companion_message_payload(message: Dict[str, Any], *, cursor: int) -> Dict[str, Any]:
+        content = APIServerAdapter._companion_display_content(message.get("content"))
+        row_id = int(message.get("id") or message.get("_row_id") or 0)
+        role = str(message.get("role") or "")
+        payload = {
+            "role": role,
+            "content": _resolve_media_to_data_urls(content) if role == "assistant" else content,
+        }
+        if row_id:
+            payload["id"] = row_id
+            payload["timeline_editable"] = row_id > cursor
+        return payload
+
+    @staticmethod
     def _is_companion_visible_message(message: object) -> bool:
         """Keep runtime bookkeeping out of the companion-facing transcript."""
         if not isinstance(message, dict):
@@ -5353,6 +5526,94 @@ class APIServerAdapter(BasePlatformAdapter):
             "data": [self._message_response(m) for m in messages],
         })
 
+    async def _handle_session_timeline_rollback(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """Permanently delete an unorganized timeline suffix."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        try:
+            target_id = int(body.get("target_message_id"))
+        except (TypeError, ValueError):
+            return web.json_response(
+                _openai_error("target_message_id must be an integer", code="invalid_message_id"),
+                status=400,
+            )
+        preserve_target = bool(body.get("preserve_target", False))
+        session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        if not session_key:
+            return web.json_response(
+                _openai_error("Missing companion session key", code="session_key_required"),
+                status=400,
+            )
+        db = await self._ensure_session_db_async()
+        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+        raw_messages = await asyncio.to_thread(db.get_messages, resolved_id)
+        target = next(
+            (item for item in raw_messages if int(item.get("id") or item.get("_row_id") or 0) == target_id),
+            None,
+        )
+        if target is None or not self._is_companion_visible_message(target):
+            return web.json_response(
+                _openai_error("Message is no longer available", code="message_not_found"),
+                status=404,
+            )
+        from honeyos.companion.distillation import MemoryDistiller
+        from honeyos.core.constants import get_honeyos_home
+
+        distiller = MemoryDistiller(get_honeyos_home())
+        edit_state = await asyncio.to_thread(
+            distiller.timeline_edit_state,
+            lane_key=session_key,
+            session_id=resolved_id,
+        )
+        if target_id <= int(edit_state["cursor"]):
+            return web.json_response(
+                _openai_error("Message has already entered memory organization", code="timeline_locked"),
+                status=409,
+            )
+        busy_start = int(edit_state["busy_start"])
+        busy_end = int(edit_state["busy_end"])
+        if busy_start and target_id <= busy_end:
+            return web.json_response(
+                _openai_error("Memory organization is using this part of the timeline", code="timeline_busy"),
+                status=409,
+            )
+        try:
+            result = await asyncio.to_thread(
+                db.delete_timeline_from,
+                resolved_id,
+                target_id,
+                preserve_target=preserve_target,
+            )
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="timeline_rollback_failed"), status=409)
+        remaining = await asyncio.to_thread(db.get_messages, resolved_id)
+        visible = [
+            self._companion_message_payload(item, cursor=int(edit_state["cursor"]))
+            for item in remaining
+            if self._is_companion_visible_message(item)
+        ]
+        return web.json_response({
+            "success": True,
+            "session_id": resolved_id,
+            "target": self._companion_message_payload(target, cursor=int(edit_state["cursor"])),
+            "messages": visible,
+            "rewound_count": int(result.get("deleted_count") or 0),
+            "preserved_target": bool(result.get("preserved_target")),
+            "timeline": edit_state,
+        })
+
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
         auth_err = self._check_auth(request)
@@ -5551,6 +5812,13 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message, err = _session_chat_user_message(body)
         if err is not None:
             return err
+        try:
+            reuse_user_message_id = int(body.get("reuse_user_message_id") or 0)
+        except (TypeError, ValueError):
+            return web.json_response(
+                _openai_error("reuse_user_message_id must be an integer", code="invalid_message_id"),
+                status=400,
+            )
         companion_view = request.headers.get("X-HoneyOS-Companion-View") == "1"
         internal_turn = request.headers.get("X-HoneyOS-Internal-Turn") == "proactive-topic"
         self._record_companion_web_activity(
@@ -5613,6 +5881,22 @@ class APIServerAdapter(BasePlatformAdapter):
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
+        stream_control: Dict[str, Any] = {
+            "session_id": session_id,
+            "agent_ref": [None],
+            "task": None,
+            "stop_requested": False,
+            "content_parts": [],
+        }
+        self._companion_stream_controls[run_id] = stream_control
+        self._companion_run_results[run_id] = {
+            "run_id": run_id,
+            "session_id": session_id,
+            "state": "running",
+            "content": "",
+            "user_message_id": reuse_user_message_id,
+            "updated_at": time.time(),
+        }
         seq = 0
         activity_seq = 0
         active_activity_ids: Dict[str, List[str]] = {}
@@ -5643,6 +5927,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def _delta(delta: str) -> None:
             if delta:
+                stream_control["content_parts"].append(delta)
                 _enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
         def _started_activity_id(tool_name: str | None, args: Any) -> str:
@@ -5725,7 +6010,26 @@ class APIServerAdapter(BasePlatformAdapter):
                     "runtime": runtime_meta,
                 }))
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
-                history = await self._conversation_history_for_session(session_id)
+                if reuse_user_message_id:
+                    db = await self._ensure_session_db_async()
+                    history = await asyncio.to_thread(
+                        db.get_messages_as_conversation,
+                        session_id,
+                        include_row_ids=True,
+                    )
+                    matching = [
+                        item for item in history
+                        if int(item.get("_row_id") or 0) == reuse_user_message_id
+                        and item.get("role") == "user"
+                    ]
+                    if not matching:
+                        raise ValueError("regeneration user message is no longer available")
+                    history = [
+                        item for item in history
+                        if int(item.get("_row_id") or 0) != reuse_user_message_id
+                    ]
+                else:
+                    history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     user_message=user_message,
                     conversation_history=history,
@@ -5740,9 +6044,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     route_source=runtime_request.get("route_source") or "global",
                     confirmed_runtime_lock=lock_active,
                     approval_callback=_approval_notify if companion_view else None,
+                    agent_ref=stream_control["agent_ref"],
                     **agent_overrides,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
+                if stream_control.get("stop_requested") and not final_response.strip():
+                    final_response = "".join(stream_control.get("content_parts") or [])
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
                 effective_runtime = {}
@@ -5750,14 +6057,21 @@ class APIServerAdapter(BasePlatformAdapter):
                     effective_runtime = result.get("runtime") or {}
                 if not effective_runtime and isinstance(usage, dict):
                     effective_runtime = usage.get("runtime") or {}
-                # Store the review request, but do not schedule it yet.  The
-                # streaming loop schedules it only after the completed answer
-                # has been written to the browser.
-                memory_review = {
-                    "gateway_session_key": gateway_session_key,
-                    "session_id": effective_session_id,
-                    "main_runtime": effective_runtime,
-                }
+                if reuse_user_message_id:
+                    db = await self._ensure_session_db_async()
+                    persisted = await asyncio.to_thread(db.get_messages, effective_session_id)
+                    replayed_ids = [
+                        int(item.get("id") or item.get("_row_id") or 0)
+                        for item in persisted
+                        if item.get("role") == "user"
+                        and int(item.get("id") or item.get("_row_id") or 0) > reuse_user_message_id
+                    ]
+                    if replayed_ids:
+                        await asyncio.to_thread(
+                            db.delete_message_ids,
+                            effective_session_id,
+                            [min(replayed_ids)],
+                        )
                 effective_runtime = self._sanitize_runtime_metadata(
                     runtime=effective_runtime,
                     requested_runtime=runtime_request.get("requested"),
@@ -5770,13 +6084,49 @@ class APIServerAdapter(BasePlatformAdapter):
                         else ""
                     ),
                 )
+                stopped = bool(stream_control.get("stop_requested"))
+                durable_user_message_id = reuse_user_message_id
+                if (stopped or not final_response.strip()) and not durable_user_message_id:
+                    db = await self._ensure_session_db_async()
+                    if db is not None:
+                        persisted = await asyncio.to_thread(db.get_messages, effective_session_id)
+                        durable_user_message_id = next(
+                            (
+                                int(item.get("id") or item.get("_row_id") or 0)
+                                for item in reversed(persisted)
+                                if item.get("role") == "user"
+                            ),
+                            0,
+                        )
+                if stopped:
+                    terminal_state = "stopped_partial" if final_response.strip() else "stopped_empty"
+                else:
+                    terminal_state = "completed" if final_response.strip() else "empty_response"
+                if terminal_state == "completed":
+                    memory_review = {
+                        "gateway_session_key": gateway_session_key,
+                        "session_id": effective_session_id,
+                        "main_runtime": effective_runtime,
+                    }
+                else:
+                    memory_review = None
+                self._companion_run_results[run_id] = {
+                    "run_id": run_id,
+                    "session_id": effective_session_id,
+                    "state": terminal_state,
+                    "content": final_response,
+                    "user_message_id": durable_user_message_id,
+                    "updated_at": time.time(),
+                }
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
                     "content": final_response,
-                    "completed": True,
-                    "partial": False,
-                    "interrupted": False,
+                    "completed": terminal_state == "completed",
+                    "partial": terminal_state == "stopped_partial",
+                    "interrupted": stopped,
+                    "terminal_state": terminal_state,
+                    "user_message_id": durable_user_message_id,
                     "runtime": effective_runtime,
                 }))
                 await queue.put(_event_payload(
@@ -5791,19 +6141,71 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                 ))
             except Exception as exc:
-                logger.exception("[api_server] session chat stream failed")
-                await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
+                stopped = bool(stream_control.get("stop_requested"))
+                error_text = _redact_api_error_text(exc)
+                partial_content = "".join(stream_control.get("content_parts") or []) if stopped else ""
+                durable_user_message_id = reuse_user_message_id
+                if not durable_user_message_id:
+                    db = await self._ensure_session_db_async()
+                    if db is not None:
+                        persisted = await asyncio.to_thread(db.get_messages, session_id)
+                        durable_user_message_id = next(
+                            (
+                                int(item.get("id") or item.get("_row_id") or 0)
+                                for item in reversed(persisted)
+                                if item.get("role") == "user"
+                            ),
+                            0,
+                        )
+                if stopped:
+                    terminal_state = "stopped_partial" if partial_content.strip() else "stopped_empty"
+                else:
+                    failure_text = f"{type(exc).__name__}: {exc}".lower()
+                    terminal_state = "tool_failed" if "tool" in failure_text else "model_failed"
+                self._companion_run_results[run_id] = {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "state": terminal_state,
+                    "content": partial_content,
+                    "user_message_id": durable_user_message_id,
+                    "error": error_text,
+                    "updated_at": time.time(),
+                }
+                if stopped:
+                    await queue.put(_event_payload("assistant.completed", {
+                        "message_id": message_id,
+                        "content": partial_content,
+                        "completed": False,
+                        "partial": terminal_state == "stopped_partial",
+                        "interrupted": True,
+                        "terminal_state": terminal_state,
+                        "user_message_id": durable_user_message_id,
+                    }))
+                else:
+                    logger.exception("[api_server] session chat stream failed")
+                    await queue.put(_event_payload("error", {
+                        "message": error_text,
+                        "terminal_state": terminal_state,
+                    }))
             finally:
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
 
         task = asyncio.create_task(_run_and_signal())
+        stream_control["task"] = task
         try:
             self._background_tasks.add(task)
         except TypeError:
             pass
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
+
+            def _release_companion_control(completed_task: "asyncio.Task") -> None:
+                current = self._companion_stream_controls.get(run_id)
+                if current is stream_control and current.get("task") is completed_task:
+                    self._companion_stream_controls.pop(run_id, None)
+
+            task.add_done_callback(_release_companion_control)
 
         headers = {
             "Content-Type": "text/event-stream",
@@ -5831,11 +6233,80 @@ class APIServerAdapter(BasePlatformAdapter):
                     memory_review = None
                     self._schedule_companion_memory_distillation(**review)
         except (asyncio.CancelledError, ConnectionResetError):
-            task.cancel()
+            # A transport loss is not a new model request. Keep the original
+            # run alive so the client can recover it by run_id.
             raise
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
+
+    async def _handle_session_chat_stop(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        run_id = request.match_info["run_id"]
+        control = self._companion_stream_controls.get(run_id)
+        if control is None or str(control.get("session_id") or "") != session_id:
+            result = self._companion_run_results.get(run_id)
+            if result and result.get("session_id") == session_id:
+                return web.json_response(result)
+            return web.json_response(_openai_error("Run not found", code="run_not_found"), status=404)
+        control["stop_requested"] = True
+        agent = None
+        for _ in range(20):
+            agent_ref = control.get("agent_ref") or []
+            agent = agent_ref[0] if agent_ref else None
+            if agent is not None:
+                break
+            task = control.get("task")
+            if task is not None and task.done():
+                break
+            await asyncio.sleep(0.05)
+        if agent is None:
+            result = self._companion_run_results.get(run_id, {})
+            if result.get("state") != "running":
+                return web.json_response(result)
+            result.update({"state": "cancel_failed", "updated_at": time.time()})
+            return web.json_response(result)
+        try:
+            request_hard_interrupt(agent, "Stopped by companion user")
+            _reap_disconnected_agent_processes(
+                agent, source="companion_chat_stop"
+            )
+        except Exception as exc:
+            result = self._companion_run_results.get(run_id, {})
+            result.update({
+                "state": "cancel_failed",
+                "error": _redact_api_error_text(exc),
+                "updated_at": time.time(),
+            })
+            return web.json_response(result)
+        task = control.get("task")
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
+            except Exception:
+                # _run_and_signal records the authoritative terminal failure.
+                pass
+        result = self._companion_run_results.get(run_id, {})
+        if result.get("state") != "running":
+            return web.json_response(result)
+        result.update({"state": "stopping", "updated_at": time.time()})
+        return web.json_response(result)
+
+    async def _handle_session_chat_status(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        run_id = request.match_info["run_id"]
+        result = self._companion_run_results.get(run_id)
+        if result is None or str(result.get("session_id") or "") != session_id:
+            return web.json_response(_openai_error("Run not found", code="run_not_found"), status=404)
+        return web.json_response(result)
 
     async def _handle_companion_approval(self, request: "web.Request") -> "web.Response":
         """Resolve the local companion's currently visible permission card."""
@@ -9034,9 +9505,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _generate_scheduled_companion_diary(self, target_date: str):
         """Generate one profile-local diary entry from the shared owner lane."""
-        from honeyos.companion.diary_automation import generate_diary_entry
+        from honeyos.companion.diary_automation import (
+            generate_diary_entry,
+            message_local_time_for_date,
+        )
         from honeyos.companion.profile import load_companion_profile
         from honeyos.core.constants import get_honeyos_home
+        from honeyos.core.time import get_timezone
         from honeyos.gateway.session import SessionSource, build_session_key
 
         runner = self.gateway_runner
@@ -9060,15 +9535,27 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             raw_messages = await asyncio.to_thread(db.get_messages, resolved_id)
         transcript = []
-        for item in raw_messages[-120:]:
+        local_zone = get_timezone()
+        for item in raw_messages:
             if not self._is_companion_visible_message(item):
+                continue
+            local_time = message_local_time_for_date(
+                item.get("timestamp"),
+                target_date=target_date,
+                zone=local_zone,
+            )
+            if local_time is None:
                 continue
             transcript.append(
                 {
                     "role": str(item.get("role") or ""),
                     "content": self._companion_display_content(item.get("content")),
+                    "timestamp": local_time.isoformat(timespec="seconds"),
                 }
             )
+        # Bound token use only after filtering, so older days cannot crowd out
+        # messages from the requested local date.
+        transcript = transcript[-120:]
         model, runtime = runner._resolve_session_agent_runtime(
             source=source,
             session_key=lane_key,
