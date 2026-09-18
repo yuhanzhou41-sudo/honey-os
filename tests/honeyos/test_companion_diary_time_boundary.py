@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from honeyos.companion.diary_automation import (
@@ -49,21 +50,27 @@ def test_scheduled_date_is_stable_even_if_execution_wakes_after_midnight():
 
 
 def test_prompt_declares_payload_date_as_only_today_boundary():
-    messages = build_diary_messages(
-        target_date="2026-09-17",
-        companion_profile={},
-        user_entries=(),
-        transcript=[
-            {
-                "role": "user",
-                "content": "当天内容",
-                "timestamp": "2026-09-17T21:08:00+08:00",
-            }
-        ],
-    )
+    zone = ZoneInfo("Asia/Shanghai")
+    with patch("honeyos.core.time.get_timezone", return_value=zone):
+        messages = build_diary_messages(
+            target_date="2026-09-17",
+            companion_profile={},
+            user_entries=(),
+            transcript=[
+                {
+                    "role": "user",
+                    "content": "当天内容",
+                    "timestamp": "2026-09-17T21:08:00+08:00",
+                }
+            ],
+            current_time=datetime(2026, 9, 18, 0, 5, tzinfo=zone),
+        )
 
     system = messages[0]["content"]
     assert "payload date" in system
     assert "timestamps are authoritative" in system
     assert "memories" in system
+    assert "Current local datetime: 2026-09-18T00:05:00+08:00" in system
+    assert "target date 2026-09-17" in system
+    assert "conversation-start metadata" in system
     assert "2026-09-17T21:08:00+08:00" in messages[1]["content"]

@@ -9511,7 +9511,7 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         from honeyos.companion.profile import load_companion_profile
         from honeyos.core.constants import get_honeyos_home
-        from honeyos.core.time import get_timezone
+        from honeyos.core.time import local_timezone
         from honeyos.gateway.session import SessionSource, build_session_key
 
         runner = self.gateway_runner
@@ -9535,7 +9535,7 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             raw_messages = await asyncio.to_thread(db.get_messages, resolved_id)
         transcript = []
-        local_zone = get_timezone()
+        local_zone = local_timezone()
         for item in raw_messages:
             if not self._is_companion_visible_message(item):
                 continue

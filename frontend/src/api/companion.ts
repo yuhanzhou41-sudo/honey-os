@@ -1,6 +1,13 @@
 import { apiPath, requestJson } from "./client";
 
-export type ChatMessage = { role: "user" | "assistant"; content: string };
+export type ChatMessage = {
+  id?: number;
+  role: "user" | "assistant";
+  content: string;
+  timeline_editable?: boolean;
+};
+
+export type TimelineState = { cursor: number; busy_start: number; busy_end: number };
 
 export type CompanionProfileDetails = CompanionBootstrap["profile_details"];
 
@@ -77,6 +84,7 @@ export type CompanionBootstrap = {
   session_id: string;
   session_key: string;
   messages: ChatMessage[];
+  timeline?: TimelineState;
   memories: MemoryItem[];
   recent_chapters: RecentChapter[];
   history: HistoryItem[];
@@ -204,6 +212,49 @@ export const startNewCompanionConversation = () =>
     headers: { "Content-Type": "application/json" },
     body: "{}",
   });
+
+export type CompanionConversation = {
+  success: true;
+  session_id: string;
+  session_key: string;
+  messages: ChatMessage[];
+  timeline?: TimelineState;
+  history: HistoryItem[];
+};
+
+export const switchCompanionConversation = (sessionId: string) =>
+  requestJson<CompanionConversation>(
+    `/api/companion/sessions/${encodeURIComponent(sessionId)}/switch`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+  );
+
+export const rollbackCompanionTimeline = (
+  sessionId: string,
+  sessionKey: string,
+  targetMessageId: number,
+  preserveTarget = false,
+) => requestJson<{
+  success: true;
+  session_id: string;
+  target: ChatMessage;
+  messages: ChatMessage[];
+  rewound_count: number;
+  timeline: TimelineState;
+}>(`/api/sessions/${encodeURIComponent(sessionId)}/timeline/rollback`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json", "X-HoneyOS-Session-Key": sessionKey },
+  body: JSON.stringify({ target_message_id: targetMessageId, preserve_target: preserveTarget }),
+});
+
+export const deleteCompanionConversation = (sessionId: string) =>
+  requestJson<{ object: string; id: string; deleted: boolean }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
 
 export const updateCompanionProfile = (profile: CompanionProfileDetails) =>
   requestJson<{ success: true; profile: CompanionProfileDetails }>("/api/companion/profile", {

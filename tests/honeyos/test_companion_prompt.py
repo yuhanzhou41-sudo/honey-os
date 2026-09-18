@@ -121,6 +121,8 @@ def test_companion_prompt_keeps_execution_core_without_hermes_identity():
     assert "CONTEXT_SENTINEL" not in prompt
     assert "SKILLS_SENTINEL" in prompt
     assert "KANBAN_SENTINEL" not in prompt
+    assert "Conversation session started:" in prompt
+    assert "Conversation started:" not in prompt
 
 
 def test_companion_prompt_keeps_persona_through_the_whole_tool_turn():

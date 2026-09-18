@@ -240,9 +240,9 @@ async def extract_with_auxiliary_model(
             item["entry_date"] = str(message.get("entry_date") or "")
         transcript.append(item)
     try:
-        from honeyos.core.time import get_timezone
+        from honeyos.core.time import to_local
 
-        local_now = job.now.astimezone(get_timezone())
+        local_now = to_local(job.now)
     except Exception:
         local_now = job.now
     supplied_profile = getattr(job, "companion_profile", {})
@@ -427,7 +427,11 @@ class MemoryDistiller:
         reason: str,
         now: datetime,
     ) -> DistillationJob | None:
-        if not self.settings.enabled or reason not in {"periodic", "new"}:
+        if not self.settings.enabled or reason not in {
+            "periodic",
+            "new",
+            "session_switch",
+        }:
             return None
         conversational = self._conversational_messages(messages)
         with self._connect() as connection:
@@ -689,6 +693,43 @@ class MemoryDistiller:
                 "rejected": 0,
                 "chapter_id": "",
             }
+
+    def timeline_edit_state(self, *, lane_key: str, session_id: str) -> dict[str, Any]:
+        """Return the immutable memory cursor and any in-flight source range.
+
+        Chat timeline rollback is allowed only strictly after the completed
+        cursor.  A pending/running range is temporarily locked so a rollback
+        cannot race a distillation job which has already captured its source.
+        """
+        if not lane_key or not session_id:
+            return {"cursor": 0, "busy_start": 0, "busy_end": 0}
+        try:
+            with self._connect() as connection:
+                state = connection.execute(
+                    """
+                    SELECT last_source_row_id FROM distillation_state
+                    WHERE lane_key = ? AND session_id = ?
+                    """,
+                    (lane_key, session_id),
+                ).fetchone()
+                active = connection.execute(
+                    """
+                    SELECT MIN(source_start_id), MAX(source_end_id)
+                    FROM distillation_runs
+                    WHERE lane_key = ? AND session_id = ?
+                      AND status IN ('pending', 'running')
+                    """,
+                    (lane_key, session_id),
+                ).fetchone()
+            return {
+                "cursor": int(state[0]) if state is not None else 0,
+                "busy_start": int(active[0] or 0) if active is not None else 0,
+                "busy_end": int(active[1] or 0) if active is not None else 0,
+            }
+        except (OSError, sqlite3.Error, ValueError, TypeError):
+            # Fail closed: an unknown boundary must never make old messages
+            # look editable.
+            return {"cursor": 2**63 - 1, "busy_start": 0, "busy_end": 0}
 
     def _apply_operations(
         self, job: DistillationJob, operations: tuple[dict[str, Any], ...]

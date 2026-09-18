@@ -19,10 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 def local_now() -> datetime:
-    from honeyos.core.time import get_timezone
+    from honeyos.core.time import now
 
-    zone = get_timezone()
-    return datetime.now(zone).astimezone()
+    return now()
 
 
 def next_generation_at(now: datetime) -> datetime:
@@ -37,7 +36,7 @@ def startup_target_date(now: datetime) -> date:
 
 
 def message_local_time_for_date(
-    value: Any, *, target_date: str, zone: Any
+    value: Any, *, target_date: str, zone: Any = None
 ) -> datetime | None:
     """Return a message's local time only when it belongs to target_date.
 
@@ -65,6 +64,10 @@ def message_local_time_for_date(
     if parsed.tzinfo is None:
         # A naive timestamp has no defensible day boundary. Do not guess.
         return None
+    if zone is None:
+        from honeyos.core.time import local_timezone
+
+        zone = local_timezone()
     local = parsed.astimezone(zone)
     try:
         expected = date.fromisoformat(target_date)
@@ -74,9 +77,17 @@ def message_local_time_for_date(
 
 
 def build_diary_messages(
-    *, target_date: str, companion_profile: dict[str, Any], user_entries: tuple[DiaryEntry, ...], transcript: list[dict[str, str]]
+    *,
+    target_date: str,
+    companion_profile: dict[str, Any],
+    user_entries: tuple[DiaryEntry, ...],
+    transcript: list[dict[str, str]],
+    current_time: datetime | None = None,
 ) -> list[dict[str, str]]:
-    system = """Write one private diary entry in the companion's own voice.
+    from honeyos.core.time import format_runtime_time_context
+
+    time_context = format_runtime_time_context(current_time)
+    system = f"""Write one private diary entry in the companion's own voice.
 This is an open creative space, not a report. You may reflect on conversation,
 record feelings or questions, write poetry, fiction, dreams, fantasies, symbols,
 or a text drawing, or simply notice a quiet day. Choose freely and finish
@@ -94,7 +105,11 @@ event "today" unless its authoritative date belongs to the payload date.
 Do not treat profile information, general knowledge, memories, earlier diary
 entries, or events merely mentioned retrospectively as events of that date.
 You remain free to remember, imagine, dream, draw, or write fiction, but label
-recollection and imagination clearly instead of presenting them as today's facts."""
+recollection and imagination clearly instead of presenting them as today's facts.
+
+{time_context}
+The diary entry being generated is specifically for target date {target_date}.
+Do not infer that date from conversation-start metadata."""
     payload = {
         "date": target_date,
         "companion_profile": companion_profile,

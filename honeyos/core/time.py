@@ -15,7 +15,7 @@ crashes due to a bad timezone string.
 
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime, timezone, tzinfo
 from honeyos.core.constants import get_config_path
 from typing import Optional
 
@@ -126,10 +126,78 @@ def now() -> datetime:
     If a valid timezone is configured, returns wall-clock time in that zone.
     Otherwise returns the server's local time (via ``astimezone()``).
     """
-    tz = get_timezone()
-    if tz is not None:
-        return datetime.now(tz)
-    # No timezone configured — use server-local (still tz-aware)
-    return datetime.now().astimezone()
+    return datetime.now(local_timezone())
 
 
+def local_timezone() -> tzinfo:
+    """Return the effective HoneyOS local timezone, never ``None``.
+
+    ``get_timezone()`` remains the compatibility API that reports only an
+    explicitly configured IANA zone.  User-facing calendar semantics should
+    use this function so every caller shares the same configured-or-host-local
+    fallback.
+    """
+    configured = get_timezone()
+    if configured is not None:
+        return configured
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def utc_now() -> datetime:
+    """Return the current storage/expiry clock in UTC."""
+    return datetime.now(timezone.utc)
+
+
+def to_local(value: datetime) -> datetime:
+    """Convert an aware datetime to the effective HoneyOS local timezone.
+
+    Naive values are interpreted as local wall-clock values.  Callers parsing
+    untrusted or historical timestamps should reject naive values before using
+    this helper when guessing a zone would be unsafe.
+    """
+    zone = local_timezone()
+    if value.tzinfo is None:
+        return value.replace(tzinfo=zone)
+    return value.astimezone(zone)
+
+
+def local_date(value: datetime | None = None) -> date:
+    """Return the HoneyOS-local calendar date for ``value`` or the live clock."""
+    return (to_local(value) if value is not None else now()).date()
+
+
+def timezone_name(value: datetime | None = None) -> str:
+    """Return a stable display name for the effective local timezone."""
+    zone = local_timezone()
+    key = getattr(zone, "key", None)
+    if isinstance(key, str) and key:
+        return key
+    current = to_local(value) if value is not None else now()
+    return current.tzname() or str(zone) or "local"
+
+
+def format_runtime_time_context(current: datetime | None = None) -> str:
+    """Render the authoritative local clock snapshot for one model run.
+
+    System prompts are cached for long-lived sessions, so their session-start
+    date is historical metadata rather than a live clock.  This block is
+    intentionally suitable for per-turn user-message sidecar injection and
+    auxiliary companion calls.
+    """
+    current = to_local(current) if current is not None else now()
+    offset = current.strftime("%z")
+    offset_text = (
+        f"UTC{offset[:3]}:{offset[3:]}"
+        if len(offset) == 5
+        else "UTC offset unavailable"
+    )
+    return (
+        "[Runtime time context]\n"
+        f"Current local datetime: {current.isoformat(timespec='seconds')}\n"
+        f"Current local date: {current.date().isoformat()}\n"
+        f"Timezone: {timezone_name(current)} ({offset_text})\n"
+        "This is the authoritative 'now' for this run. Resolve diary dates, "
+        "reminders, schedules, and relative expressions such as today/今天, "
+        "tonight/今晚, and tomorrow/明天 from this value. Conversation/session "
+        "start timestamps are historical metadata and must never replace it."
+    )

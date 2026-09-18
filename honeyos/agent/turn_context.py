@@ -150,6 +150,13 @@ def consume_gateway_turn_context_notes(agent: Any) -> str:
     return notes if isinstance(notes, str) else ""
 
 
+def current_turn_time_context() -> str:
+    """Return a fresh authoritative local clock block for this model turn."""
+    from honeyos.core.time import format_runtime_time_context
+
+    return format_runtime_time_context()
+
+
 def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
     """Deliver must-deliver notes on a multimodal (list) user message.
 
@@ -1116,6 +1123,32 @@ def build_turn_context(
             plugin_user_context = "\n\n".join(_ctx_parts)
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
+
+    # The cached system prompt records only when the session began.  Put a
+    # fresh clock snapshot on every turn's API sidecar so long-lived sessions
+    # and turns crossing midnight cannot mistake that historical date for
+    # "today".  Multimodal turns need a durable text part because their list
+    # content cannot use compose_user_api_content().
+    try:
+        _time_context = current_turn_time_context()
+    except Exception as exc:
+        logger.warning("runtime time context injection failed: %s", exc)
+        _time_context = ""
+    if _time_context:
+        _time_turn_content = (
+            messages[current_turn_user_idx].get("content")
+            if 0 <= current_turn_user_idx < len(messages)
+            and isinstance(messages[current_turn_user_idx], dict)
+            else None
+        )
+        if isinstance(_time_turn_content, list):
+            append_notes_to_multimodal_content(_time_turn_content, _time_context)
+        else:
+            plugin_user_context = (
+                plugin_user_context + "\n\n" + _time_context
+                if plugin_user_context
+                else _time_context
+            )
 
     # Gateway must-deliver notes (auto-reset note, first-contact intro,
     # voice-channel change) ride the same user-message injection channel as

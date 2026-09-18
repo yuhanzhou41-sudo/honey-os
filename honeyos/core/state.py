@@ -7900,6 +7900,111 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             "new_head_id": new_head_id,
         }
 
+    def delete_timeline_from(
+        self,
+        session_id: str,
+        target_message_id: int,
+        *,
+        preserve_target: bool = False,
+    ) -> Dict[str, Any]:
+        """Permanently delete an unorganized user timeline suffix.
+
+        ``preserve_target`` keeps the addressed user row and deletes only the
+        later attempt.  This is used by regeneration so the durable user turn
+        remains single-instance.  The API layer owns memory-cursor admission.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM messages WHERE id = ? AND session_id = ?",
+                (target_message_id, session_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"message {target_message_id} not found in session {session_id}"
+            )
+        target_row = dict(row)
+        if target_row.get("role") != "user":
+            raise ValueError(
+                f"timeline target must be a 'user' message (got role="
+                f"{target_row.get('role')!r}, id={target_message_id})"
+            )
+        target_row["content"] = self._decode_content(target_row.get("content"))
+        operator = ">" if preserve_target else ">="
+
+        def _recount(conn) -> None:
+            rows = conn.execute(
+                "SELECT role, tool_calls FROM messages "
+                "WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchall()
+            tool_calls = 0
+            for item in rows:
+                raw_calls = item["tool_calls"]
+                if raw_calls:
+                    try:
+                        decoded = json.loads(raw_calls)
+                        tool_calls += len(decoded) if isinstance(decoded, list) else 1
+                    except (json.JSONDecodeError, TypeError):
+                        tool_calls += 1
+                elif item["role"] == "tool":
+                    tool_calls += 1
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
+                "rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?",
+                (len(rows), tool_calls, session_id),
+            )
+
+        def _do(conn):
+            ids = [
+                item[0]
+                for item in conn.execute(
+                    f"SELECT id FROM messages WHERE session_id = ? AND id {operator} ?",
+                    (session_id, target_message_id),
+                ).fetchall()
+            ]
+            conn.execute(
+                f"DELETE FROM messages WHERE session_id = ? AND id {operator} ?",
+                (session_id, target_message_id),
+            )
+            _recount(conn)
+            return ids
+
+        deleted = self._execute_write(_do)
+        return {
+            "deleted_count": len(deleted),
+            "target_message": target_row,
+            "preserved_target": bool(preserve_target),
+        }
+
+    def delete_message_ids(self, session_id: str, message_ids: List[int]) -> int:
+        """Permanently delete exact rows and recount the live transcript."""
+        ids = sorted({int(item) for item in message_ids if int(item) > 0})
+        if not ids:
+            return 0
+
+        def _do(conn):
+            placeholders = ",".join("?" for _ in ids)
+            cursor = conn.execute(
+                f"DELETE FROM messages WHERE session_id = ? AND id IN ({placeholders})",
+                (session_id, *ids),
+            )
+            rows = conn.execute(
+                "SELECT role, tool_calls FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchall()
+            tool_calls = sum(
+                1
+                for item in rows
+                if item["role"] == "tool" or item["tool_calls"] is not None
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (len(rows), tool_calls, session_id),
+            )
+            return max(0, int(cursor.rowcount or 0))
+
+        return self._execute_write(_do)
+
     def restore_rewound(self, session_id: str, since_message_id: int) -> int:
         """Mark inactive messages with id >= *since_message_id* active again.
 

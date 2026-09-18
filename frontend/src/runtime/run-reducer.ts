@@ -138,8 +138,10 @@ export function reduceHoneyRun(state: HoneyRunState, event: HoneyEvent): HoneyRu
   }
   if (name === "assistant.completed") {
     const completedContent = String(payload.content || "");
-    const content = state.content || completedContent;
-    let parts = finishText(state.parts);
+    const content = payload.recovered ? completedContent : state.content || completedContent;
+    let parts = payload.recovered && completedContent
+      ? [{ id: "text-recovered", kind: "text" as const, content: completedContent, status: "completed" as const }]
+      : finishText(state.parts);
     if (content && !parts.some((part) => part.kind === "text")) {
       parts = finishText(appendText(parts, content));
     }
