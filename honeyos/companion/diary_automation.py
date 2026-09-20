@@ -15,6 +15,15 @@ from honeyos.companion.diary import DiaryEntry, DiaryStore
 DIARY_GENERATION_TIME = time(23, 30)
 DIARY_MAX_OUTPUT_TOKENS = 3000
 DIARY_RETRY_DELAY_SECONDS = 15 * 60
+
+# LLM generation itself times out after 240 seconds.  A pending lease older
+# than ten minutes cannot reasonably still belong to a healthy diary request
+# after a gateway restart, so it is safe to recover.
+DIARY_PENDING_STALE_AFTER = timedelta(minutes=10)
+
+# Retry the SAME calendar date instead of silently advancing to tomorrow.
+DIARY_RETRY_ATTEMPTS = 4
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,7 +135,13 @@ async def generate_diary_entry(
     *, home: Path, target_date: str, companion_profile: dict[str, Any], transcript: list[dict[str, str]], main_runtime: dict[str, Any], call_llm: Callable[..., Awaitable[Any]] | None = None
 ) -> DiaryEntry | None:
     store = DiaryStore(home)
-    if not store.begin_assistant_generation(target_date):
+    if not store.begin_assistant_generation(
+        target_date,
+        stale_after=DIARY_PENDING_STALE_AFTER,
+    ):
+        state = store.generation_status(target_date)
+        if state.get("status") == "pending":
+            raise RuntimeError("diary_generation_already_pending")
         return None
     try:
         user_entries = store.claim_user_entries_for_day(target_date)
@@ -158,24 +173,78 @@ async def generate_diary_entry(
         raise
 
 
+async def _generate_with_retry(
+    generate: Callable[[str], Awaitable[Any]],
+    target_date: str,
+    *,
+    attempts: int = DIARY_RETRY_ATTEMPTS,
+) -> Any:
+    """Generate one calendar date, retrying that SAME date on failure."""
+
+    total_attempts = max(1, int(attempts))
+    for attempt in range(1, total_attempts + 1):
+        try:
+            return await generate(target_date)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Companion diary generation failed for %s (attempt %s/%s)",
+                target_date,
+                attempt,
+                total_attempts,
+            )
+            if attempt >= total_attempts:
+                return None
+            await asyncio.sleep(DIARY_RETRY_DELAY_SECONDS)
+
+    return None
+
+
 async def run_diary_clock(
-    generate: Callable[[str], Awaitable[Any]], *, now_fn: Callable[[], datetime] = local_now
+    generate: Callable[[str], Awaitable[Any]],
+    *,
+    now_fn: Callable[[], datetime] = local_now,
 ) -> None:
-    """Attempt one catch-up, then run once at each local 23:30 boundary."""
+    """Catch up once at startup, then generate automatically at local 23:30.
+
+    Failed generations retry the same calendar date rather than accidentally
+    advancing to the following day.
+    """
 
     now = now_fn()
-    try:
-        await generate(startup_target_date(now).isoformat())
-    except Exception:
-        logger.exception("Companion diary catch-up generation failed")
+    catchup_date = startup_target_date(now).isoformat()
+    await _generate_with_retry(generate, catchup_date)
+
+    # Do not rely on one multi-hour asyncio.sleep().  Long sleeps can become
+    # unreliable across WSL suspend/resume or background-task lifecycle events.
+    # Wake periodically, re-read the real local clock, and only generate once
+    # the scheduled wall-clock time has actually been reached.
+    max_sleep_seconds = 60.0
+
     while True:
         now = now_fn()
         scheduled_at = next_generation_at(now)
-        delay = max(0.0, (scheduled_at - now).total_seconds())
-        await asyncio.sleep(delay)
-        try:
-            # Preserve the scheduled calendar date if WSL resumes after midnight.
-            await generate(scheduled_at.date().isoformat())
-        except Exception:
-            logger.exception("Scheduled companion diary generation failed")
-            await asyncio.sleep(DIARY_RETRY_DELAY_SECONDS)
+
+        while True:
+            now = now_fn()
+            delay = (scheduled_at - now).total_seconds()
+
+            if delay <= 0:
+                break
+
+            await asyncio.sleep(min(delay, max_sleep_seconds))
+
+        # Keep the originally scheduled calendar date even if WSL resumes
+        # after midnight.  The persistent diary generation state remains the
+        # authority that prevents duplicate generation.
+        target_date = scheduled_at.date().isoformat()
+
+        logger.info(
+            "Companion diary clock reached scheduled time %s; generating %s",
+            scheduled_at.isoformat(),
+            target_date,
+        )
+
+        await _generate_with_retry(generate, target_date)
+

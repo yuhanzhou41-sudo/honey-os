@@ -9744,7 +9744,39 @@ class APIServerAdapter(BasePlatformAdapter):
             except TypeError:
                 pass
             if hasattr(diary_task, "add_done_callback"):
-                diary_task.add_done_callback(self._background_tasks.discard)
+                def _on_diary_task_done(task):
+                    self._background_tasks.discard(task)
+
+                    if task.cancelled():
+                        logger.warning(
+                            "[%s] Companion diary clock task was cancelled",
+                            self.name,
+                        )
+                        return
+
+                    try:
+                        exc = task.exception()
+                    except asyncio.CancelledError:
+                        logger.warning(
+                            "[%s] Companion diary clock task was cancelled",
+                            self.name,
+                        )
+                        return
+
+                    if exc is not None:
+                        logger.error(
+                            "[%s] Companion diary clock task exited unexpectedly",
+                            self.name,
+                            exc_info=(type(exc), exc, exc.__traceback__),
+                        )
+                    else:
+                        logger.warning(
+                            "[%s] Companion diary clock task exited unexpectedly "
+                            "without an exception",
+                            self.name,
+                        )
+
+                diary_task.add_done_callback(_on_diary_task_done)
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",
                 self.name, self._host, self._port, self._model_name,
