@@ -6,7 +6,7 @@ Phase 1 — HoneyOS Files / Attachment Core
 
 Status:
 
-    IMPLEMENTATION COMPLETE — PENDING FREEZE COMMIT
+    FROZEN
 
 Phase 0 remains:
 
@@ -27,6 +27,10 @@ Phase 0 implementation commit:
 Phase 0 freeze documentation commit:
 
     644bf80
+
+Phase 1 implementation commit:
+
+    744a7bf51d5c421ea9ea351695bdd408f7af1738
 
 ---
 
@@ -282,11 +286,7 @@ Only the Attachment-specific hunks may enter the Phase 1 freeze commit.
 
 ## Next Actions
 
-1. Complete Phase 1 documentation.
-2. Run final Phase 1 regression.
-3. Stage only Phase 1 files and Attachment-specific API-server hunks.
-4. Inspect staged diff.
-5. Create Phase 1 freeze commit.
-6. Record the exact commit SHA.
-7. Mark Phase 1 FROZEN.
-8. Begin Phase 2 Study Core integration without modifying frozen Phase 0 contracts.
+1. Preserve frozen Phase 0 and Phase 1 contracts.
+2. Begin Phase 2 Study Core integration.
+3. Reuse `attachment_id` as the Files -> StudyResource boundary.
+4. Do not modify frozen Phase 1 behaviour unless a verified defect requires it.

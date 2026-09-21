@@ -10,7 +10,7 @@ Phase:
 
 Status:
 
-    IMPLEMENTATION COMPLETE — PENDING FINAL FREEZE COMMIT
+    FROZEN
 
 ---
 
@@ -292,18 +292,24 @@ Do not:
 
 ---
 
-## 16. Remaining Freeze Steps
+## 16. Freeze Record
 
-1. run final regression
-2. inspect all Phase 1 diffs
-3. stage `honeyos/files/`
-4. stage `tests/honeyos/files/`
-5. stage Phase 1 documentation
-6. stage only Attachment-specific `api_server.py` hunks
-7. inspect `git diff --cached`
-8. create Phase 1 commit
-9. record exact commit SHA
-10. update status to FROZEN
+Final regression:
+
+    Files: 71 passed
+    Study Phase 0: 24 passed
+    Combined: 95 passed
+    Files compile: PASS
+    API server compile: PASS
+    Real Gateway lifecycle: PASS
+
+Phase 1 implementation commit:
+
+    744a7bf51d5c421ea9ea351695bdd408f7af1738
+
+Phase 1 status:
+
+    FROZEN
 
 ---
 

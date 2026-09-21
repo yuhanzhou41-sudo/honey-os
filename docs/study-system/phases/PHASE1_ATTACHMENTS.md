@@ -2,7 +2,7 @@
 
 ## Status
 
-IMPLEMENTATION COMPLETE — PENDING FREEZE COMMIT
+FROZEN
 
 Phase 1 establishes a generic durable file and attachment layer for HoneyOS.
 
@@ -540,8 +540,14 @@ The Gateway itself was healthy and listening on:
 - [x] explicit visual-coverage semantics
 - [x] unit/integration tests
 - [x] real Gateway lifecycle smoke test
-- [ ] final regression after documentation closeout
-- [ ] Phase 1 Git commit SHA recorded
-- [ ] Phase 1 marked FROZEN
+- [x] final regression after documentation closeout
+- [x] Phase 1 Git commit SHA recorded
+- [x] Phase 1 marked FROZEN
 
-Phase 1 must not be marked FROZEN until the final regression and freeze commit are complete.
+Phase 1 implementation commit:
+
+    744a7bf51d5c421ea9ea351695bdd408f7af1738
+
+Phase 1 is FROZEN.
+
+Further changes to Phase 1 contracts require a verified defect or an explicitly scoped later-phase migration.
