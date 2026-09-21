@@ -6,6 +6,7 @@ import { ErrorState } from "../components/honey/PageState";
 import { HoneyOSCustomUIRoot } from "../custom/runtime";
 import { ChatPage } from "../features/chat/ChatPage";
 import { DiaryPage } from "../features/diary/DiaryPage";
+import { StudyPage } from "../features/study/StudyPage";
 import { MemoriesPage } from "../features/memories/MemoriesPage";
 import { OnboardingPage } from "../features/onboarding/OnboardingPage";
 import { RelationshipPage } from "../features/relationship/RelationshipPage";
@@ -23,6 +24,7 @@ export function App() {
             <Route index element={<ChatPage />} />
             <Route path="memories" element={<MemoriesPage />} />
             <Route path="diary" element={<DiaryPage />} />
+            <Route path="study" element={<StudyPage />} />
             <Route path="relationship" element={<RelationshipPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

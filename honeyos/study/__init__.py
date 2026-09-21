@@ -26,5 +26,9 @@ __all__ = [
     "StudyTaskStatus",
     "StudyRepository",
     "StudyPlanNotFoundError",
+    "StudyService",
+    "StudyTaskNotFoundError",
     "validate_study_plan",
 ]
+
+from .service import StudyService, StudyTaskNotFoundError

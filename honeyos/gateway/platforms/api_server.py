@@ -2164,6 +2164,220 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return profile_prefix_middleware
 
+    # === HoneyOS Study Core Phase 2 ===
+    @staticmethod
+    def _study_json(plan):
+        return plan.model_dump(mode="json")
+
+    async def _handle_study_list_plans(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyService
+
+        plans = await asyncio.to_thread(StudyService().list_plans)
+        return web.json_response({
+            "plans": [self._study_json(plan) for plan in plans]
+        })
+
+    async def _handle_study_create_plan(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyService
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        try:
+            plan = await asyncio.to_thread(
+                StudyService().create_plan,
+                body,
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        return web.json_response(
+            {"plan": self._study_json(plan)},
+            status=201,
+        )
+
+    async def _handle_study_get_plan(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyPlanNotFoundError, StudyService
+
+        try:
+            plan = await asyncio.to_thread(
+                StudyService().get_plan,
+                request.match_info["plan_id"],
+            )
+        except StudyPlanNotFoundError:
+            return web.json_response(
+                {"error": "study plan not found"},
+                status=404,
+            )
+
+        return web.json_response({"plan": self._study_json(plan)})
+
+    async def _handle_study_update_plan(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyPlanNotFoundError, StudyService
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        try:
+            plan = await asyncio.to_thread(
+                StudyService().update_plan,
+                request.match_info["plan_id"],
+                body,
+            )
+        except StudyPlanNotFoundError:
+            return web.json_response(
+                {"error": "study plan not found"},
+                status=404,
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        return web.json_response({"plan": self._study_json(plan)})
+
+    async def _handle_study_delete_plan(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyPlanNotFoundError, StudyService
+
+        plan_id = request.match_info["plan_id"]
+
+        try:
+            await asyncio.to_thread(
+                StudyService().delete_plan,
+                plan_id,
+            )
+        except StudyPlanNotFoundError:
+            return web.json_response(
+                {"error": "study plan not found"},
+                status=404,
+            )
+
+        return web.json_response({
+            "id": plan_id,
+            "deleted": True,
+        })
+
+    async def _handle_study_create_task(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyPlanNotFoundError, StudyService
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        try:
+            plan = await asyncio.to_thread(
+                StudyService().create_task,
+                request.match_info["plan_id"],
+                body,
+            )
+        except StudyPlanNotFoundError:
+            return web.json_response(
+                {"error": "study plan not found"},
+                status=404,
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        return web.json_response(
+            {"plan": self._study_json(plan)},
+            status=201,
+        )
+
+    async def _handle_study_update_task(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import (
+            StudyPlanNotFoundError,
+            StudyService,
+            StudyTaskNotFoundError,
+        )
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        try:
+            plan = await asyncio.to_thread(
+                StudyService().update_task,
+                request.match_info["plan_id"],
+                request.match_info["task_id"],
+                body,
+            )
+        except StudyPlanNotFoundError:
+            return web.json_response(
+                {"error": "study plan not found"},
+                status=404,
+            )
+        except StudyTaskNotFoundError:
+            return web.json_response(
+                {"error": "study task not found"},
+                status=404,
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        return web.json_response({"plan": self._study_json(plan)})
+
+    async def _handle_study_task_status(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import (
+            StudyPlanNotFoundError,
+            StudyService,
+            StudyTaskNotFoundError,
+        )
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        status = str(body.get("status") or "")
+
+        try:
+            plan = await asyncio.to_thread(
+                StudyService().set_task_status,
+                request.match_info["plan_id"],
+                request.match_info["task_id"],
+                status,
+            )
+        except StudyPlanNotFoundError:
+            return web.json_response(
+                {"error": "study plan not found"},
+                status=404,
+            )
+        except StudyTaskNotFoundError:
+            return web.json_response(
+                {"error": "study task not found"},
+                status=404,
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        return web.json_response({"plan": self._study_json(plan)})
+
+    async def _handle_study_delete_task(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import (
+            StudyPlanNotFoundError,
+            StudyService,
+            StudyTaskNotFoundError,
+        )
+
+        try:
+            plan = await asyncio.to_thread(
+                StudyService().delete_task,
+                request.match_info["plan_id"],
+                request.match_info["task_id"],
+            )
+        except StudyPlanNotFoundError:
+            return web.json_response(
+                {"error": "study plan not found"},
+                status=404,
+            )
+        except StudyTaskNotFoundError:
+            return web.json_response(
+                {"error": "study task not found"},
+                status=404,
+            )
+
+        return web.json_response({"plan": self._study_json(plan)})
+    # === /HoneyOS Study Core Phase 2 ===
+
     def _http_route_table(self) -> List[tuple]:
         """Return (method, path, handler) rows registered by ``connect()``.
 
@@ -2174,6 +2388,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/", self._handle_companion_react),
             ("GET", "/memories", self._handle_companion_react),
             ("GET", "/diary", self._handle_companion_react),
+            ("GET", "/study", self._handle_companion_react),
             ("GET", "/relationship", self._handle_companion_react),
             ("GET", "/settings", self._handle_companion_react),
             ("GET", "/onboarding", self._handle_companion_react),
@@ -2265,6 +2480,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 "/api/companion/channels/link/{link_id}",
                 self._handle_companion_channel_link_status,
             ),
+            # === HoneyOS Study Core Phase 2 ===
+            ("GET", "/api/study/plans", self._handle_study_list_plans),
+            ("POST", "/api/study/plans", self._handle_study_create_plan),
+            ("GET", "/api/study/plans/{plan_id}", self._handle_study_get_plan),
+            ("PATCH", "/api/study/plans/{plan_id}", self._handle_study_update_plan),
+            ("DELETE", "/api/study/plans/{plan_id}", self._handle_study_delete_plan),
+            ("POST", "/api/study/plans/{plan_id}/tasks", self._handle_study_create_task),
+            ("PATCH", "/api/study/plans/{plan_id}/tasks/{task_id}", self._handle_study_update_task),
+            ("DELETE", "/api/study/plans/{plan_id}/tasks/{task_id}", self._handle_study_delete_task),
+            ("POST", "/api/study/plans/{plan_id}/tasks/{task_id}/status", self._handle_study_task_status),
+            # === /HoneyOS Study Core Phase 2 ===
             ("POST", "/api/companion/new", self._handle_companion_new),
             (
                 "POST",
