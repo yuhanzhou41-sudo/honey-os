@@ -382,3 +382,65 @@ The current HTTP multipart bridge also rejects oversized requests.
 Future configuration may make the limit user- or deployment-configurable without changing the Attachment model.
 
 Status: accepted.
+
+---
+
+## D023 — StudyService is the canonical Study application boundary
+
+Decision:
+
+Gateway and frontend canonical Study operations use:
+
+    StudyService
+        -> StudyRepository
+        -> StudyPlan v1
+
+HTTP handlers must not implement their own Study persistence logic or write
+raw Study SQLite directly.
+
+Status: accepted.
+
+---
+
+## D024 — Canonical Study and legacy Companion Study do not dual-write
+
+Decision:
+
+Canonical Study operations under:
+
+    /api/study/*
+
+write only to:
+
+    ~/.honeyos/study/study.db
+
+The transition-only legacy surface:
+
+    /api/companion/study/*
+
+and:
+
+    ~/.honeyos/companion/study.db
+
+remain separate.
+
+Canonical CRUD must not update the legacy database.
+
+Status: accepted.
+
+---
+
+## D025 — Phase 2 exposes existing frozen Study contracts rather than expanding them
+
+Decision:
+
+Phase 2 is an integration/application phase.
+
+It must not use frontend requirements as a reason to casually add prototype
+gamification, daily-state, memory, Study Library, or Attachment semantics to
+StudyPlan v1.
+
+Future schema changes require an explicit later-phase architecture decision
+and migration strategy.
+
+Status: accepted.

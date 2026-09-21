@@ -2,9 +2,13 @@
 
 ## Current Phase
 
-Phase 1 — HoneyOS Files / Attachment Core
+Phase 2 — Study Core
 
 Status:
+
+    FROZEN
+
+Phase 1 remains:
 
     FROZEN
 
@@ -31,6 +35,15 @@ Phase 0 freeze documentation commit:
 Phase 1 implementation commit:
 
     744a7bf51d5c421ea9ea351695bdd408f7af1738
+
+
+Phase 1 freeze documentation / Phase 2 baseline commit:
+
+    103cd1056ba487991a846168491ed2af5cf45472
+
+Phase 2 implementation commit:
+
+    3bfb9cf471ed4e8139897bad83fa478e76626587
 
 ---
 
@@ -290,3 +303,58 @@ Only the Attachment-specific hunks may enter the Phase 1 freeze commit.
 2. Begin Phase 2 Study Core integration.
 3. Reuse `attachment_id` as the Files -> StudyResource boundary.
 4. Do not modify frozen Phase 1 behaviour unless a verified defect requires it.
+
+
+---
+
+## Phase 2 — Frozen
+
+Phase 2 connects the frozen StudyPlan v1 domain to the real HoneyOS Gateway
+and frontend.
+
+Canonical chain:
+
+    StudyPage
+        -> /api/study/*
+        -> StudyService
+        -> StudyRepository
+        -> ~/.honeyos/study/study.db
+
+Implemented:
+
+- StudyService application layer
+- canonical Study Plan CRUD
+- canonical Study Task CRUD
+- explicit task-status API
+- canonical frontend Study API
+- Study page backed by Study Core
+- /study frontend route and navigation
+- persistence across Gateway restart
+- strict separation from legacy companion Study persistence
+
+Canonical API:
+
+    GET/POST     /api/study/plans
+    GET/PATCH/DELETE /api/study/plans/{plan_id}
+    POST         /api/study/plans/{plan_id}/tasks
+    PATCH/DELETE /api/study/plans/{plan_id}/tasks/{task_id}
+    POST         /api/study/plans/{plan_id}/tasks/{task_id}/status
+
+Verified:
+
+    Study:                       31 passed
+    Files:                       71 passed
+    Combined:                   102 passed
+    Python compile:             PASS
+    Frontend build:             PASS
+    Canonical CRUD:             PASS
+    Gateway restart:            PASS
+    Persistence:                PASS
+    List endpoint:              PASS
+    Legacy DB non-write:        PASS
+    Runtime Gate:               PASS
+
+The old Companion Study MVP remains transition-only and is not canonical.
+
+No Study data is automatically written to HoneyOS Personal Memory,
+External Context, or the DeepSeek migration pipeline.
