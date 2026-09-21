@@ -358,3 +358,28 @@ The old Companion Study MVP remains transition-only and is not canonical.
 
 No Study data is automatically written to HoneyOS Personal Memory,
 External Context, or the DeepSeek migration pipeline.
+
+## Phase 3 — Pomodoro
+
+Status: FROZEN
+
+Phase 3 implements the canonical StudySession Pomodoro runtime using the
+existing HoneyOS scheduler and backend-authoritative timestamps.
+
+Verified:
+- focused Phase 3 tests: 8 passed
+- full Study regression: 39 passed
+- Study + Files regression: 110 passed
+- Files standalone regression: 71 passed
+- frontend build: PASS
+- real scheduler runtime gate: PASS
+- real Gateway restart/persistence gate: PASS
+- legacy Companion Study DB non-write gate: PASS
+
+See:
+- `docs/study-system/phases/PHASE3_POMODORO.md`
+- `docs/study-system/handoffs/HANDOFF_2026-09-21_PHASE3.md`
+
+Phase 3 implementation commit:
+
+    2461d9deb2a2a59a47129d5b629f4f6d699bc81e
