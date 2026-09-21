@@ -1472,6 +1472,9 @@ class _ProviderAuthResolutionError(RuntimeError):
     """
 
 
+from honeyos.files.http import AttachmentHTTPHandlers
+
+
 class APIServerAdapter(BasePlatformAdapter):
     """
     OpenAI-compatible HTTP API server adapter.
@@ -1549,6 +1552,14 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+
+        # Generic durable HoneyOS Files / Attachment Core.
+        #
+        # This storage is intentionally independent from Study Library,
+        # HoneyOS Memory, External Context, and history-import pipelines.
+        self._attachment_http = AttachmentHTTPHandlers(
+            Path.home() / ".honeyos" / "files"
+        )
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -2300,6 +2311,30 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/capabilities", self._handle_capabilities),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
+            # === HoneyOS Files / Attachment Core ===
+            ("POST", "/api/attachments", self._attachment_http.upload),
+            ("GET", "/api/attachments", self._attachment_http.list),
+            (
+                "GET",
+                "/api/attachments/{attachment_id}",
+                self._attachment_http.get,
+            ),
+            (
+                "GET",
+                "/api/attachments/{attachment_id}/content",
+                self._attachment_http.content,
+            ),
+            (
+                "DELETE",
+                "/api/attachments/{attachment_id}",
+                self._attachment_http.delete,
+            ),
+            (
+                "POST",
+                "/api/attachments/{attachment_id}/restore",
+                self._attachment_http.restore,
+            ),
+            # === /HoneyOS Files / Attachment Core ===
             ("GET", "/api/sessions", self._handle_list_sessions),
             ("POST", "/api/sessions", self._handle_create_session),
             ("GET", "/api/sessions/{session_id}", self._handle_get_session),
