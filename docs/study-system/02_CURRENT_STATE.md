@@ -6,7 +6,7 @@ Phase 0 — Specification Freeze
 
 Status:
 
-    IMPLEMENTED — PENDING FINAL REGRESSION + COMMIT
+    FROZEN
 
 ## Last Verified Base Commit
 
@@ -14,7 +14,9 @@ Status:
 
 This is the verified diary scheduling fix commit from which Phase 0 development started.
 
-The final Phase 0 commit SHA has not yet been created.
+Phase 0 implementation commit:
+
+    b40e319a2c59b104fd417f856c95858def843718
 
 ## Phase 0 Completed
 
@@ -37,26 +39,25 @@ The final Phase 0 commit SHA has not yet been created.
 
 ## Verified Tests
 
-Core Phase 0 suite before final boundary additions:
+Final Phase 0 Study suite:
 
-    19 passed
+    24 passed
 
-Final boundary suite and regression result are still pending.
+Diary regression suite:
+
+    31 passed
+
+Phase 0 acceptance tests and selected regression tests passed.
 
 ## Current Problem
 
 No known defect exists in the Phase 0 core implementation.
 
-Remaining work is Phase 0 closeout:
+Phase 0 core implementation has no known defect.
 
-- run final boundary tests
-- run selected HoneyOS regression tests
-- inspect Git diff
-- isolate Phase 0 files
-- create Phase 0 commit
-- record verified commit SHA
-- create handoff
-- freeze Phase 0
+The implementation has passed its acceptance and selected regression tests.
+
+Phase 0 is frozen. Further Study development proceeds through later phases.
 
 ## Frozen / Do Not Modify During Closeout
 
@@ -106,13 +107,6 @@ Its canonical data flow is:
 
 ## Next Actions
 
-1. Complete final Phase 0 boundary tests.
-2. Run final Study test suite.
-3. Run selected non-Study regression tests.
-4. Inspect the Phase 0 Git diff.
-5. Stage only Phase 0 files.
-6. Inspect staged files.
-7. Commit Phase 0.
-8. Record the commit SHA in this file.
-9. Create the Phase 0 handoff.
-10. Mark Phase 0 FROZEN.
+1. Preserve Phase 0 canonical contracts.
+2. Begin Phase 1 attachment/file infrastructure.
+3. Do not modify frozen Phase 0 behaviour unless a verified defect requires it.
