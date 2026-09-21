@@ -383,3 +383,17 @@ See:
 Phase 3 implementation commit:
 
     2461d9deb2a2a59a47129d5b629f4f6d699bc81e
+
+## Phase 3.2 — Classic Pomodoro
+
+Status: FROZEN
+
+Implementation commit:
+
+    c6658546ccdd19ec58cfa1e5e576e08ad0b5073e
+
+Phase 3.2 refines Pomodoro behavior to the classic 25/5 cycle with a
+15-minute long break after 4 completed focus sessions. Break sessions use
+the same canonical StudySession runtime and HoneyOS scheduler. The full
+4-focus cycle was verified through the real Gateway API.
+

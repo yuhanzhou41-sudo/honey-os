@@ -193,3 +193,30 @@ Phase 3 patch.
 Phase 3 implementation commit:
 
     2461d9deb2a2a59a47129d5b629f4f6d699bc81e
+
+## Phase 3.2 — Classic Pomodoro
+
+Status: FROZEN
+
+Implementation commit:
+
+    c6658546ccdd19ec58cfa1e5e576e08ad0b5073e
+
+Classic defaults:
+
+- 25 minute focus
+- 5 minute short break
+- 15 minute long break
+- long break after 4 focus sessions
+
+The cycle is plan-level and may continue across different StudyTasks.
+
+Short and long breaks are first-class StudySession types and use the same
+backend-authoritative timing and existing HoneyOS scheduler as focus sessions.
+
+Real Gateway cycle gate verified:
+
+`focus(25) -> short_break(5) -> focus(25) -> short_break(5) -> focus(25) -> short_break(5) -> focus(25) -> long_break(15) -> focus(25)`
+
+After the long break, the plan cycle resets to 0/4.
+
