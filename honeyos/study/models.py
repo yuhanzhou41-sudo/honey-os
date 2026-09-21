@@ -40,6 +40,8 @@ class StudyTaskStatus(str, Enum):
 
 class StudySessionType(str, Enum):
     FOCUS = "focus"
+    SHORT_BREAK = "short_break"
+    LONG_BREAK = "long_break"
     REVIEW = "review"
     QUIZ = "quiz"
     FLASHCARD = "flashcard"

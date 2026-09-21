@@ -15,13 +15,16 @@ export const setStudyTaskStatus=(pid:string,tid:string,status:StudyTaskStatus)=>
 export const deleteStudyTask=(pid:string,tid:string)=>requestJson<{plan:StudyPlan}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(tid)}`,{method:"DELETE"});
 
 export type StudySessionStatus="planned"|"running"|"paused"|"completed"|"abandoned";
-export type StudySessionType="focus"|"review"|"quiz"|"flashcard";
+export type StudySessionType="focus"|"short_break"|"long_break"|"review"|"quiz"|"flashcard";
 export type StudySession={id:string;task_id:string;session_type:StudySessionType;status:StudySessionStatus;started_at:string|null;expected_end_at:string|null;ended_at:string|null;planned_minutes:number;actual_minutes:number;user_summary:string;created_at:string;updated_at:string};
 export const listStudySessions=(pid:string,tid:string)=>requestJson<{sessions:StudySession[]}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(tid)}/sessions`);
-export const createStudySession=(pid:string,tid:string,p:{planned_minutes?:number;user_summary?:string}={})=>requestJson<{session:StudySession}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(tid)}/sessions`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+export const createStudySession=(pid:string,tid:string,p:{planned_minutes?:number;user_summary?:string;session_type?:StudySessionType}={})=>requestJson<{session:StudySession}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(tid)}/sessions`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
 export const getStudySession=(sid:string)=>requestJson<{session:StudySession}>(`/api/study/sessions/${encodeURIComponent(sid)}`);
 export const startStudySession=(sid:string)=>requestJson<{session:StudySession}>(`/api/study/sessions/${encodeURIComponent(sid)}/start`,{method:"POST"});
 export const pauseStudySession=(sid:string)=>requestJson<{session:StudySession}>(`/api/study/sessions/${encodeURIComponent(sid)}/pause`,{method:"POST"});
 export const resumeStudySession=(sid:string)=>requestJson<{session:StudySession}>(`/api/study/sessions/${encodeURIComponent(sid)}/resume`,{method:"POST"});
 export const completeStudySession=(sid:string)=>requestJson<{session:StudySession}>(`/api/study/sessions/${encodeURIComponent(sid)}/complete`,{method:"POST"});
 export const abandonStudySession=(sid:string)=>requestJson<{session:StudySession}>(`/api/study/sessions/${encodeURIComponent(sid)}/abandon`,{method:"POST"});
+
+export type StudyPomodoroState={focuses_in_cycle:number;cycle_length:number;next_session_type:StudySessionType;next_minutes:number;current_session_id:string|null;current_session_type:StudySessionType|null;current_session_status:StudySessionStatus|null};
+export const getStudyPomodoroState=(pid:string)=>requestJson<{pomodoro:StudyPomodoroState}>(`/api/study/plans/${encodeURIComponent(pid)}/pomodoro`);

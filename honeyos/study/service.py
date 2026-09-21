@@ -33,7 +33,7 @@ class StudyService:
         "title", "description", "scheduled_date", "planned_minutes",
         "status", "order_index", "review_required",
     }
-    _SESSION_CREATE_FIELDS = {"planned_minutes", "user_summary"}
+    _SESSION_CREATE_FIELDS = {"planned_minutes", "user_summary", "session_type"}
 
     def __init__(
         self,
@@ -63,6 +63,10 @@ class StudyService:
         raw.pop("created_at", None)
         raw.pop("updated_at", None)
         raw["source_type"] = StudyPlanSource.MANUAL.value
+        raw.setdefault("focus_minutes", 25)
+        raw.setdefault("break_minutes", 5)
+        raw.setdefault("long_break_minutes", 15)
+        raw.setdefault("long_break_after_sessions", 4)
         raw["tasks"] = []
         plan = validate_study_plan(raw)
         return self.repository.save_plan(plan)
@@ -88,6 +92,7 @@ class StudyService:
         raw = dict(payload)
         raw.pop("status", None)
         raw["plan_id"] = plan.id
+        raw.setdefault("planned_minutes", plan.focus_minutes)
         if "order_index" not in raw:
             raw["order_index"] = max(
                 (task.order_index for task in plan.tasks), default=0
@@ -140,6 +145,69 @@ class StudyService:
             elapsed += max(0, int((now - runtime.last_resumed_at).total_seconds()))
         return elapsed
 
+    def get_pomodoro_state(self, plan_id: str) -> dict[str, Any]:
+        plan = self.repository.get_plan(plan_id)
+        sessions = [
+            self._reconcile_due_session(session)
+            for session in self.sessions.list_plan_sessions(plan_id)
+        ]
+
+        active = next(
+            (
+                session
+                for session in reversed(sessions)
+                if session.status
+                in {
+                    StudySessionStatus.PLANNED,
+                    StudySessionStatus.RUNNING,
+                    StudySessionStatus.PAUSED,
+                }
+            ),
+            None,
+        )
+
+        completed = [
+            session
+            for session in sessions
+            if session.status is StudySessionStatus.COMPLETED
+        ]
+
+        focuses_in_cycle = 0
+        next_type = StudySessionType.FOCUS
+
+        for session in completed:
+            if session.session_type is StudySessionType.FOCUS:
+                focuses_in_cycle += 1
+                if focuses_in_cycle >= plan.long_break_after_sessions:
+                    next_type = StudySessionType.LONG_BREAK
+                else:
+                    next_type = StudySessionType.SHORT_BREAK
+            elif session.session_type is StudySessionType.LONG_BREAK:
+                focuses_in_cycle = 0
+                next_type = StudySessionType.FOCUS
+            elif session.session_type is StudySessionType.SHORT_BREAK:
+                next_type = StudySessionType.FOCUS
+
+        if active is not None:
+            next_type = active.session_type
+
+        if next_type is StudySessionType.FOCUS:
+            next_minutes = plan.focus_minutes
+        elif next_type is StudySessionType.LONG_BREAK:
+            next_minutes = plan.long_break_minutes
+        else:
+            next_minutes = plan.break_minutes
+
+        return {
+            "focuses_in_cycle": focuses_in_cycle,
+            "cycle_length": plan.long_break_after_sessions,
+            "next_session_type": next_type.value,
+            "next_minutes": next_minutes,
+            "current_session_id": active.id if active else None,
+            "current_session_type": active.session_type.value if active else None,
+            "current_session_status": active.status.value if active else None,
+        }
+
     def create_session(
         self, plan_id: str, task_id: str, payload: dict[str, Any]
     ) -> StudySession:
@@ -149,16 +217,41 @@ class StudyService:
             raise ValueError(
                 f"unsupported session fields: {', '.join(sorted(unknown))}"
             )
-        if task.status.value not in {"planned", "in_progress"}:
+
+        state = self.get_pomodoro_state(plan_id)
+        if state["current_session_id"]:
+            raise ValueError("another Pomodoro session is already active for this plan")
+
+        expected_type = StudySessionType(state["next_session_type"])
+        requested_type = StudySessionType(
+            payload.get("session_type") or expected_type.value
+        )
+        if requested_type is not expected_type:
+            raise ValueError(
+                f"next Pomodoro session must be {expected_type.value!r}"
+            )
+
+        if (
+            requested_type is StudySessionType.FOCUS
+            and task.status.value not in {"planned", "in_progress"}
+        ):
             raise ValueError(
                 f"cannot create focus session for task in status {task.status.value!r}"
             )
+
+        default_minutes = {
+            StudySessionType.FOCUS: plan.focus_minutes,
+            StudySessionType.SHORT_BREAK: plan.break_minutes,
+            StudySessionType.LONG_BREAK: plan.long_break_minutes,
+        }[requested_type]
+
         raw = dict(payload)
         raw["task_id"] = task.id
-        raw["session_type"] = StudySessionType.FOCUS.value
+        raw["session_type"] = requested_type.value
         raw["status"] = StudySessionStatus.PLANNED.value
-        raw["planned_minutes"] = int(raw.get("planned_minutes") or plan.focus_minutes)
+        raw["planned_minutes"] = int(raw.get("planned_minutes") or default_minutes)
         raw["actual_minutes"] = 0
+
         session = self.sessions.save_session(StudySession.model_validate(raw))
         self.sessions.save_runtime(
             session.id,

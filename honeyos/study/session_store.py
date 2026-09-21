@@ -121,6 +121,20 @@ class StudySessionStore:
                 ).fetchall()
         return [self.get_session(row["id"]) for row in rows]
 
+    def list_plan_sessions(self, plan_id: str) -> list[StudySession]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.id
+                FROM study_sessions AS s
+                JOIN study_tasks AS t ON t.id = s.task_id
+                WHERE t.plan_id = ?
+                ORDER BY s.created_at, s.id
+                """,
+                (plan_id,),
+            ).fetchall()
+        return [self.get_session(row["id"]) for row in rows]
+
     def save_runtime(
         self,
         session_id: str,

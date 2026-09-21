@@ -2426,6 +2426,20 @@ class APIServerAdapter(BasePlatformAdapter):
         return await self._study_session_transition(request, "complete_session")
     async def _handle_study_abandon_session(self, request: "web.Request") -> "web.Response":
         return await self._study_session_transition(request, "abandon_session")
+
+    # === HoneyOS Study Classic Pomodoro Phase 3.2 ===
+    async def _handle_study_pomodoro_state(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyPlanNotFoundError, StudyService
+        try:
+            state = await asyncio.to_thread(
+                StudyService().get_pomodoro_state,
+                request.match_info["plan_id"],
+            )
+        except StudyPlanNotFoundError:
+            return web.json_response({"error": "study plan not found"}, status=404)
+        return web.json_response({"pomodoro": state})
+    # === /HoneyOS Study Classic Pomodoro Phase 3.2 ===
+
     # === /HoneyOS Study Pomodoro Phase 3 ===
 
     def _http_route_table(self) -> List[tuple]:
@@ -2550,6 +2564,9 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/study/sessions/{session_id}/resume", self._handle_study_resume_session),
             ("POST", "/api/study/sessions/{session_id}/complete", self._handle_study_complete_session),
             ("POST", "/api/study/sessions/{session_id}/abandon", self._handle_study_abandon_session),
+            # === HoneyOS Study Classic Pomodoro Phase 3.2 ===
+            ("GET", "/api/study/plans/{plan_id}/pomodoro", self._handle_study_pomodoro_state),
+            # === /HoneyOS Study Classic Pomodoro Phase 3.2 ===
             # === /HoneyOS Study Pomodoro Phase 3 ===
             ("POST", "/api/companion/new", self._handle_companion_new),
             (
