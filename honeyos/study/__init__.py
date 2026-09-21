@@ -28,7 +28,10 @@ __all__ = [
     "StudyPlanNotFoundError",
     "StudyService",
     "StudyTaskNotFoundError",
+    "StudySessionNotFoundError",
+    "StudySessionStore",
     "validate_study_plan",
 ]
 
 from .service import StudyService, StudyTaskNotFoundError
+from .session_store import StudySessionNotFoundError, StudySessionStore

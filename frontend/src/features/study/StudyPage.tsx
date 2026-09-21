@@ -1,39 +1,609 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { claimStudyDailyReward, claimStudyStageReward, fetchStudyState, updateStudyDay, updateStudyTask } from "../../api/companion";
+
+import {
+  abandonStudySession,
+  completeStudySession,
+  createStudyPlan,
+  createStudySession,
+  createStudyTask,
+  deleteStudyPlan,
+  deleteStudyTask,
+  listStudyPlans,
+  listStudySessions,
+  pauseStudySession,
+  resumeStudySession,
+  setStudyTaskStatus,
+  startStudySession,
+  updateStudyPlan,
+  type StudyPlan,
+  type StudySession,
+  type StudyTask,
+  type StudyTaskStatus,
+} from "../../api/study";
 import { PageHeader } from "../../components/honey/PageHeader";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
 
-const studyKey = ["companion", "study"] as const;
-const pct=(d:number,t:number)=>t?Math.round(d/t*100):0;
-const levelText=(x:string)=>x==="full"?"全部完成":x==="standard"?"标准通关":x==="minimum"?"保底通关":"进行中";
-const pri=(x:string)=>x==="must"?"必须守住":x==="bonus"?"加分项":"标准任务";
+const plansKey = ["study", "plans"] as const;
 
-export function StudyPage(){
-  const qc=useQueryClient(); const study=useQuery({queryKey:studyKey,queryFn:fetchStudyState}); const data=study.data;
-  const initial=useMemo(()=>{if(!data)return"";return data.days.find(d=>d.entry_date===data.today)?.entry_date??data.days.find(d=>d.completion_level==="incomplete")?.entry_date??data.days[0]?.entry_date??""},[data]);
-  const [selected,setSelected]=useState(""); useEffect(()=>{if(!selected&&initial)setSelected(initial)},[initial,selected]);
-  const day=data?.days.find(d=>d.entry_date===selected)??data?.days[0];
-  const [m,setM]=useState({questions_done:0,questions_correct:0,red_errors:0,focus_blocks:0,note:""});
-  useEffect(()=>{if(day)setM({questions_done:day.questions_done,questions_correct:day.questions_correct,red_errors:day.red_errors,focus_blocks:day.focus_blocks,note:day.note??""})},[day?.entry_date]);
-  const refresh=()=>qc.invalidateQueries({queryKey:studyKey});
-  const task=useMutation({mutationFn:({id,status}:{id:string;status:"todo"|"done"})=>updateStudyTask(id,status),onSuccess:refresh});
-  const save=useMutation({mutationFn:({date,patch}:{date:string;patch:Record<string,unknown>})=>updateStudyDay(date,patch),onSuccess:refresh});
-  const reward=useMutation({mutationFn:claimStudyDailyReward,onSuccess:refresh}); const stage=useMutation({mutationFn:claimStudyStageReward,onSuccess:refresh});
-  if(study.isLoading)return <Frame><LoadingState/></Frame>; if(study.isError||!data||!day)return <Frame><ErrorState/></Frame>;
-  const rate=m.questions_done?Math.round(m.questions_correct/m.questions_done*100):0; const ready=["standard","full"].includes(day.completion_level);
-  return <Frame>
-    <PageHeader title="学习计划" description="第一周先把节奏跑起来：完成任务、留下数据，让计划根据真实进度继续长。"/>
-    <div className="mt-5 grid gap-3 sm:grid-cols-3"><Card l="阳光点" v={`☀️ ${data.sunlight}`}/><Card l="学习势能" v={`🔥 ${data.momentum}`}/><Card l="植物成长" v={`${data.plant.emoji} Lv.${data.plant.level} · ${data.plant.name}`}/></div>
-    <section className="mt-4 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-5"><div className="flex items-center justify-between"><div><p className="text-sm text-[var(--foreground-muted)]">第一周成长</p><p className="mt-1 text-lg font-semibold">{data.standard_days} / 7 个标准通关日</p></div><div className="text-4xl">{data.plant.emoji}</div></div><div className="mt-4 h-2 overflow-hidden rounded-full bg-[var(--surface)]"><div className="h-full rounded-full bg-[var(--accent)]" style={{width:`${Math.min(100,Math.round(data.standard_days/7*100))}%`}}/></div><p className="mt-3 text-sm text-[var(--foreground-muted)]">保底通关不掉势能；标准通关才推动植物成长。</p></section>
-    <div className="mt-6 flex gap-2 overflow-x-auto pb-2">{data.days.map(d=><button key={d.entry_date} onClick={()=>setSelected(d.entry_date)} className={`min-w-24 rounded-[var(--radius-md)] border px-3 py-2 text-left text-sm ${d.entry_date===day.entry_date?'border-[var(--accent)] bg-[var(--surface-raised)]':'border-[var(--border)] bg-[var(--surface)]'}`}><b className="block">Day {d.day_no}</b><span className="text-xs text-[var(--foreground-muted)]">{d.entry_date.slice(5)}</span></button>)}</div>
-    <section className="mt-4 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-5"><div className="flex flex-wrap justify-between gap-4"><div><p className="text-sm text-[var(--foreground-muted)]">{day.subject}</p><h2 className="mt-1 text-xl font-semibold">Day {day.day_no} · {day.title}</h2><p className="mt-2 text-sm text-[var(--foreground-muted)]">{day.done}/{day.total} 项 · {pct(day.done,day.total)}% · {levelText(day.completion_level)}</p></div><button onClick={()=>save.mutate({date:day.entry_date,patch:{minimum_mode:!day.minimum_mode}})} className="rounded-[var(--radius-md)] border border-[var(--border-strong)] px-3 py-2 text-sm">{day.minimum_mode?"退出保底模式":"启动保底模式"}</button></div>
-    {day.minimum_mode&&<div className="mt-4 rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] p-4"><b>🛡️ 今天只守住必须任务</b><p className="mt-1 text-sm text-[var(--foreground-muted)]">完成所有“必须守住”任务即可保底通关；其他任务可以留给恢复块。</p></div>}
-    <div className="mt-5 space-y-2">{day.tasks.map(t=>{const done=t.status==="done";const soft=day.minimum_mode&&t.priority!=="must";return <label key={t.id} className={`flex cursor-pointer gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-4 ${soft?'opacity-55':''}`}><input type="checkbox" className="mt-1 h-4 w-4" checked={done} onChange={()=>task.mutate({id:t.id,status:done?'todo':'done'})}/><span className="flex-1"><span className={done?'font-medium line-through opacity-70':'font-medium'}>{t.title}</span><span className="mt-1 block text-sm text-[var(--foreground-muted)]">{t.detail}</span><span className="mt-2 inline-flex rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{pri(t.priority)} · +{t.points} ☀️</span></span></label>})}</div></section>
-    <section className="mt-4 grid gap-4 lg:grid-cols-2"><div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-5"><h2 className="font-semibold">今日数据</h2><div className="mt-4 grid grid-cols-2 gap-3"><Num l="做题数" v={m.questions_done} f={v=>setM(x=>({...x,questions_done:v}))}/><Num l="正确数" v={m.questions_correct} f={v=>setM(x=>({...x,questions_correct:v}))}/><Num l="红题" v={m.red_errors} f={v=>setM(x=>({...x,red_errors:v}))}/><Num l="专注块" v={m.focus_blocks} f={v=>setM(x=>({...x,focus_blocks:v}))}/></div><p className="mt-3 text-sm text-[var(--foreground-muted)]">当前正确率：{m.questions_done?`${rate}%`:"—"}</p><textarea rows={3} value={m.note} onChange={e=>setM(x=>({...x,note:e.target.value}))} placeholder="今天最卡的点 / 明天需要复测的内容" className="mt-3 w-full rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] p-3 text-sm"/><button onClick={()=>save.mutate({date:day.entry_date,patch:m})} className="mt-3 rounded-[var(--radius-md)] bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white">保存今日数据</button></div>
-    <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-5"><h2 className="font-semibold">🌤️ 今日小花盆</h2><p className="mt-2 text-sm text-[var(--foreground-muted)]">达到标准线后可领一次随机阳光点。</p><button disabled={!ready||day.daily_reward_claimed} onClick={()=>reward.mutate(day.entry_date)} className="mt-4 rounded-[var(--radius-md)] border border-[var(--border-strong)] px-4 py-2 text-sm disabled:opacity-45">{day.daily_reward_claimed?'今日奖励已领取':ready?'打开小花盆':'达到标准线后开启'}</button><div className="mt-6 space-y-3">{data.stage_rewards.map(r=><div key={r.day_no} className="rounded-[var(--radius-md)] bg-[var(--surface)] p-3"><div className="flex items-center justify-between"><div><p className="text-sm font-medium">{r.label}</p><p className="text-xs text-[var(--foreground-muted)]">+{r.points} ☀️</p></div><button disabled={!r.available||r.claimed} onClick={()=>stage.mutate(r.day_no)} className="rounded-[var(--radius-md)] border px-3 py-1.5 text-xs disabled:opacity-45">{r.claimed?'已领取':r.available?'领取':'未解锁'}</button></div></div>)}</div></div></section>
-  </Frame>
+export function StudyPage() {
+  const qc = useQueryClient();
+  const plansQuery = useQuery({ queryKey: plansKey, queryFn: listStudyPlans });
+  const plans = plansQuery.data?.plans ?? [];
+
+  const [selectedPlanId, setSelectedPlanId] = useState("");
+  const [newPlanTitle, setNewPlanTitle] = useState("");
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+
+  useEffect(() => {
+    if (!plans.length) {
+      setSelectedPlanId("");
+      return;
+    }
+    if (!selectedPlanId || !plans.some((p) => p.id === selectedPlanId)) {
+      setSelectedPlanId(plans[0].id);
+    }
+  }, [plans, selectedPlanId]);
+
+  const selectedPlan =
+    plans.find((plan) => plan.id === selectedPlanId) ?? plans[0];
+
+  const refreshPlans = () => qc.invalidateQueries({ queryKey: plansKey });
+
+  const createPlan = useMutation({
+    mutationFn: async () => {
+      const title = newPlanTitle.trim();
+      if (!title) throw new Error("请输入计划名称");
+      const today = new Date();
+      const start = today.toISOString().slice(0, 10);
+      const endDate = new Date(today);
+      endDate.setDate(endDate.getDate() + 6);
+      const end = endDate.toISOString().slice(0, 10);
+      return createStudyPlan({
+        title,
+        start_date: start,
+        end_date: end,
+      });
+    },
+    onSuccess: ({ plan }) => {
+      setNewPlanTitle("");
+      setSelectedPlanId(plan.id);
+      refreshPlans();
+    },
+  });
+
+  const createTask = useMutation({
+    mutationFn: async () => {
+      if (!selectedPlan) throw new Error("请先选择学习计划");
+      const title = newTaskTitle.trim();
+      if (!title) throw new Error("请输入任务名称");
+      return createStudyTask(selectedPlan.id, {
+        title,
+        scheduled_date: selectedPlan.start_date,
+        planned_minutes: selectedPlan.focus_minutes,
+      });
+    },
+    onSuccess: () => {
+      setNewTaskTitle("");
+      refreshPlans();
+    },
+  });
+
+  const deletePlanMutation = useMutation({
+    mutationFn: (id: string) => deleteStudyPlan(id),
+    onSuccess: refreshPlans,
+  });
+
+  const setPlanStatus = useMutation({
+    mutationFn: ({
+      id,
+      status,
+    }: {
+      id: string;
+      status: StudyPlan["status"];
+    }) => updateStudyPlan(id, { status }),
+    onSuccess: refreshPlans,
+  });
+
+  const setTaskStatus = useMutation({
+    mutationFn: ({
+      planId,
+      taskId,
+      status,
+    }: {
+      planId: string;
+      taskId: string;
+      status: StudyTaskStatus;
+    }) => setStudyTaskStatus(planId, taskId, status),
+    onSuccess: refreshPlans,
+  });
+
+  const deleteTaskMutation = useMutation({
+    mutationFn: ({ planId, taskId }: { planId: string; taskId: string }) =>
+      deleteStudyTask(planId, taskId),
+    onSuccess: refreshPlans,
+  });
+
+  if (plansQuery.isLoading) {
+    return (
+      <Frame>
+        <LoadingState />
+      </Frame>
+    );
+  }
+
+  if (plansQuery.isError) {
+    return (
+      <Frame>
+        <ErrorState />
+      </Frame>
+    );
+  }
+
+  return (
+    <Frame>
+      <PageHeader
+        title="学习计划"
+        description="Canonical Study Core · Pomodoro 由服务器计时，页面倒计时仅用于显示。"
+      />
+
+      <section className="mt-5 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-5">
+        <div className="flex flex-wrap gap-2">
+          <input
+            value={newPlanTitle}
+            onChange={(event) => setNewPlanTitle(event.target.value)}
+            placeholder="新学习计划名称"
+            className="min-w-0 flex-1 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
+          />
+          <button
+            onClick={() => createPlan.mutate()}
+            disabled={createPlan.isPending}
+            className="rounded-[var(--radius-md)] bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            新建计划
+          </button>
+        </div>
+        {createPlan.error && (
+          <p className="mt-2 text-sm text-red-500">{messageOf(createPlan.error)}</p>
+        )}
+      </section>
+
+      {plans.length > 0 && (
+        <div className="mt-5 flex gap-2 overflow-x-auto pb-2">
+          {plans.map((plan) => (
+            <button
+              key={plan.id}
+              onClick={() => setSelectedPlanId(plan.id)}
+              className={`min-w-44 rounded-[var(--radius-md)] border px-3 py-2 text-left ${
+                plan.id === selectedPlan?.id
+                  ? "border-[var(--accent)] bg-[var(--surface-raised)]"
+                  : "border-[var(--border)] bg-[var(--surface)]"
+              }`}
+            >
+              <b className="block truncate text-sm">{plan.title}</b>
+              <span className="mt-1 block text-xs text-[var(--foreground-muted)]">
+                {plan.status} · {plan.tasks.length} 个任务
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {!selectedPlan ? (
+        <section className="mt-6 rounded-[var(--radius-lg)] border border-dashed border-[var(--border-strong)] p-8 text-center">
+          <p className="font-medium">还没有学习计划</p>
+          <p className="mt-2 text-sm text-[var(--foreground-muted)]">
+            创建第一个计划后，可以添加任务并启动 Pomodoro。
+          </p>
+        </section>
+      ) : (
+        <PlanPanel
+          plan={selectedPlan}
+          newTaskTitle={newTaskTitle}
+          onNewTaskTitle={setNewTaskTitle}
+          onCreateTask={() => createTask.mutate()}
+          creatingTask={createTask.isPending}
+          taskError={createTask.error}
+          onPlanStatus={(status) =>
+            setPlanStatus.mutate({ id: selectedPlan.id, status })
+          }
+          onDeletePlan={() => deletePlanMutation.mutate(selectedPlan.id)}
+          onTaskStatus={(taskId, status) =>
+            setTaskStatus.mutate({
+              planId: selectedPlan.id,
+              taskId,
+              status,
+            })
+          }
+          onDeleteTask={(taskId) =>
+            deleteTaskMutation.mutate({
+              planId: selectedPlan.id,
+              taskId,
+            })
+          }
+        />
+      )}
+    </Frame>
+  );
 }
-function Card({l,v}:{l:string;v:string}){return <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-4"><p className="text-xs text-[var(--foreground-muted)]">{l}</p><p className="mt-2 text-lg font-semibold">{v}</p></div>}
-function Num({l,v,f}:{l:string;v:number;f:(x:number)=>void}){return <label className="text-sm"><span className="mb-1 block text-[var(--foreground-muted)]">{l}</span><input type="number" min={0} value={v} onChange={e=>f(Math.max(0,Number(e.target.value)||0))} className="w-full rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2"/></label>}
-function Frame({children}:{children:React.ReactNode}){return <section className="mx-auto w-full max-w-5xl px-5 py-7 sm:px-9 sm:py-10">{children}</section>}
+
+function PlanPanel({
+  plan,
+  newTaskTitle,
+  onNewTaskTitle,
+  onCreateTask,
+  creatingTask,
+  taskError,
+  onPlanStatus,
+  onDeletePlan,
+  onTaskStatus,
+  onDeleteTask,
+}: {
+  plan: StudyPlan;
+  newTaskTitle: string;
+  onNewTaskTitle: (value: string) => void;
+  onCreateTask: () => void;
+  creatingTask: boolean;
+  taskError: unknown;
+  onPlanStatus: (status: StudyPlan["status"]) => void;
+  onDeletePlan: () => void;
+  onTaskStatus: (taskId: string, status: StudyTaskStatus) => void;
+  onDeleteTask: (taskId: string) => void;
+}) {
+  return (
+    <>
+      <section className="mt-4 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-sm text-[var(--foreground-muted)]">
+              {plan.start_date} → {plan.end_date}
+            </p>
+            <h2 className="mt-1 text-xl font-semibold">{plan.title}</h2>
+            <p className="mt-2 text-sm text-[var(--foreground-muted)]">
+              专注 {plan.focus_minutes} 分钟 · 休息 {plan.break_minutes} 分钟 ·
+              长休息 {plan.long_break_minutes} 分钟
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {plan.status !== "active" && (
+              <SmallButton onClick={() => onPlanStatus("active")}>
+                启用计划
+              </SmallButton>
+            )}
+            {plan.status === "active" && (
+              <SmallButton onClick={() => onPlanStatus("paused")}>
+                暂停计划
+              </SmallButton>
+            )}
+            <SmallButton danger onClick={onDeletePlan}>
+              删除计划
+            </SmallButton>
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-4 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-5">
+        <h2 className="font-semibold">添加学习任务</h2>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <input
+            value={newTaskTitle}
+            onChange={(event) => onNewTaskTitle(event.target.value)}
+            placeholder="例如：复习免疫系统第三章"
+            className="min-w-0 flex-1 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
+          />
+          <button
+            onClick={onCreateTask}
+            disabled={creatingTask}
+            className="rounded-[var(--radius-md)] bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            添加任务
+          </button>
+        </div>
+        {taskError ? (
+          <p className="mt-2 text-sm text-red-500">{messageOf(taskError)}</p>
+        ) : null}
+      </section>
+
+      <div className="mt-4 space-y-4">
+        {plan.tasks.length === 0 ? (
+          <section className="rounded-[var(--radius-lg)] border border-dashed border-[var(--border-strong)] p-6 text-center text-sm text-[var(--foreground-muted)]">
+            当前计划还没有任务。
+          </section>
+        ) : (
+          plan.tasks.map((task) => (
+            <TaskCard
+              key={task.id}
+              plan={plan}
+              task={task}
+              onStatus={(status) => onTaskStatus(task.id, status)}
+              onDelete={() => onDeleteTask(task.id)}
+            />
+          ))
+        )}
+      </div>
+    </>
+  );
+}
+
+function TaskCard({
+  plan,
+  task,
+  onStatus,
+  onDelete,
+}: {
+  plan: StudyPlan;
+  task: StudyTask;
+  onStatus: (status: StudyTaskStatus) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <section className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="font-semibold">{task.title}</h3>
+          {task.description && (
+            <p className="mt-1 text-sm text-[var(--foreground-muted)]">
+              {task.description}
+            </p>
+          )}
+          <p className="mt-2 text-xs text-[var(--foreground-muted)]">
+            {task.scheduled_date} · 计划 {task.planned_minutes} 分钟 · {task.status}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {task.status === "planned" && (
+            <SmallButton onClick={() => onStatus("in_progress")}>
+              标记进行中
+            </SmallButton>
+          )}
+          {task.status !== "completed" && (
+            <SmallButton onClick={() => onStatus("completed")}>
+              完成任务
+            </SmallButton>
+          )}
+          <SmallButton danger onClick={onDelete}>
+            删除
+          </SmallButton>
+        </div>
+      </div>
+      <PomodoroCard plan={plan} task={task} />
+    </section>
+  );
+}
+
+function PomodoroCard({
+  plan,
+  task,
+}: {
+  plan: StudyPlan;
+  task: StudyTask;
+}) {
+  const qc = useQueryClient();
+  const sessionsKey = ["study", "sessions", task.id] as const;
+
+  const sessionsQuery = useQuery({
+    queryKey: sessionsKey,
+    queryFn: () => listStudySessions(plan.id, task.id),
+    refetchInterval: 5000,
+  });
+
+  const sessions = sessionsQuery.data?.sessions ?? [];
+  const latest = useMemo(
+    () => [...sessions].sort((a, b) => b.created_at.localeCompare(a.created_at))[0],
+    [sessions],
+  );
+
+  const refresh = () =>
+    qc.invalidateQueries({
+      queryKey: sessionsKey,
+    });
+
+  const create = useMutation({
+    mutationFn: () =>
+      createStudySession(plan.id, task.id, {
+        planned_minutes: plan.focus_minutes,
+      }),
+    onSuccess: refresh,
+  });
+  const start = useMutation({
+    mutationFn: (sessionId: string) => startStudySession(sessionId),
+    onSuccess: refresh,
+  });
+  const pause = useMutation({
+    mutationFn: (sessionId: string) => pauseStudySession(sessionId),
+    onSuccess: refresh,
+  });
+  const resume = useMutation({
+    mutationFn: (sessionId: string) => resumeStudySession(sessionId),
+    onSuccess: refresh,
+  });
+  const complete = useMutation({
+    mutationFn: (sessionId: string) => completeStudySession(sessionId),
+    onSuccess: refresh,
+  });
+  const abandon = useMutation({
+    mutationFn: (sessionId: string) => abandonStudySession(sessionId),
+    onSuccess: refresh,
+  });
+
+  const busy =
+    create.isPending ||
+    start.isPending ||
+    pause.isPending ||
+    resume.isPending ||
+    complete.isPending ||
+    abandon.isPending;
+
+  const error =
+    create.error ||
+    start.error ||
+    pause.error ||
+    resume.error ||
+    complete.error ||
+    abandon.error;
+
+  return (
+    <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs text-[var(--foreground-muted)]">
+            Pomodoro · 服务器时间为准
+          </p>
+          <PomodoroClock session={latest} defaultMinutes={plan.focus_minutes} />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {!latest || ["completed", "abandoned"].includes(latest.status) ? (
+            <SmallButton disabled={busy} onClick={() => create.mutate()}>
+              新建专注
+            </SmallButton>
+          ) : latest.status === "planned" ? (
+            <>
+              <SmallButton disabled={busy} onClick={() => start.mutate(latest.id)}>
+                开始
+              </SmallButton>
+              <SmallButton
+                danger
+                disabled={busy}
+                onClick={() => abandon.mutate(latest.id)}
+              >
+                放弃
+              </SmallButton>
+            </>
+          ) : latest.status === "running" ? (
+            <>
+              <SmallButton disabled={busy} onClick={() => pause.mutate(latest.id)}>
+                暂停
+              </SmallButton>
+              <SmallButton
+                disabled={busy}
+                onClick={() => complete.mutate(latest.id)}
+              >
+                提前完成
+              </SmallButton>
+              <SmallButton
+                danger
+                disabled={busy}
+                onClick={() => abandon.mutate(latest.id)}
+              >
+                放弃
+              </SmallButton>
+            </>
+          ) : (
+            <>
+              <SmallButton disabled={busy} onClick={() => resume.mutate(latest.id)}>
+                继续
+              </SmallButton>
+              <SmallButton
+                disabled={busy}
+                onClick={() => complete.mutate(latest.id)}
+              >
+                完成
+              </SmallButton>
+              <SmallButton
+                danger
+                disabled={busy}
+                onClick={() => abandon.mutate(latest.id)}
+              >
+                放弃
+              </SmallButton>
+            </>
+          )}
+        </div>
+      </div>
+
+      {error ? (
+        <p className="mt-2 text-sm text-red-500">{messageOf(error)}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function PomodoroClock({
+  session,
+  defaultMinutes,
+}: {
+  session?: StudySession;
+  defaultMinutes: number;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const remainingSeconds = useMemo(() => {
+    if (!session) return defaultMinutes * 60;
+    if (session.status === "running" && session.expected_end_at) {
+      return Math.max(
+        0,
+        Math.ceil((new Date(session.expected_end_at).getTime() - now) / 1000),
+      );
+    }
+    if (session.status === "completed") return 0;
+    return Math.max(
+      0,
+      session.planned_minutes * 60 - session.actual_minutes * 60,
+    );
+  }, [session, defaultMinutes, now]);
+
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+
+  return (
+    <>
+      <p className="mt-1 font-mono text-3xl font-semibold tabular-nums">
+        {String(minutes).padStart(2, "0")}:{String(seconds).padStart(2, "0")}
+      </p>
+      <p className="mt-1 text-xs text-[var(--foreground-muted)]">
+        {session ? statusText(session.status) : "尚未建立专注会话"}
+      </p>
+    </>
+  );
+}
+
+function statusText(status: StudySession["status"]) {
+  if (status === "planned") return "等待开始";
+  if (status === "running") return "专注中";
+  if (status === "paused") return "已暂停";
+  if (status === "completed") return "已完成";
+  return "已放弃";
+}
+
+function SmallButton({
+  children,
+  onClick,
+  danger = false,
+  disabled = false,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-[var(--radius-md)] border px-3 py-2 text-sm disabled:opacity-45 ${
+        danger
+          ? "border-red-400/50 text-red-500"
+          : "border-[var(--border-strong)]"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function messageOf(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function Frame({ children }: { children: React.ReactNode }) {
+  return (
+    <section className="mx-auto w-full max-w-5xl px-5 py-7 sm:px-9 sm:py-10">
+      {children}
+    </section>
+  );
+}

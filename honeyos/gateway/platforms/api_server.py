@@ -2378,6 +2378,56 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"plan": self._study_json(plan)})
     # === /HoneyOS Study Core Phase 2 ===
 
+    # === HoneyOS Study Pomodoro Phase 3 ===
+    async def _handle_study_create_session(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyPlanNotFoundError, StudyService, StudyTaskNotFoundError
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        try:
+            session = await asyncio.to_thread(StudyService().create_session, request.match_info["plan_id"], request.match_info["task_id"], body)
+        except (StudyPlanNotFoundError, StudyTaskNotFoundError):
+            return web.json_response({"error": "study task not found"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"session": self._study_json(session)}, status=201)
+
+    async def _handle_study_list_sessions(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyService
+        sessions = await asyncio.to_thread(StudyService().list_sessions, request.match_info["task_id"])
+        return web.json_response({"sessions": [self._study_json(session) for session in sessions]})
+
+    async def _handle_study_get_session(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyService, StudySessionNotFoundError
+        try:
+            session = await asyncio.to_thread(StudyService().get_session, request.match_info["session_id"])
+        except StudySessionNotFoundError:
+            return web.json_response({"error": "study session not found"}, status=404)
+        return web.json_response({"session": self._study_json(session)})
+
+    async def _study_session_transition(self, request: "web.Request", method_name: str) -> "web.Response":
+        from honeyos.study import StudyService, StudySessionNotFoundError
+        try:
+            method = getattr(StudyService(), method_name)
+            session = await asyncio.to_thread(method, request.match_info["session_id"])
+        except StudySessionNotFoundError:
+            return web.json_response({"error": "study session not found"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"session": self._study_json(session)})
+
+    async def _handle_study_start_session(self, request: "web.Request") -> "web.Response":
+        return await self._study_session_transition(request, "start_session")
+    async def _handle_study_pause_session(self, request: "web.Request") -> "web.Response":
+        return await self._study_session_transition(request, "pause_session")
+    async def _handle_study_resume_session(self, request: "web.Request") -> "web.Response":
+        return await self._study_session_transition(request, "resume_session")
+    async def _handle_study_complete_session(self, request: "web.Request") -> "web.Response":
+        return await self._study_session_transition(request, "complete_session")
+    async def _handle_study_abandon_session(self, request: "web.Request") -> "web.Response":
+        return await self._study_session_transition(request, "abandon_session")
+    # === /HoneyOS Study Pomodoro Phase 3 ===
+
     def _http_route_table(self) -> List[tuple]:
         """Return (method, path, handler) rows registered by ``connect()``.
 
@@ -2491,6 +2541,16 @@ class APIServerAdapter(BasePlatformAdapter):
             ("DELETE", "/api/study/plans/{plan_id}/tasks/{task_id}", self._handle_study_delete_task),
             ("POST", "/api/study/plans/{plan_id}/tasks/{task_id}/status", self._handle_study_task_status),
             # === /HoneyOS Study Core Phase 2 ===
+            # === HoneyOS Study Pomodoro Phase 3 ===
+            ("GET", "/api/study/plans/{plan_id}/tasks/{task_id}/sessions", self._handle_study_list_sessions),
+            ("POST", "/api/study/plans/{plan_id}/tasks/{task_id}/sessions", self._handle_study_create_session),
+            ("GET", "/api/study/sessions/{session_id}", self._handle_study_get_session),
+            ("POST", "/api/study/sessions/{session_id}/start", self._handle_study_start_session),
+            ("POST", "/api/study/sessions/{session_id}/pause", self._handle_study_pause_session),
+            ("POST", "/api/study/sessions/{session_id}/resume", self._handle_study_resume_session),
+            ("POST", "/api/study/sessions/{session_id}/complete", self._handle_study_complete_session),
+            ("POST", "/api/study/sessions/{session_id}/abandon", self._handle_study_abandon_session),
+            # === /HoneyOS Study Pomodoro Phase 3 ===
             ("POST", "/api/companion/new", self._handle_companion_new),
             (
                 "POST",
