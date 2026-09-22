@@ -10183,3 +10183,75 @@ class APIServerAdapter(BasePlatformAdapter):
             "host": self._host,
             "port": self._port,
         }
+
+    async def _handle_study_list_resources(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyService
+        resources = await asyncio.to_thread(
+            StudyService().list_resources,
+            course_or_subject=request.query.get("course_or_subject", ""),
+            resource_type=request.query.get("resource_type", ""),
+        )
+        return web.json_response({"resources": [self._study_json(x) for x in resources]})
+
+    async def _handle_study_create_resource(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyService
+        body, err = await self._read_json_body(request)
+        if err: return err
+        try:
+            resource = await asyncio.to_thread(StudyService().create_resource, body)
+        except (KeyError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"resource": self._study_json(resource)}, status=201)
+
+    async def _handle_study_search_resources(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyService
+        try: limit=int(request.query.get("limit", "20"))
+        except ValueError: return web.json_response({"error": "limit must be an integer"}, status=400)
+        hits=await asyncio.to_thread(
+            StudyService().search_resources,
+            query=request.query.get("q", ""),
+            course_or_subject=request.query.get("course_or_subject", ""),
+            resource_type=request.query.get("resource_type", ""),
+            limit=limit,
+        )
+        return web.json_response({"results": hits})
+
+    async def _handle_study_get_resource(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyResourceNotFoundError, StudyService
+        try:
+            resource = await asyncio.to_thread(StudyService().get_resource, request.match_info["resource_id"])
+        except StudyResourceNotFoundError:
+            return web.json_response({"error": "study resource not found"}, status=404)
+        return web.json_response({"resource": self._study_json(resource)})
+
+    async def _handle_study_update_resource(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyResourceNotFoundError, StudyService
+        body, err = await self._read_json_body(request)
+        if err: return err
+        try:
+            resource = await asyncio.to_thread(StudyService().update_resource, request.match_info["resource_id"], body)
+        except StudyResourceNotFoundError:
+            return web.json_response({"error": "study resource not found"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"resource": self._study_json(resource)})
+
+    async def _handle_study_delete_resource(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyResourceNotFoundError, StudyService
+        resource_id=request.match_info["resource_id"]
+        try:
+            await asyncio.to_thread(StudyService().delete_resource, resource_id)
+        except StudyResourceNotFoundError:
+            return web.json_response({"error": "study resource not found"}, status=404)
+        return web.json_response({"id": resource_id, "deleted": True})
+
+    async def _handle_study_resource_content(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyResourceNotFoundError, StudyService
+        try:
+            content=await asyncio.to_thread(StudyService().get_resource_content, request.match_info["resource_id"])
+        except StudyResourceNotFoundError:
+            return web.json_response({"error": "study resource not found"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=409)
+        return web.json_response({"content": content})
+
