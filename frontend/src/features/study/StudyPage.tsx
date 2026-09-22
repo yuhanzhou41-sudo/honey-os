@@ -17,6 +17,7 @@ import {
   setStudyTaskStatus,
   startStudySession,
   updateStudyPlan,
+  updateStudyTask,
   type StudyPlan,
   type StudyPomodoroState,
   type StudySession,
@@ -29,6 +30,31 @@ import { StudyLibraryPanel } from "./StudyLibraryPanel";
 
 const plansKey = ["study", "plans"] as const;
 
+type PlanDraft = {
+  title: string; description: string; start_date: string; end_date: string;
+  goalsText: string; focus_minutes: string; break_minutes: string;
+  long_break_minutes: string; long_break_after_sessions: string;
+  status: StudyPlan["status"];
+};
+type TaskDraft = {
+  title: string; description: string; scheduled_date: string;
+  planned_minutes: string; review_required: boolean; status: StudyTaskStatus;
+};
+function planDraftOf(plan: StudyPlan): PlanDraft {
+  return { title:plan.title, description:plan.description, start_date:plan.start_date,
+    end_date:plan.end_date, goalsText:plan.goals.join("\n"),
+    focus_minutes:String(plan.focus_minutes), break_minutes:String(plan.break_minutes),
+    long_break_minutes:String(plan.long_break_minutes),
+    long_break_after_sessions:String(plan.long_break_after_sessions), status:plan.status };
+}
+function taskDraftOf(task: StudyTask): TaskDraft {
+  return { title:task.title, description:task.description, scheduled_date:task.scheduled_date,
+    planned_minutes:String(task.planned_minutes), review_required:task.review_required, status:task.status };
+}
+function positiveInt(value:string, field:string) {
+  const n=Number(value); if(!Number.isInteger(n)||n<=0) throw new Error(`${field} 必须是正整数`); return n;
+}
+
 export function StudyPage() {
   const qc = useQueryClient();
   const plansQuery = useQuery({ queryKey: plansKey, queryFn: listStudyPlans });
@@ -37,6 +63,10 @@ export function StudyPage() {
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [newPlanTitle, setNewPlanTitle] = useState("");
   const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [planEditing, setPlanEditing] = useState(false);
+  const [planDraft, setPlanDraft] = useState<PlanDraft | null>(null);
+  const [taskEditingId, setTaskEditingId] = useState("");
+  const [taskDraft, setTaskDraft] = useState<TaskDraft | null>(null);
   const [studyView, setStudyView] = useState<"plans" | "library">("plans");
 
   useEffect(() => {
@@ -51,6 +81,12 @@ export function StudyPage() {
 
   const selectedPlan =
     plans.find((plan) => plan.id === selectedPlanId) ?? plans[0];
+
+  useEffect(() => {
+    setPlanEditing(false);
+    setPlanDraft(selectedPlan ? planDraftOf(selectedPlan) : null);
+    setTaskEditingId(""); setTaskDraft(null);
+  }, [selectedPlan?.id]);
 
   const refreshPlans = () => qc.invalidateQueries({ queryKey: plansKey });
 
@@ -94,6 +130,36 @@ export function StudyPage() {
       setNewTaskTitle("");
       refreshPlans();
     },
+  });
+
+  const savePlanMutation = useMutation({
+    mutationFn: async () => {
+      if(!selectedPlan||!planDraft) throw new Error("请先选择学习计划");
+      const title=planDraft.title.trim(); if(!title) throw new Error("计划名称不能为空");
+      return updateStudyPlan(selectedPlan.id, {
+        title, description:planDraft.description.trim(), start_date:planDraft.start_date,
+        end_date:planDraft.end_date,
+        goals:planDraft.goalsText.split(/\r?\n/).map(x=>x.trim()).filter(Boolean),
+        focus_minutes:positiveInt(planDraft.focus_minutes,"专注时长"),
+        break_minutes:positiveInt(planDraft.break_minutes,"短休息时长"),
+        long_break_minutes:positiveInt(planDraft.long_break_minutes,"长休息时长"),
+        long_break_after_sessions:positiveInt(planDraft.long_break_after_sessions,"长休息轮数"),
+        status:planDraft.status,
+      });
+    },
+    onSuccess:({plan})=>{ setPlanDraft(planDraftOf(plan)); setPlanEditing(false); refreshPlans(); },
+  });
+  const saveTaskMutation = useMutation({
+    mutationFn: async () => {
+      if(!selectedPlan||!taskEditingId||!taskDraft) throw new Error("没有正在编辑的任务");
+      const title=taskDraft.title.trim(); if(!title) throw new Error("任务名称不能为空");
+      return updateStudyTask(selectedPlan.id, taskEditingId, {
+        title, description:taskDraft.description.trim(), scheduled_date:taskDraft.scheduled_date,
+        planned_minutes:positiveInt(taskDraft.planned_minutes,"任务时长"),
+        review_required:taskDraft.review_required, status:taskDraft.status,
+      });
+    },
+    onSuccess:()=>{ setTaskEditingId(""); setTaskDraft(null); refreshPlans(); },
   });
 
   const deletePlanMutation = useMutation({
@@ -255,6 +321,14 @@ export function StudyPage() {
               onCreateTask={() => createTask.mutate()}
               creatingTask={createTask.isPending}
               taskError={createTask.error}
+              planEditing={planEditing} planDraft={planDraft} onPlanDraft={setPlanDraft}
+              onStartPlanEdit={()=>{setPlanDraft(planDraftOf(selectedPlan));setPlanEditing(true)}}
+              onCancelPlanEdit={()=>{setPlanDraft(planDraftOf(selectedPlan));setPlanEditing(false)}}
+              onSavePlan={()=>savePlanMutation.mutate()} savingPlan={savePlanMutation.isPending} planSaveError={savePlanMutation.error}
+              taskEditingId={taskEditingId} taskDraft={taskDraft}
+              onStartTaskEdit={(task)=>{setTaskEditingId(task.id);setTaskDraft(taskDraftOf(task))}}
+              onTaskDraft={setTaskDraft} onCancelTaskEdit={()=>{setTaskEditingId("");setTaskDraft(null)}}
+              onSaveTask={()=>saveTaskMutation.mutate()} savingTask={saveTaskMutation.isPending} taskSaveError={saveTaskMutation.error}
               onPlanStatus={(status) =>
                 setPlanStatus.mutate({ id: selectedPlan.id, status })
               }
@@ -289,22 +363,19 @@ function PlanWorkspace({
   onNewTaskTitle,
   onCreateTask,
   creatingTask,
-  taskError,
-  onPlanStatus,
-  onDeletePlan,
-  onTaskStatus,
-  onDeleteTask,
+  taskError, planEditing, planDraft, onPlanDraft, onStartPlanEdit, onCancelPlanEdit,
+  onSavePlan, savingPlan, planSaveError, taskEditingId, taskDraft, onStartTaskEdit,
+  onTaskDraft, onCancelTaskEdit, onSaveTask, savingTask, taskSaveError,
+  onPlanStatus, onDeletePlan, onTaskStatus, onDeleteTask,
 }: {
-  plan: StudyPlan;
-  newTaskTitle: string;
-  onNewTaskTitle: (value: string) => void;
-  onCreateTask: () => void;
-  creatingTask: boolean;
-  taskError: unknown;
-  onPlanStatus: (status: StudyPlan["status"]) => void;
-  onDeletePlan: () => void;
-  onTaskStatus: (taskId: string, status: StudyTaskStatus) => void;
-  onDeleteTask: (taskId: string) => void;
+  plan: StudyPlan; newTaskTitle:string; onNewTaskTitle:(value:string)=>void; onCreateTask:()=>void;
+  creatingTask:boolean; taskError:unknown; planEditing:boolean; planDraft:PlanDraft|null;
+  onPlanDraft:(draft:PlanDraft|null)=>void; onStartPlanEdit:()=>void; onCancelPlanEdit:()=>void;
+  onSavePlan:()=>void; savingPlan:boolean; planSaveError:unknown; taskEditingId:string;
+  taskDraft:TaskDraft|null; onStartTaskEdit:(task:StudyTask)=>void; onTaskDraft:(draft:TaskDraft|null)=>void;
+  onCancelTaskEdit:()=>void; onSaveTask:()=>void; savingTask:boolean; taskSaveError:unknown;
+  onPlanStatus:(status:StudyPlan["status"])=>void; onDeletePlan:()=>void;
+  onTaskStatus:(taskId:string,status:StudyTaskStatus)=>void; onDeleteTask:(taskId:string)=>void;
 }) {
   const completed = plan.tasks.filter((task) => task.status === "completed").length;
   const total = plan.tasks.length;
@@ -347,6 +418,23 @@ function PlanWorkspace({
               </SecondaryButton>
             </div>
           </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {!planEditing ? <SecondaryButton onClick={onStartPlanEdit}>编辑计划</SecondaryButton> : null}
+          </div>
+          {planEditing && planDraft ? (
+            <div className="mt-4 grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
+              <input value={planDraft.title} onChange={e=>onPlanDraft({...planDraft,title:e.target.value})} className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm" />
+              <textarea value={planDraft.description} onChange={e=>onPlanDraft({...planDraft,description:e.target.value})} rows={3} placeholder="计划说明" className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm" />
+              <div className="grid gap-3 sm:grid-cols-2"><input type="date" value={planDraft.start_date} onChange={e=>onPlanDraft({...planDraft,start_date:e.target.value})} className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"/><input type="date" value={planDraft.end_date} onChange={e=>onPlanDraft({...planDraft,end_date:e.target.value})} className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"/></div>
+              <textarea value={planDraft.goalsText} onChange={e=>onPlanDraft({...planDraft,goalsText:e.target.value})} rows={3} placeholder="学习目标，每行一个" className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm" />
+              <div className="grid gap-3 sm:grid-cols-4"><input type="number" min={1} value={planDraft.focus_minutes} onChange={e=>onPlanDraft({...planDraft,focus_minutes:e.target.value})} placeholder="专注" className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"/><input type="number" min={1} value={planDraft.break_minutes} onChange={e=>onPlanDraft({...planDraft,break_minutes:e.target.value})} placeholder="短休息" className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"/><input type="number" min={1} value={planDraft.long_break_minutes} onChange={e=>onPlanDraft({...planDraft,long_break_minutes:e.target.value})} placeholder="长休息" className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"/><input type="number" min={1} value={planDraft.long_break_after_sessions} onChange={e=>onPlanDraft({...planDraft,long_break_after_sessions:e.target.value})} placeholder="长休息轮数" className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"/></div>
+              <select value={planDraft.status} onChange={e=>onPlanDraft({...planDraft,status:e.target.value as StudyPlan["status"]})} className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"><option value="draft">草稿</option><option value="active">进行中</option><option value="paused">暂停</option><option value="completed">已完成</option><option value="archived">已归档</option></select>
+              <div className="flex gap-2"><SecondaryButton onClick={onSavePlan}>{savingPlan?"保存中…":"保存计划"}</SecondaryButton><SecondaryButton onClick={onCancelPlanEdit}>取消</SecondaryButton></div>
+              {planSaveError?<p className="text-sm text-red-500">{messageOf(planSaveError)}</p>:null}
+            </div>
+          ):null}
+          <div className="mt-2 text-xs text-[var(--foreground-muted)]">来源：{plan.source_type}</div>
 
           <div className="mt-6 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
             <div>
@@ -409,6 +497,9 @@ function PlanWorkspace({
               key={task.id}
               plan={plan}
               task={task}
+              editing={taskEditingId===task.id} draft={taskEditingId===task.id?taskDraft:null}
+              onEdit={()=>onStartTaskEdit(task)} onDraft={onTaskDraft} onSave={onSaveTask}
+              onCancel={onCancelTaskEdit} saving={savingTask} saveError={taskEditingId===task.id?taskSaveError:null}
               onStatus={(status) => onTaskStatus(task.id, status)}
               onDelete={() => onDeleteTask(task.id)}
             />
@@ -428,16 +519,10 @@ function PlanWorkspace({
   );
 }
 
-function TaskRow({
-  plan,
-  task,
-  onStatus,
-  onDelete,
-}: {
-  plan: StudyPlan;
-  task: StudyTask;
-  onStatus: (status: StudyTaskStatus) => void;
-  onDelete: () => void;
+function TaskRow({ plan, task, editing, draft, onEdit, onDraft, onSave, onCancel, saving, saveError, onStatus, onDelete }: {
+  plan:StudyPlan; task:StudyTask; editing:boolean; draft:TaskDraft|null; onEdit:()=>void;
+  onDraft:(draft:TaskDraft|null)=>void; onSave:()=>void; onCancel:()=>void; saving:boolean; saveError:unknown;
+  onStatus:(status:StudyTaskStatus)=>void; onDelete:()=>void;
 }) {
   const done = task.status === "completed";
 
@@ -477,15 +562,18 @@ function TaskRow({
                 <span>{task.planned_minutes} 分钟</span>
                 <span>{taskStatusText(task.status)}</span>
               </div>
+              {task.review_required?<div className="mt-1 text-xs text-[var(--foreground-muted)]">需要复习</div>:null}
+              {editing&&draft?(<div className="mt-3 grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3">
+                <input value={draft.title} onChange={e=>onDraft({...draft,title:e.target.value})} className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"/>
+                <textarea value={draft.description} onChange={e=>onDraft({...draft,description:e.target.value})} rows={2} placeholder="任务说明" className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"/>
+                <div className="grid gap-2 sm:grid-cols-3"><input type="date" value={draft.scheduled_date} onChange={e=>onDraft({...draft,scheduled_date:e.target.value})} className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"/><input type="number" min={1} value={draft.planned_minutes} onChange={e=>onDraft({...draft,planned_minutes:e.target.value})} className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"/><select value={draft.status} onChange={e=>onDraft({...draft,status:e.target.value as StudyTaskStatus})} className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-3 py-2 text-sm"><option value="planned">计划中</option><option value="in_progress">进行中</option><option value="completed">已完成</option><option value="skipped">已跳过</option><option value="deferred">已顺延</option></select></div>
+                <label className="flex items-center gap-2 text-xs text-[var(--foreground-muted)]"><input type="checkbox" checked={draft.review_required} onChange={e=>onDraft({...draft,review_required:e.target.checked})}/>需要复习</label>
+                <div className="flex gap-2"><SecondaryButton onClick={onSave}>{saving?"保存中…":"保存任务"}</SecondaryButton><SecondaryButton onClick={onCancel}>取消</SecondaryButton></div>
+                {saveError?<p className="text-xs text-red-500">{messageOf(saveError)}</p>:null}
+              </div>):null}
             </div>
 
-            <button
-              type="button"
-              onClick={onDelete}
-              className="text-xs text-[var(--foreground-muted)] hover:text-red-500"
-            >
-              删除
-            </button>
+            {!editing?(<div className="flex gap-3"><button type="button" onClick={onEdit} className="text-xs text-[var(--foreground-muted)] hover:text-[var(--foreground)]">编辑</button><button type="button" onClick={onDelete} className="text-xs text-[var(--foreground-muted)] hover:text-red-500">删除</button></div>):null}
           </div>
 
           <PomodoroPanel plan={plan} task={task} taskCompleted={done} />

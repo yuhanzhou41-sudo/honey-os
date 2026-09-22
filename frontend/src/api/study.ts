@@ -6,11 +6,13 @@ export type StudyTask={id:string;plan_id:string|null;title:string;description:st
 export type StudyPlan={id:string;schema_version:1;title:string;description:string;start_date:string;end_date:string;status:StudyPlanStatus;focus_minutes:number;break_minutes:number;long_break_minutes:number;long_break_after_sessions:number;source_type:StudyPlanSource;goals:string[];tasks:StudyTask[];created_at:string;updated_at:string};
 export type CreateStudyPlan={title:string;description?:string;start_date:string;end_date:string;focus_minutes?:number;break_minutes?:number;long_break_minutes?:number;long_break_after_sessions?:number;goals?:string[]};
 export type CreateStudyTask={title:string;description?:string;scheduled_date:string;planned_minutes?:number;order_index?:number;review_required?:boolean};
+export type UpdateStudyTask=Partial<CreateStudyTask>&{status?:StudyTaskStatus};
 export const listStudyPlans=()=>requestJson<{plans:StudyPlan[]}>("/api/study/plans");
 export const createStudyPlan=(p:CreateStudyPlan)=>requestJson<{plan:StudyPlan}>("/api/study/plans",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
 export const updateStudyPlan=(id:string,p:Partial<CreateStudyPlan>&{status?:StudyPlanStatus})=>requestJson<{plan:StudyPlan}>(`/api/study/plans/${encodeURIComponent(id)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
 export const deleteStudyPlan=(id:string)=>requestJson<{id:string;deleted:true}>(`/api/study/plans/${encodeURIComponent(id)}`,{method:"DELETE"});
 export const createStudyTask=(pid:string,p:CreateStudyTask)=>requestJson<{plan:StudyPlan}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+export const updateStudyTask=(pid:string,tid:string,p:UpdateStudyTask)=>requestJson<{plan:StudyPlan}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(tid)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
 export const setStudyTaskStatus=(pid:string,tid:string,status:StudyTaskStatus)=>requestJson<{plan:StudyPlan}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(tid)}/status`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({status})});
 export const deleteStudyTask=(pid:string,tid:string)=>requestJson<{plan:StudyPlan}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(tid)}`,{method:"DELETE"});
 
