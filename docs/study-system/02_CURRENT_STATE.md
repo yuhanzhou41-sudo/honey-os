@@ -397,3 +397,16 @@ Phase 3.2 refines Pomodoro behavior to the classic 25/5 cycle with a
 the same canonical StudySession runtime and HoneyOS scheduler. The full
 4-focus cycle was verified through the real Gateway API.
 
+
+## Phase 4 — Study Library (frozen 2026-09-22)
+
+Implementation commit: `db19c977801f93d29d4fde164098f81734337dd2`
+
+Phase 4 adds canonical StudyResource CRUD, textual extraction, SQLite FTS5,
+`/api/study/resources/*`, and the minimal Study Library UI. Study Library remains
+separate from Personal Memory and from the legacy Companion Study database.
+
+See:
+
+- `docs/study-system/phases/PHASE4_STUDY_LIBRARY.md`
+- `docs/study-system/handoffs/HANDOFF_2026-09-22_PHASE4.md`
