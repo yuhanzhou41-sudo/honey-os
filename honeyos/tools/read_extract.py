@@ -1,13 +1,12 @@
-"""Stdlib document-to-text extraction for ``read_file``.
+"""Document-to-text extraction for ``read_file`` and Study Library.
 
-Supports Jupyter notebooks, DOCX, and XLSX without adding hard dependencies.
-When the optional ``firecrawl-anydoc`` package is installed (``pip install
-firecrawl-anydoc``, imports as ``anydoc``), coverage widens to legacy Office
-(.doc/.ppt/.xls), OpenDocument, RTF, EPUB, and PDF — converted to Markdown by
-its Rust core. The stdlib extractors remain authoritative for their three
-formats so behavior is identical whether or not anydoc is present.
-Malformed documents raise :class:`ExtractionError`; callers can then fall back to
-normal text/binary handling.
+Jupyter notebooks, DOCX, PPTX, and XLSX are extracted locally without Office
+runtime dependencies. Text-layer PDF extraction uses the pinned ``pypdf``
+dependency; OCR and image understanding are intentionally out of scope.
+
+When the optional ``firecrawl-anydoc`` package is installed, coverage widens
+to legacy Office (.doc/.ppt/.xls), OpenDocument, RTF, and EPUB. Malformed or
+textless documents raise :class:`ExtractionError`.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ import importlib
 import json
 import os
 import posixpath
+import re
 import threading
 import time
 import zipfile
@@ -25,8 +25,8 @@ from xml.etree import ElementTree as ET
 
 __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_text", "is_extractable_document"]
 
-EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
-# Formats handled only when the optional anydoc converter is installed.
+EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx", ".pptx", ".pdf"})
+# Additional formats handled only when the optional anydoc converter is installed.
 ANYDOC_EXTENSIONS = frozenset({
     ".doc", ".docm",
     ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
@@ -44,6 +44,8 @@ _MAX_XLSX_COLS = 256
 
 _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _NS_S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 _NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _NS_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 
@@ -116,6 +118,10 @@ def extract_document_text(path: str) -> str:
         return _extract_docx(path)
     if ext == ".xlsx":
         return _extract_xlsx(path)
+    if ext == ".pptx":
+        return _extract_pptx(path)
+    if ext == ".pdf":
+        return _extract_pdf(path)
     if ext in ANYDOC_EXTENSIONS:
         return _extract_anydoc(path)
     raise ExtractionError(f"Unsupported document type: {path!r}")
@@ -226,6 +232,125 @@ def _extract_docx(path: str) -> str:
     if not any(line.strip() for line in lines):
         raise ExtractionError("DOCX contains no extractable text")
     return "\n".join(lines).rstrip("\n") + "\n"
+
+
+
+def _presentation_slide_parts(zf: zipfile.ZipFile) -> list[str]:
+    names = set(zf.namelist())
+    presentation = _zip_xml(zf, "ppt/presentation.xml")
+    rels_path = "ppt/_rels/presentation.xml.rels"
+    rels: dict[str, str] = {}
+
+    if rels_path in names:
+        try:
+            root = ET.fromstring(zf.read(rels_path))
+            tag = f"{{{_NS_PKG_REL}}}Relationship"
+            rels = {
+                rel.get("Id", ""): rel.get("Target", "")
+                for rel in root.iter(tag)
+                if rel.get("Id")
+            }
+        except ET.ParseError:
+            rels = {}
+
+    pns = f"{{{_NS_P}}}"
+    rns = f"{{{_NS_REL}}}"
+    parts: list[str] = []
+
+    for slide_id in presentation.iter(f"{pns}sldId"):
+        rid = slide_id.get(f"{rns}id", "")
+        target = rels.get(rid, "")
+        if not target:
+            continue
+        target = target.lstrip("/")
+        part = posixpath.normpath(
+            target if target.startswith("ppt/") else f"ppt/{target}"
+        )
+        if part in names:
+            parts.append(part)
+
+    if parts:
+        return parts
+
+    return sorted(
+        name
+        for name in names
+        if re.match(r"^ppt/slides/slide\d+\.xml$", name)
+    )
+
+
+def _extract_pptx(path: str) -> str:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            parts = _presentation_slide_parts(zf)
+            out: list[str] = []
+            any_text = False
+            ans = f"{{{_NS_A}}}"
+
+            for number, part in enumerate(parts, 1):
+                try:
+                    root = ET.fromstring(zf.read(part))
+                except (KeyError, ET.ParseError):
+                    continue
+
+                texts = [
+                    (node.text or "").strip()
+                    for node in root.iter(f"{ans}t")
+                    if (node.text or "").strip()
+                ]
+                out.append(f"[Slide {number}]")
+                out.extend(texts)
+                out.append("")
+                if texts:
+                    any_text = True
+    except zipfile.BadZipFile as exc:
+        raise ExtractionError(f"Not a valid PPTX: {exc}") from exc
+    except OSError as exc:
+        raise ExtractionError(str(exc)) from exc
+
+    if not any_text:
+        raise ExtractionError("PPTX contains no extractable text")
+
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def _extract_pdf(path: str) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise ExtractionError(
+            "PDF extraction requires the pinned pypdf dependency"
+        ) from exc
+
+    try:
+        reader = PdfReader(path, strict=False)
+        if reader.is_encrypted:
+            try:
+                result = reader.decrypt("")
+            except Exception as exc:
+                raise ExtractionError("Encrypted PDF is not supported") from exc
+            if not result:
+                raise ExtractionError("Encrypted PDF is not supported")
+
+        out: list[str] = []
+        any_text = False
+        for number, page in enumerate(reader.pages, 1):
+            text = page.extract_text() or ""
+            out.append(f"[Page {number}]")
+            if text.strip():
+                out.append(text.rstrip())
+                any_text = True
+            out.append("")
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        raise ExtractionError(f"Not a readable PDF: {exc}") from exc
+
+    if not any_text:
+        raise ExtractionError("PDF contains no extractable text")
+
+    return "\n".join(out).rstrip("\n") + "\n"
+
 
 
 def _extract_xlsx(path: str) -> str:

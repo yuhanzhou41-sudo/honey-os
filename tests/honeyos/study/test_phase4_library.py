@@ -47,7 +47,7 @@ def test_deleted_attachment_rejected(tmp_path):
 
 def test_binary_pdf_rejected_in_phase4_1(tmp_path):
     service=make_service(tmp_path)
-    a=AttachmentService(tmp_path/'files').upload_bytes(b'%PDF-1.7 fake', original_filename='book.pdf', declared_mime_type='application/pdf', source_type='study')
+    a=AttachmentService(tmp_path/'files').upload_bytes(b'\x00\x01binary', original_filename='book.bin', declared_mime_type='application/octet-stream', source_type='study')
     try: service.create_resource({'attachment_id':a.id,'title':'Book','resource_type':'pdf'})
-    except ValueError as exc: assert 'binary/PDF extraction is not enabled yet' in str(exc)
+    except ValueError as exc: assert 'unsupported study attachment type' in str(exc)
     else: raise AssertionError('expected ValueError')

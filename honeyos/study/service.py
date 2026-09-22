@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import tempfile
 from typing import Any
 
 from .models import (
@@ -448,12 +449,39 @@ class StudyService:
     def _decode_study_attachment(*, filename: str, mime_type: str, data: bytes) -> str:
         mime=(mime_type or "").lower(); suffix=Path(filename).suffix.lower()
         textual=(mime.startswith("text/") or mime in {"application/json","application/xml"} or suffix in {".txt",".md",".markdown",".json",".csv",".tsv",".xml"})
-        if not textual:
-            raise ValueError("Phase 4.1 can index UTF-8 text/Markdown/JSON/CSV/XML attachments; binary/PDF extraction is not enabled yet")
+        if textual:
+            try:
+                return data.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError("study attachment is not valid UTF-8 text") from exc
+
+        if suffix not in {".pdf", ".docx", ".pptx", ".xlsx"}:
+            raise ValueError(
+                "unsupported study attachment type; supported formats are "
+                "TXT/Markdown/JSON/CSV/TSV/XML/PDF/DOCX/PPTX/XLSX"
+            )
+
+        from honeyos.tools.read_extract import ExtractionError, extract_document_text
+
         try:
-            return data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("study attachment is not valid UTF-8 text") from exc
+            with tempfile.NamedTemporaryFile(suffix=suffix) as handle:
+                handle.write(data)
+                handle.flush()
+                text=extract_document_text(handle.name)
+        except ExtractionError as exc:
+            message=str(exc)
+            if "no extractable text" in message.lower():
+                raise ValueError(
+                    f"no extractable text found in {filename}; scanned/image-only "
+                    "documents require a later OCR phase"
+                ) from exc
+            raise ValueError(
+                f"study document extraction failed for {filename}: {message}"
+            ) from exc
+
+        if not text.strip():
+            raise ValueError(f"no extractable text found in {filename}")
+        return text
 
     def list_resources(self, *, course_or_subject: str = "", resource_type: str = "") -> list[StudyResource]:
         return self.repository.list_resources(course_or_subject=course_or_subject, resource_type=resource_type)

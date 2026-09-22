@@ -39,7 +39,7 @@ function formatBytes(value: number) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function isTextualAttachment(attachment: Attachment) {
+function isStudySupportedAttachment(attachment: Attachment) {
   const mime = (
     attachment.inferred_mime_type ||
     attachment.declared_mime_type ||
@@ -49,7 +49,7 @@ function isTextualAttachment(attachment: Attachment) {
   return (
     mime.startsWith("text/") ||
     ["application/json", "application/xml"].includes(mime) ||
-    [".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".xml"].some(
+    [".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".xml", ".pdf", ".docx", ".pptx", ".xlsx"].some(
       (suffix) => filename.endsWith(suffix),
     )
   );
@@ -95,10 +95,10 @@ export function StudyLibraryPanel() {
   });
 
   const attachments = attachmentsQuery.data?.attachments ?? [];
-  const textualAttachments = useMemo(
+  const supportedAttachments = useMemo(
     () =>
       attachments.filter(
-        (item) => item.status === "ready" && isTextualAttachment(item),
+        (item) => item.status === "ready" && isStudySupportedAttachment(item),
       ),
     [attachments],
   );
@@ -107,13 +107,13 @@ export function StudyLibraryPanel() {
   useEffect(() => {
     if (
       selectedAttachmentId &&
-      !textualAttachments.some((item) => item.id === selectedAttachmentId)
+      !supportedAttachments.some((item) => item.id === selectedAttachmentId)
     ) {
       setSelectedAttachmentId("");
     }
-  }, [selectedAttachmentId, textualAttachments]);
+  }, [selectedAttachmentId, supportedAttachments]);
 
-  const selectedAttachment = textualAttachments.find(
+  const selectedAttachment = supportedAttachments.find(
     (item) => item.id === selectedAttachmentId,
   );
 
@@ -131,7 +131,7 @@ export function StudyLibraryPanel() {
 
   const create = useMutation({
     mutationFn: async () => {
-      if (!selectedAttachmentId) throw new Error("请先上传或选择一个文本附件");
+      if (!selectedAttachmentId) throw new Error("请先上传或选择一个支持的学习资料");
       const normalizedTitle =
         title.trim() || selectedAttachment?.original_filename || "";
       if (!normalizedTitle) throw new Error("请输入资料名称");
@@ -175,15 +175,15 @@ export function StudyLibraryPanel() {
           </p>
           <p className="mt-2 text-xs leading-5 text-[var(--foreground-muted)]">
             Phase 4 第一版支持 UTF-8 文本、Markdown、JSON、CSV、TSV 和 XML。
-            PDF / Office 文件将在后续 extraction phase 接入。
+            支持文本层 PDF、DOCX、PPTX、XLSX；扫描 PDF 与图片内容暂不做 OCR / 视觉理解。
           </p>
 
           <label className="mt-4 block cursor-pointer rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] px-3 py-4 text-center text-sm hover:bg-[var(--surface)]">
-            {upload.isPending ? "上传中…" : "＋ 上传文本资料"}
+            {upload.isPending ? "上传中…" : "＋ 上传学习资料"}
             <input
               type="file"
               className="hidden"
-              accept=".txt,.md,.markdown,.json,.csv,.tsv,.xml,text/*,application/json,application/xml"
+              accept=".txt,.md,.markdown,.json,.csv,.tsv,.xml,.pdf,.docx,.pptx,.xlsx,text/*,application/json,application/xml,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               disabled={upload.isPending}
               onChange={(event) => {
                 const file = event.target.files?.[0];
@@ -202,7 +202,7 @@ export function StudyLibraryPanel() {
               onChange={(event) => {
                 const id = event.target.value;
                 setSelectedAttachmentId(id);
-                const attachment = textualAttachments.find(
+                const attachment = supportedAttachments.find(
                   (item) => item.id === id,
                 );
                 if (attachment) setTitle(attachment.original_filename);
@@ -210,7 +210,7 @@ export function StudyLibraryPanel() {
               className="mt-1 w-full rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2.5 text-sm"
             >
               <option value="">选择可索引附件</option>
-              {textualAttachments.map((item) => (
+              {supportedAttachments.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.original_filename} · {formatBytes(item.size_bytes)}
                 </option>
