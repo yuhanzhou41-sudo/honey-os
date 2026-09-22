@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StudyPlan } from "../../api/study";
 import { StudyPage } from "./StudyPage";
@@ -78,6 +78,10 @@ function renderStudyPage() {
   );
 }
 
+afterEach(() => {
+  cleanup();
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   listStudyPlans.mockResolvedValue({ plans: [plan] });
@@ -112,7 +116,9 @@ describe("StudyPage Phase 5.1 manual editor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "编辑计划" }));
 
-    const titleInput = screen.getByDisplayValue("Phase 5 plan");
+    const titleInput = screen
+      .getAllByDisplayValue("Phase 5 plan")
+      .find((element) => element.tagName === "INPUT") as HTMLInputElement;
     fireEvent.change(titleInput, { target: { value: "Edited plan" } });
 
     const description = screen.getByPlaceholderText("计划说明");
@@ -176,5 +182,33 @@ describe("StudyPage Phase 5.1 manual editor", () => {
         }),
       );
     });
+  });
+});
+
+describe("StudyPage Phase 5.3B adaptive workspace", () => {
+  it("keeps plan-first UI with reserved compact tools", async () => {
+    renderStudyPage();
+
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "Phase 5 plan" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("阳光点")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "资料" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复习" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "答疑" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "番茄钟" })).toBeInTheDocument();
+  });
+
+  it("opens one floating Pomodoro from a task", async () => {
+    renderStudyPage();
+
+    expect(await screen.findByText("Original task")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "🍅 专注" }));
+
+    expect(screen.getByText("Classic Pomodoro")).toBeInTheDocument();
+    expect(
+      screen.getByText("Original task", { selector: "h3" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("25:00")).toBeInTheDocument();
   });
 });

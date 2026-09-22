@@ -2177,6 +2177,45 @@ class APIServerAdapter(BasePlatformAdapter):
             "plans": [self._study_json(plan) for plan in plans]
         })
 
+    async def _handle_study_preview_markdown_import(self, request: "web.Request") -> "web.Response":
+        from honeyos.study.service import StudyService
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        markdown_text = body.get("markdown")
+        try:
+            plan = await asyncio.to_thread(
+                StudyService().preview_markdown_plan,
+                markdown_text,
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        return web.json_response({"plan": self._study_json(plan)})
+
+    async def _handle_study_import_markdown_plan(self, request: "web.Request") -> "web.Response":
+        from honeyos.study.service import StudyService
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        markdown_text = body.get("markdown")
+        try:
+            plan = await asyncio.to_thread(
+                StudyService().import_markdown_plan,
+                markdown_text,
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        return web.json_response(
+            {"plan": self._study_json(plan)},
+            status=201,
+        )
+
     async def _handle_study_create_plan(self, request: "web.Request") -> "web.Response":
         from honeyos.study import StudyService
 
@@ -2546,6 +2585,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ),
             # === HoneyOS Study Core Phase 2 ===
             ("GET", "/api/study/plans", self._handle_study_list_plans),
+            ("POST", "/api/study/plans/import/preview", self._handle_study_preview_markdown_import),
+            ("POST", "/api/study/plans/import", self._handle_study_import_markdown_plan),
             ("POST", "/api/study/plans", self._handle_study_create_plan),
             ("GET", "/api/study/plans/{plan_id}", self._handle_study_get_plan),
             ("PATCH", "/api/study/plans/{plan_id}", self._handle_study_update_plan),

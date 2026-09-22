@@ -16,6 +16,19 @@ export const updateStudyTask=(pid:string,tid:string,p:UpdateStudyTask)=>requestJ
 export const setStudyTaskStatus=(pid:string,tid:string,status:StudyTaskStatus)=>requestJson<{plan:StudyPlan}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(tid)}/status`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({status})});
 export const deleteStudyTask=(pid:string,tid:string)=>requestJson<{plan:StudyPlan}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(tid)}`,{method:"DELETE"});
 
+export const previewStudyPlanMarkdown=(markdown:string)=>
+  requestJson<{plan:StudyPlan}>("/api/study/plans/import/preview",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({markdown}),
+  });
+export const importStudyPlanMarkdown=(markdown:string)=>
+  requestJson<{plan:StudyPlan}>("/api/study/plans/import",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({markdown}),
+  });
+
 export type StudySessionStatus="planned"|"running"|"paused"|"completed"|"abandoned";
 export type StudySessionType="focus"|"short_break"|"long_break"|"review"|"quiz"|"flashcard";
 export type StudySession={id:string;task_id:string;session_type:StudySessionType;status:StudySessionStatus;started_at:string|null;expected_end_at:string|null;ended_at:string|null;planned_minutes:number;actual_minutes:number;user_summary:string;created_at:string;updated_at:string};

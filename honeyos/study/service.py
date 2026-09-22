@@ -24,6 +24,7 @@ from .repository import (
     StudyResourceNotFoundError,
 )
 from .session_store import StudySessionNotFoundError, StudySessionStore
+from .markdown import StudyPlanMarkdownError, parse_study_plan_markdown
 from .validation import validate_study_plan
 
 
@@ -67,6 +68,32 @@ class StudyService:
 
     def get_plan(self, plan_id: str) -> StudyPlan:
         return self.repository.get_plan(plan_id)
+
+    def preview_markdown_plan(self, markdown_text: str) -> StudyPlan:
+        """Parse and validate StudyPlan Markdown without persistence."""
+        if not isinstance(markdown_text, str) or not markdown_text.strip():
+            raise StudyPlanMarkdownError("markdown must be a non-empty string")
+
+        plan = parse_study_plan_markdown(markdown_text)
+        raw = plan.model_dump()
+        raw["source_type"] = StudyPlanSource.MARKDOWN_IMPORT.value
+        return validate_study_plan(raw)
+
+    def import_markdown_plan(self, markdown_text: str) -> StudyPlan:
+        """Persist a previously previewable Markdown plan through StudyRepository."""
+        plan = self.preview_markdown_plan(markdown_text)
+
+        try:
+            self.repository.get_plan(plan.id)
+        except StudyPlanNotFoundError:
+            pass
+        else:
+            raise ValueError(
+                "study plan id already exists; remove the id from the Markdown "
+                "or import a plan with a different id"
+            )
+
+        return self.repository.save_plan(plan)
 
     def create_plan(self, payload: dict[str, Any]) -> StudyPlan:
         raw = dict(payload)
