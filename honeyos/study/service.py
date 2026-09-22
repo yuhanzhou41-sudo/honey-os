@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from .models import (
@@ -10,9 +11,17 @@ from .models import (
     StudySessionStatus,
     StudySessionType,
     StudyTask,
+    StudyResource,
 )
 from .pomodoro import StudyPomodoroScheduler
-from .repository import StudyPlanNotFoundError, StudyRepository
+from .library import StudyLibraryIndex
+from honeyos.files.models import AttachmentStatus
+from honeyos.files.service import AttachmentService
+from .repository import (
+    StudyPlanNotFoundError,
+    StudyRepository,
+    StudyResourceNotFoundError,
+)
 from .session_store import StudySessionNotFoundError, StudySessionStore
 from .validation import validate_study_plan
 
@@ -45,6 +54,8 @@ class StudyService:
         self.repository = repository or StudyRepository()
         self.sessions = session_store or StudySessionStore(self.repository.db_path)
         self.pomodoro_scheduler = pomodoro_scheduler or StudyPomodoroScheduler()
+        self.library = StudyLibraryIndex(self.repository.db_path)
+        self.attachments = AttachmentService(self.repository.study_dir.parent / "files")
 
     @staticmethod
     def _now() -> datetime:
@@ -429,3 +440,75 @@ class StudyService:
         )
         self.pomodoro_scheduler.cancel_completion(runtime.scheduler_job_id)
         return saved
+
+    # === Phase 4 Study Library application boundary ===
+    _RESOURCE_MUTABLE_FIELDS = {"title", "resource_type", "course_or_subject", "metadata"}
+
+    @staticmethod
+    def _decode_study_attachment(*, filename: str, mime_type: str, data: bytes) -> str:
+        mime=(mime_type or "").lower(); suffix=Path(filename).suffix.lower()
+        textual=(mime.startswith("text/") or mime in {"application/json","application/xml"} or suffix in {".txt",".md",".markdown",".json",".csv",".tsv",".xml"})
+        if not textual:
+            raise ValueError("Phase 4.1 can index UTF-8 text/Markdown/JSON/CSV/XML attachments; binary/PDF extraction is not enabled yet")
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("study attachment is not valid UTF-8 text") from exc
+
+    def list_resources(self, *, course_or_subject: str = "", resource_type: str = "") -> list[StudyResource]:
+        return self.repository.list_resources(course_or_subject=course_or_subject, resource_type=resource_type)
+
+    def get_resource(self, resource_id: str) -> StudyResource:
+        return self.repository.get_resource(resource_id)
+
+    def create_resource(self, payload: dict[str, Any]) -> StudyResource:
+        allowed={"attachment_id","title","resource_type","course_or_subject","metadata"}
+        unknown=set(payload)-allowed
+        if unknown:
+            raise ValueError(f"unsupported resource fields: {', '.join(sorted(unknown))}")
+        attachment_id=str(payload.get("attachment_id") or "").strip()
+        if not attachment_id:
+            raise ValueError("attachment_id is required")
+        attachment=self.attachments.get(attachment_id)
+        if attachment.status is AttachmentStatus.DELETED:
+            raise ValueError("cannot create StudyResource from a deleted attachment")
+        data=self.attachments.read_bytes(attachment.id)
+        text=self._decode_study_attachment(filename=attachment.original_filename, mime_type=attachment.inferred_mime_type or attachment.declared_mime_type, data=data)
+        raw=dict(payload)
+        raw.setdefault("title", attachment.original_filename)
+        raw.setdefault("resource_type", "document")
+        raw.setdefault("course_or_subject", "")
+        raw.setdefault("metadata", {})
+        resource=StudyResource.model_validate(raw)
+        saved=self.repository.save_resource(resource)
+        try:
+            self.library.index_resource(resource_id=saved.id, title=saved.title, course_or_subject=saved.course_or_subject, content=text)
+        except Exception:
+            self.repository.delete_resource(saved.id)
+            raise
+        return saved
+
+    def update_resource(self, resource_id: str, patch: dict[str, Any]) -> StudyResource:
+        unknown=set(patch)-self._RESOURCE_MUTABLE_FIELDS
+        if unknown:
+            raise ValueError(f"unsupported resource fields: {', '.join(sorted(unknown))}")
+        resource=self.repository.get_resource(resource_id)
+        raw=resource.model_dump(); raw.update(patch); raw["updated_at"]=self._now()
+        saved=self.repository.save_resource(StudyResource.model_validate(raw))
+        self.library.update_resource_metadata(resource_id=saved.id, title=saved.title, course_or_subject=saved.course_or_subject)
+        return saved
+
+    def delete_resource(self, resource_id: str) -> None:
+        self.library.delete_resource(resource_id)
+        self.repository.delete_resource(resource_id)
+
+    def get_resource_content(self, resource_id: str) -> dict[str, Any]:
+        self.repository.get_resource(resource_id)
+        content=self.library.get_content(resource_id)
+        if content is None:
+            raise ValueError("study resource has no indexed content")
+        return content
+
+    def search_resources(self, *, query: str = "", course_or_subject: str = "", resource_type: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        return self.library.search(query=query, course_or_subject=course_or_subject, resource_type=resource_type, limit=limit)
+

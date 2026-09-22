@@ -2566,6 +2566,15 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/study/sessions/{session_id}/abandon", self._handle_study_abandon_session),
             # === HoneyOS Study Classic Pomodoro Phase 3.2 ===
             ("GET", "/api/study/plans/{plan_id}/pomodoro", self._handle_study_pomodoro_state),
+# === HoneyOS Study Library Phase 4 ===
+            ("GET", "/api/study/resources", self._handle_study_list_resources),
+            ("POST", "/api/study/resources", self._handle_study_create_resource),
+            ("GET", "/api/study/resources/search", self._handle_study_search_resources),
+            ("GET", "/api/study/resources/{resource_id}", self._handle_study_get_resource),
+            ("PATCH", "/api/study/resources/{resource_id}", self._handle_study_update_resource),
+            ("DELETE", "/api/study/resources/{resource_id}", self._handle_study_delete_resource),
+            ("GET", "/api/study/resources/{resource_id}/content", self._handle_study_resource_content),
+            # === /HoneyOS Study Library Phase 4 ===
             # === /HoneyOS Study Classic Pomodoro Phase 3.2 ===
             # === /HoneyOS Study Pomodoro Phase 3 ===
             ("POST", "/api/companion/new", self._handle_companion_new),

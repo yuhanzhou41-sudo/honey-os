@@ -35,3 +35,7 @@ __all__ = [
 
 from .service import StudyService, StudyTaskNotFoundError
 from .session_store import StudySessionNotFoundError, StudySessionStore
+
+# Phase 4 Study Library exports
+from .library import StudyLibraryIndex, StudyLibraryIndexError
+from .repository import StudyResourceNotFoundError

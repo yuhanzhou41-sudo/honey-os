@@ -4,11 +4,15 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import StudyPlan
+from .models import StudyPlan, StudyResource
 from .validation import validate_study_plan
 
 
 class StudyPlanNotFoundError(KeyError):
+    pass
+
+
+class StudyResourceNotFoundError(KeyError):
     pass
 
 
@@ -263,3 +267,53 @@ class StudyRepository:
 
             if result.rowcount == 0:
                 raise StudyPlanNotFoundError(plan_id)
+
+    # === Phase 4 Study Library resource persistence ===
+    def save_resource(self, resource: StudyResource) -> StudyResource:
+        with self._connect() as conn:
+            conn.execute("""
+                INSERT INTO study_resources(id, attachment_id, title, resource_type, course_or_subject, metadata_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    attachment_id=excluded.attachment_id,
+                    title=excluded.title,
+                    resource_type=excluded.resource_type,
+                    course_or_subject=excluded.course_or_subject,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+            """, (resource.id, resource.attachment_id, resource.title, resource.resource_type,
+                  resource.course_or_subject, json.dumps(resource.metadata, ensure_ascii=False),
+                  resource.created_at.isoformat(), resource.updated_at.isoformat()))
+        return self.get_resource(resource.id)
+
+    def get_resource(self, resource_id: str) -> StudyResource:
+        with self._connect() as conn:
+            row=conn.execute("SELECT * FROM study_resources WHERE id = ?", (resource_id,)).fetchone()
+        if row is None:
+            raise StudyResourceNotFoundError(resource_id)
+        return StudyResource.model_validate({
+            "id":row["id"], "attachment_id":row["attachment_id"], "title":row["title"],
+            "resource_type":row["resource_type"], "course_or_subject":row["course_or_subject"],
+            "metadata":json.loads(row["metadata_json"] or "{}"),
+            "created_at":row["created_at"], "updated_at":row["updated_at"],
+        })
+
+    def list_resources(self, *, course_or_subject: str = "", resource_type: str = "") -> list[StudyResource]:
+        where=[]; params=[]
+        if course_or_subject:
+            where.append("course_or_subject = ?"); params.append(course_or_subject)
+        if resource_type:
+            where.append("resource_type = ?"); params.append(resource_type)
+        sql="SELECT id FROM study_resources"
+        if where: sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY updated_at DESC, id ASC"
+        with self._connect() as conn:
+            rows=conn.execute(sql, tuple(params)).fetchall()
+        return [self.get_resource(row["id"]) for row in rows]
+
+    def delete_resource(self, resource_id: str) -> None:
+        with self._connect() as conn:
+            result=conn.execute("DELETE FROM study_resources WHERE id = ?", (resource_id,))
+        if result.rowcount == 0:
+            raise StudyResourceNotFoundError(resource_id)
+

@@ -25,6 +25,7 @@ import {
 } from "../../api/study";
 import { PageHeader } from "../../components/honey/PageHeader";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
+import { StudyLibraryPanel } from "./StudyLibraryPanel";
 
 const plansKey = ["study", "plans"] as const;
 
@@ -36,6 +37,7 @@ export function StudyPage() {
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [newPlanTitle, setNewPlanTitle] = useState("");
   const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [studyView, setStudyView] = useState<"plans" | "library">("plans");
 
   useEffect(() => {
     if (!plans.length) {
@@ -129,7 +131,7 @@ export function StudyPage() {
     onSuccess: refreshPlans,
   });
 
-  if (plansQuery.isLoading) {
+  if (studyView === "plans" && plansQuery.isLoading) {
     return (
       <Frame>
         <LoadingState />
@@ -137,7 +139,7 @@ export function StudyPage() {
     );
   }
 
-  if (plansQuery.isError) {
+  if (studyView === "plans" && plansQuery.isError) {
     return (
       <Frame>
         <ErrorState />
@@ -152,6 +154,32 @@ export function StudyPage() {
         description="把计划放在左边，把注意力留给现在这一件事。"
       />
 
+      <div className="mt-5 inline-flex rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-raised)] p-1">
+        <button
+          type="button"
+          onClick={() => setStudyView("plans")}
+          className={`rounded-[calc(var(--radius-md)-4px)] px-4 py-2 text-sm font-medium transition ${
+            studyView === "plans"
+              ? "bg-[var(--accent)] text-white"
+              : "text-[var(--foreground-muted)] hover:text-[var(--foreground)]"
+          }`}
+        >
+          学习计划
+        </button>
+        <button
+          type="button"
+          onClick={() => setStudyView("library")}
+          className={`rounded-[calc(var(--radius-md)-4px)] px-4 py-2 text-sm font-medium transition ${
+            studyView === "library"
+              ? "bg-[var(--accent)] text-white"
+              : "text-[var(--foreground-muted)] hover:text-[var(--foreground)]"
+          }`}
+        >
+          学习资料
+        </button>
+      </div>
+
+      {studyView === "plans" ? (
       <div className="mt-6 grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)]">
         <aside className="min-w-0 space-y-4">
           <section className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-4">
@@ -248,6 +276,9 @@ export function StudyPage() {
           )}
         </main>
       </div>
+      ) : (
+        <StudyLibraryPanel />
+      )}
     </Frame>
   );
 }

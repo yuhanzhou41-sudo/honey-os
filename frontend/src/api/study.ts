@@ -28,3 +28,79 @@ export const abandonStudySession=(sid:string)=>requestJson<{session:StudySession
 
 export type StudyPomodoroState={focuses_in_cycle:number;cycle_length:number;next_session_type:StudySessionType;next_minutes:number;current_session_id:string|null;current_session_type:StudySessionType|null;current_session_status:StudySessionStatus|null};
 export const getStudyPomodoroState=(pid:string)=>requestJson<{pomodoro:StudyPomodoroState}>(`/api/study/plans/${encodeURIComponent(pid)}/pomodoro`);
+
+
+// === Phase 4 Study Library ===
+export type StudyResource={
+  id:string;
+  attachment_id:string;
+  title:string;
+  resource_type:string;
+  course_or_subject:string;
+  metadata:Record<string,unknown>;
+  created_at:string;
+  updated_at:string;
+};
+
+export type CreateStudyResource={
+  attachment_id:string;
+  title:string;
+  resource_type:string;
+  course_or_subject?:string;
+  metadata?:Record<string,unknown>;
+};
+
+export type StudyResourceSearchHit={
+  resource_id:string;
+  attachment_id:string;
+  title:string;
+  resource_type:string;
+  course_or_subject:string;
+  metadata:Record<string,unknown>;
+  snippet:string;
+};
+
+export type StudyResourceContent={
+  extracted_text:string;
+  extraction_kind:string;
+  indexed_at:string;
+};
+
+function studyResourceQuery(params:Record<string,string|number|undefined>){
+  const query=new URLSearchParams();
+  for(const [key,value] of Object.entries(params)){
+    if(value!==undefined && value!=="") query.set(key,String(value));
+  }
+  const suffix=query.toString();
+  return suffix?`?${suffix}`:"";
+}
+
+export const listStudyResources=(filters:{course_or_subject?:string;resource_type?:string}={})=>
+  requestJson<{resources:StudyResource[]}>(`/api/study/resources${studyResourceQuery(filters)}`);
+
+export const createStudyResource=(payload:CreateStudyResource)=>
+  requestJson<{resource:StudyResource}>("/api/study/resources",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(payload),
+  });
+
+export const getStudyResource=(id:string)=>
+  requestJson<{resource:StudyResource}>(`/api/study/resources/${encodeURIComponent(id)}`);
+
+export const deleteStudyResource=(id:string)=>
+  requestJson<{id:string;deleted:true}>(`/api/study/resources/${encodeURIComponent(id)}`,{
+    method:"DELETE",
+  });
+
+export const getStudyResourceContent=(id:string)=>
+  requestJson<{content:StudyResourceContent}>(`/api/study/resources/${encodeURIComponent(id)}/content`);
+
+export const searchStudyResources=(filters:{
+  q?:string;
+  course_or_subject?:string;
+  resource_type?:string;
+  limit?:number;
+}={})=>
+  requestJson<{results:StudyResourceSearchHit[]}>(`/api/study/resources/search${studyResourceQuery(filters)}`);
+// === /Phase 4 Study Library ===
