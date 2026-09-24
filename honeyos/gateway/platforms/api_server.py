@@ -2481,6 +2481,41 @@ class APIServerAdapter(BasePlatformAdapter):
 
     # === /HoneyOS Study Pomodoro Phase 3 ===
 
+    # === HoneyOS Study Storage Core handlers ===
+    async def _handle_study_storage_list(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyStorageManager
+        libraries = await asyncio.to_thread(StudyStorageManager().list_libraries)
+        return web.json_response({"libraries": libraries})
+
+    async def _handle_study_storage_create(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyStorageManager
+        body, err = await self._read_json_body(request)
+        if err: return err
+        try:
+            library = await asyncio.to_thread(StudyStorageManager().create_library, body.get("root", ""), body.get("name", ""), mode=body.get("mode", "portable"), removable=body.get("removable"))
+        except (ValueError, OSError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"library": library}, status=201)
+
+    async def _handle_study_storage_discover(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyStorageManager
+        libraries = await asyncio.to_thread(StudyStorageManager().discover_external_libraries)
+        return web.json_response({"libraries": libraries})
+
+    async def _handle_study_storage_cleanup(self, request: "web.Request") -> "web.Response":
+        from honeyos.study import StudyLibraryNotFoundError, StudyStorageManager
+        body, err = await self._read_json_body(request)
+        if err: return err
+        try:
+            result = await asyncio.to_thread(StudyStorageManager().cleanup, request.match_info["library_id"], body.get("target", "temp"))
+        except StudyLibraryNotFoundError:
+            return web.json_response({"error": "study library not found"}, status=404)
+        except (ValueError, OSError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(result)
+
+    # === /HoneyOS Study Storage Core handlers ===
+
     def _http_route_table(self) -> List[tuple]:
         """Return (method, path, handler) rows registered by ``connect()``.
 
@@ -2616,6 +2651,12 @@ class APIServerAdapter(BasePlatformAdapter):
             ("DELETE", "/api/study/resources/{resource_id}", self._handle_study_delete_resource),
             ("GET", "/api/study/resources/{resource_id}/content", self._handle_study_resource_content),
             # === /HoneyOS Study Library Phase 4 ===
+            # === HoneyOS Study Storage Core ===
+            ("GET", "/api/study/storage/libraries", self._handle_study_storage_list),
+            ("POST", "/api/study/storage/libraries", self._handle_study_storage_create),
+            ("POST", "/api/study/storage/discover", self._handle_study_storage_discover),
+            ("POST", "/api/study/storage/libraries/{library_id}/cleanup", self._handle_study_storage_cleanup),
+            # === /HoneyOS Study Storage Core ===
             # === /HoneyOS Study Classic Pomodoro Phase 3.2 ===
             # === /HoneyOS Study Pomodoro Phase 3 ===
             ("POST", "/api/companion/new", self._handle_companion_new),

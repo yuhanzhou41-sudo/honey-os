@@ -30,6 +30,9 @@ __all__ = [
     "StudyTaskNotFoundError",
     "StudySessionNotFoundError",
     "StudySessionStore",
+    "StudyStorageManager",
+    "StudyStorageError",
+    "StudyLibraryNotFoundError",
     "validate_study_plan",
 ]
 
@@ -39,3 +42,5 @@ from .session_store import StudySessionNotFoundError, StudySessionStore
 # Phase 4 Study Library exports
 from .library import StudyLibraryIndex, StudyLibraryIndexError
 from .repository import StudyResourceNotFoundError
+
+from .storage import StudyLibraryNotFoundError, StudyStorageError, StudyStorageManager
