@@ -4904,6 +4904,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
+        shadow_user_message: Any = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -5171,7 +5172,64 @@ class APIServerAdapter(BasePlatformAdapter):
             self._last_resolved_model["*"] = model
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        configured_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+
+        # SELECTIVE_LOADING_V1
+        # Real selection is synchronous and never waits for local Qwen.
+        try:
+            from honeyos.routing.rules import route_by_rules
+            from honeyos.routing.selective_loading import (
+                select_safe_fallback_toolsets,
+                select_toolsets_for_route,
+            )
+
+            _route_decision = route_by_rules(shadow_user_message)
+            if _route_decision is not None:
+                enabled_toolsets = list(
+                    select_toolsets_for_route(_route_decision, configured_toolsets)
+                )
+                _selective_phase = "rules"
+            else:
+                enabled_toolsets = list(
+                    select_safe_fallback_toolsets(configured_toolsets)
+                )
+                _selective_phase = "safe_fallback"
+
+            logger.warning(
+                "SELECTIVE_LOADING_V1 phase=%s configured_toolsets=%s enabled_toolsets=%s",
+                _selective_phase,
+                configured_toolsets,
+                enabled_toolsets,
+            )
+        except Exception:
+            _safe_names = {
+                "companion_profile",
+                "companion_memory",
+                "proactive_companion",
+                "memory",
+                "session_search",
+                "file",
+                "web",
+            }
+            enabled_toolsets = [
+                name for name in configured_toolsets if name in _safe_names
+            ]
+            logger.exception(
+                "SELECTIVE_LOADING_V1 routing failed; using safe fallback enabled_toolsets=%s",
+                enabled_toolsets,
+            )
+
+        # Async local-Qwen remains shadow-only and cannot affect this turn.
+        try:
+            from honeyos.routing.shadow import route_shadow_nonblocking
+            route_shadow_nonblocking(
+                shadow_user_message,
+                configured_toolsets=configured_toolsets,
+            )
+        except Exception:
+            logger.exception(
+                "TURN_ROUTER_SHADOW dispatch failed; current selective toolsets unchanged"
+            )
 
         max_iterations = _current_max_iterations()
 
@@ -8977,6 +9035,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         route=route,
                         session_model=session_model,
                         confirmed_runtime_lock=confirmed_runtime_lock,
+                        shadow_user_message=user_message,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
@@ -9409,6 +9468,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         requested_provider=agent_overrides.get("requested_provider"),
                         model_options=agent_overrides.get("model_options"),
                         route=route,
+                        shadow_user_message=user_message,
                     )
                 self._active_run_agents[run_id] = agent
 
