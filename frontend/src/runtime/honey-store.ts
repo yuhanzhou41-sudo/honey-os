@@ -31,6 +31,7 @@ type HoneyRuntimeState = {
   finishStoppedEmpty: () => void;
   removeLastAssistantMessage: () => void;
   replaceTimelineMessages: (messages: ChatMessage[]) => void;
+  mergeTimelineMessages: (messages: ChatMessage[]) => void;
   rollbackLocalMessages: (messageIndex: number) => void;
   failTurn: (message: string) => void;
   updateProfile: (profile: CompanionProfileDetails) => void;
@@ -166,6 +167,16 @@ export const useHoneyStore = create<HoneyRuntimeState>((set) => ({
     run: initialRunState,
     sending: false,
     sendError: null,
+  }),
+  mergeTimelineMessages: (incoming) => set((state) => {
+    if (!incoming.length) return state;
+    const knownIds = new Set(
+      state.messages.map((message) => message.id).filter((id): id is number => typeof id === "number"),
+    );
+    const additions = incoming.filter(
+      (message) => typeof message.id === "number" && !knownIds.has(message.id),
+    );
+    return additions.length ? { messages: [...state.messages, ...additions] } : state;
   }),
   rollbackLocalMessages: (messageIndex) => set((state) => ({
     messages: state.messages.slice(0, Math.max(0, messageIndex)),

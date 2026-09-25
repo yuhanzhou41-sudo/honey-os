@@ -12,10 +12,13 @@ import {
   stopChat,
   streamChat,
   userMessageBreak,
+  watchSessionMessages,
   type ChatInput,
   type ChatRunStatus,
 } from "../../api/chat";
-import { deleteCompanionConversation, rollbackCompanionTimeline, startNewCompanionConversation, switchCompanionConversation, type ChatMessage, type HistoryItem } from "../../api/companion";
+import { fetchModelOptions, type ModelOptions } from "../../api/models";
+import { CHAT_DOCUMENT_ACCEPT, chatStudyDocumentContext, uploadChatStudyDocument, type ChatStudyDocument } from "../../api/chat-study-library";
+import { deleteCompanionConversation, fetchCompanionMessages, rollbackCompanionTimeline, startNewCompanionConversation, switchCompanionConversation, type ChatMessage, type HistoryItem } from "../../api/companion";
 import { HoneyAvatar } from "../../components/honey/HoneyAvatar";
 import { HoneyMessage } from "../../components/honey/HoneyMessage";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
@@ -101,7 +104,7 @@ export function ChatPage() {
   const {
     loading, error, messages, name, status, sessionId, sessionKey, run, sending, history,
     queueUserMessage, beginReply, applyRunEvent, finishTurn, finishStoppedTurn, finishStoppedEmpty,
-    replaceTimelineMessages, failTurn, startConversation,
+    replaceTimelineMessages, mergeTimelineMessages, failTurn, startConversation,
     switchConversation, removeHistory, rollbackLocalMessages,
   } = useHoneyStore();
   const [draft, setDraft] = useState("");
@@ -244,6 +247,44 @@ export function ChatPage() {
       finishStoppedTurn();
       setStoppedReply(true);
       setStoppedUserMessageId(Number(status.user_message_id || 0) || null);
+  useEffect(() => {
+    if (!sessionId) return;
+    const controller = new AbortController();
+    let closed = false;
+    let retryTimer: number | null = null;
+
+    const listen = async () => {
+      if (closed) return;
+      try {
+        await watchSessionMessages({
+          sessionId,
+          sessionKey: sessionKey ?? undefined,
+          signal: controller.signal,
+          onMessage: async (notice) => {
+            if (closed || String(notice.session_id) !== String(sessionId)) return;
+            try {
+              const result = await fetchCompanionMessages(sessionId, sessionKey || "");
+              if (!closed) mergeTimelineMessages(result.data || []);
+            } catch {
+              // Durable DB state remains authoritative; normal reopen can reconcile.
+            }
+          },
+        });
+      } catch {
+        if (closed || controller.signal.aborted) return;
+      }
+      if (!closed) retryTimer = window.setTimeout(() => void listen(), 3000);
+    };
+
+    void listen();
+    return () => {
+      closed = true;
+      controller.abort();
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [sessionId, sessionKey, mergeTimelineMessages]);
+
+
       setRecoverRunId(null);
       setRetryUserMessageId(null);
       return true;

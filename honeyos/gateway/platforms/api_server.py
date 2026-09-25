@@ -1571,6 +1571,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         self._companion_stream_controls: Dict[str, Dict[str, Any]] = {}
         self._companion_run_results: Dict[str, Dict[str, Any]] = {}
+        # Notification-only subscribers for durable proactive messages.
+        # This channel is independent from chat/stream and never owns an agent.
+        self._companion_message_subscribers: Dict[str, set[asyncio.Queue]] = {}
         # Stop is cooperative: the executor thread may outlive the HTTP request.
         self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
@@ -2735,6 +2738,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("GET", "/api/sessions/{session_id}/message-events", self._handle_session_message_events),
             ("POST", "/api/sessions/{session_id}/timeline/rollback", self._handle_session_timeline_rollback),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
@@ -6066,6 +6070,61 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         if target_id <= int(edit_state["cursor"]):
             return web.json_response(
+    async def _handle_session_message_events(
+        self, request: "web.Request"
+    ) -> "web.StreamResponse":
+        # Stream lightweight notifications for persisted proactive messages.
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = await self._ensure_session_db_async()
+        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=64)
+        subscribers = self._companion_message_subscribers.setdefault(resolved_id, set())
+        subscribers.add(queue)
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+        try:
+            await response.write(b": connected\n\n")
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=25.0)
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
+                    continue
+                payload = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+                await response.write(
+                    f"event: honeyos.session.message\ndata: {payload}\n\n".encode("utf-8")
+                )
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        finally:
+            subscribers.discard(queue)
+            if not subscribers:
+                self._companion_message_subscribers.pop(resolved_id, None)
+        return response
+
+    def _notify_companion_message(self, session_id: str, message_id: Any) -> None:
+        event = {"session_id": str(session_id), "message_id": message_id}
+        for queue in tuple(self._companion_message_subscribers.get(str(session_id), ())):
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.debug(
+                    "[api_server] message-event queue full for session %s", session_id
+                )
+
                 _openai_error("Message has already entered memory organization", code="timeline_locked"),
                 status=409,
             )
@@ -10312,10 +10371,64 @@ class APIServerAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """
-        Not used — HTTP request/response cycle handles delivery directly.
-        """
-        return SendResult(success=False, error="API server uses HTTP request/response, not send()")
+        # Persist an out-of-band assistant message into a web session.
+        session_id = str(chat_id or "").strip()
+        text = str(content or "").strip()
+        if not session_id:
+            return SendResult(success=False, error="API server delivery requires a session id")
+        if not text:
+            return SendResult(success=False, error="API server delivery content is empty")
+
+        try:
+            db = await self._ensure_session_db_async()
+            if db is None:
+                return SendResult(success=False, error="Session database unavailable")
+
+            resolved_id = await asyncio.to_thread(
+                db.resolve_resume_session_id, session_id
+            )
+            session = await asyncio.to_thread(db.get_session, resolved_id)
+            if not session:
+                return SendResult(
+                    success=False,
+                    error=f"Session not found: {session_id}",
+                )
+
+            delivery_metadata: Dict[str, Any] = {
+                "source": "proactive_delivery",
+                "transport": "api_server",
+            }
+            if isinstance(metadata, dict):
+                for key in ("job_id", "delivery_id", "thread_id"):
+                    value = metadata.get(key)
+                    if value is not None:
+                        delivery_metadata[key] = str(value)
+
+            message_id = await asyncio.to_thread(
+                db.append_message,
+                resolved_id,
+                "assistant",
+                text,
+                display_kind="proactive",
+                display_metadata=delivery_metadata,
+            )
+            logger.info(
+                "[api_server] persisted proactive assistant message "
+                "session=%s message_id=%s",
+                resolved_id,
+                message_id,
+            )
+            self._notify_companion_message(resolved_id, message_id)
+            return SendResult(success=True)
+        except Exception as exc:
+            logger.exception(
+                "[api_server] proactive delivery persistence failed for session %s",
+                session_id,
+            )
+            return SendResult(
+                success=False,
+                error=f"API server proactive delivery failed: {exc}",
+            )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the API server."""

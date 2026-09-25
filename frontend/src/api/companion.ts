@@ -7,6 +7,20 @@ export type ChatMessage = {
   timeline_editable?: boolean;
 };
 
+export const fetchCompanionMessages = (
+  sessionId: string,
+  sessionKey: string,
+  signal?: AbortSignal,
+) =>
+  requestJson<{ object: string; session_id: string; data: ChatMessage[] }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/messages?view=companion`,
+    {
+      signal,
+      headers: { "X-HoneyOS-Session-Key": sessionKey },
+    },
+  );
+
+
 export type TimelineState = { cursor: number; busy_start: number; busy_end: number };
 
 export type CompanionProfileDetails = CompanionBootstrap["profile_details"];

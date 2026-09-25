@@ -1261,6 +1261,8 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    task_kind: Optional[str] = None,
+    reminder_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1337,6 +1339,12 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_task_kind = _normalize_job_optional_text(task_kind)
+    normalized_reminder_text = _coerce_job_text(reminder_text).strip()
+    if normalized_task_kind not in {None, "fixed_reminder"}:
+        raise ValueError(f"Unsupported task_kind: {normalized_task_kind!r}")
+    if normalized_task_kind == "fixed_reminder" and not normalized_reminder_text:
+        raise ValueError("fixed_reminder requires non-empty reminder_text")
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1426,6 +1434,8 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "task_kind": normalized_task_kind,
+        "reminder_text": normalized_reminder_text or None,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the

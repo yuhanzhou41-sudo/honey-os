@@ -196,3 +196,48 @@ export async function fetchChatRunStatus(options: {
   if (!response.ok) throw await responseError(response);
   return response.json() as Promise<ChatRunStatus>;
 }
+
+export type SessionMessageNotice = {
+  session_id: string;
+  message_id: number | string;
+};
+
+export async function watchSessionMessages(options: {
+  sessionId: string;
+  sessionKey?: string;
+  signal?: AbortSignal;
+  onMessage: (notice: SessionMessageNotice) => void;
+}): Promise<void> {
+  const response = await fetchWithLocalSessionRecovery(
+    apiPath(`/api/sessions/${encodeURIComponent(options.sessionId)}/message-events`),
+    {
+      credentials: "same-origin",
+      signal: options.signal,
+      headers: {
+        Accept: "text/event-stream",
+        ...(options.sessionKey
+          ? { "X-HoneyOS-Session-Key": options.sessionKey }
+          : {}),
+        "X-HoneyOS-Companion-View": "1",
+      },
+    },
+  );
+  if (!response.ok || !response.body) throw await responseError(response);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const blocks = buffer.replaceAll("\r\n", "\n").split("\n\n");
+    buffer = blocks.pop() || "";
+    for (const block of blocks) {
+      const event = parseEventBlock(block);
+      if (event?.name === "honeyos.session.message") {
+        options.onMessage(event.payload as SessionMessageNotice);
+      }
+    }
+    if (done) break;
+  }
+}

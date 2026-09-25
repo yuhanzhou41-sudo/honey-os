@@ -1511,7 +1511,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
-    if wrap_response:
+    # Fixed reminders are ordinary assistant-facing messages. Their management
+    # metadata belongs to the reminder/job UI, not the chat transcript.
+    if job.get("task_kind") == "fixed_reminder":
+        delivery_content = content
+    elif wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
         delivery_content = (
@@ -2797,6 +2801,30 @@ def run_job(
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+
+    # ---------------------------------------------------------------
+    # fixed_reminder short-circuit — zero LLM/token execution.
+    # ---------------------------------------------------------------
+    if job.get("task_kind") == "fixed_reminder":
+        reminder_text = str(job.get("reminder_text") or "").strip()
+        if not reminder_text:
+            err = "fixed_reminder has no reminder_text"
+            logger.error("Job '%s': %s", job_id, err)
+            return False, "", "", err
+        now_iso = _honeyos_now().strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(
+            "Job '%s' (fixed_reminder): zero-model execution; delivering stored text",
+            job_id,
+        )
+        doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {now_iso}\n"
+            f"**Mode:** fixed_reminder (zero-model)\n"
+            f"**Status:** success\n\n"
+            f"{reminder_text}\n"
+        )
+        return True, doc, reminder_text, None
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.

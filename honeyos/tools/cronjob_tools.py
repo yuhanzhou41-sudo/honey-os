@@ -577,6 +577,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
+        "task_kind": job.get("task_kind"),
+        "reminder_text": job.get("reminder_text"),
     }
     if job.get("script"):
         result["script"] = job["script"]
@@ -761,6 +763,8 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    task_kind: Optional[str] = None,
+    reminder_text: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -774,6 +778,12 @@ def cronjob(
                 return tool_error("schedule is required for create", success=False)
             canonical_skills = _canonical_skills(skill, skills)
             _no_agent = bool(no_agent)
+            _task_kind = _normalize_optional_job_value(task_kind)
+            _reminder_text = str(reminder_text or "").strip()
+            if _task_kind not in {None, "fixed_reminder"}:
+                return tool_error(f"Unsupported task_kind: {_task_kind!r}", success=False)
+            if _task_kind == "fixed_reminder" and not _reminder_text:
+                return tool_error("fixed_reminder requires non-empty reminder_text", success=False)
             # Job-shape validation differs by mode:
             #   - no_agent=True → script is the job; prompt/skills are optional
             #     (and irrelevant to execution).
@@ -786,7 +796,7 @@ def cronjob(
                         "the script is the job.",
                         success=False,
                     )
-            elif not prompt and not canonical_skills:
+            elif _task_kind != "fixed_reminder" and not prompt and not canonical_skills:
                 return tool_error("create requires either prompt or at least one skill", success=False)
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
@@ -848,6 +858,8 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                task_kind=_task_kind,
+                reminder_text=_reminder_text or None,
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -1045,6 +1057,18 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if task_kind is not None:
+                normalized_task_kind = _normalize_optional_job_value(task_kind)
+                if normalized_task_kind not in {None, "fixed_reminder"}:
+                    return tool_error(f"Unsupported task_kind: {normalized_task_kind!r}", success=False)
+                updates["task_kind"] = normalized_task_kind
+            if reminder_text is not None:
+                updates["reminder_text"] = str(reminder_text).strip() or None
+            effective_task_kind = updates.get("task_kind") if "task_kind" in updates else job.get("task_kind")
+            effective_reminder_text = updates.get("reminder_text") if "reminder_text" in updates else job.get("reminder_text")
+            if effective_task_kind == "fixed_reminder" and not str(effective_reminder_text or "").strip():
+                return tool_error("fixed_reminder requires non-empty reminder_text", success=False)
+
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -1075,7 +1099,7 @@ CRONJOB_SCHEMA = {
     "name": "cronjob",
     "description": """Manage scheduled cron jobs with a single compressed tool.
 
-Use action='create' to schedule a new job from a prompt or one or more skills.
+Use action='create' to schedule a new job. If the user only needs a predetermined message delivered at a scheduled time, you MUST create task_kind='fixed_reminder' and put the complete final natural user-facing message in reminder_text. Do not use prompt/skills for this case. Use prompt/skills only when the future run genuinely needs reasoning, querying, summarization, tool use, conditional evaluation, or new content generation.
 Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
@@ -1095,15 +1119,24 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, schedule is required. Predetermined-message reminders MUST use task_kind='fixed_reminder' plus reminder_text. Use prompt/skills only when the future run genuinely needs reasoning, querying, summarization, tool use, conditional evaluation, or new content generation."
             },
             "job_id": {
                 "type": "string",
                 "description": "Required for update/pause/resume/remove/run"
             },
+            "task_kind": {
+                "type": "string",
+                "enum": ["fixed_reminder"],
+                "description": "For ordinary predetermined-message reminders. MUST be used instead of prompt/skills when no reasoning is needed at fire time."
+            },
+            "reminder_text": {
+                "type": "string",
+                "description": "Required with task_kind=fixed_reminder. Final natural user-facing reminder text only."
+            },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills."
+                "description": "For agent jobs only: the full self-contained future-run instruction. Do NOT use prompt for a predetermined-message reminder; use task_kind='fixed_reminder' and reminder_text instead."
             },
             "schedule": {
                 "type": "string",
@@ -1231,6 +1264,8 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        task_kind=args.get("task_kind"),
+        reminder_text=args.get("reminder_text"),
         task_id=kw.get("task_id"),
     ),
     check_fn=check_cronjob_requirements,
