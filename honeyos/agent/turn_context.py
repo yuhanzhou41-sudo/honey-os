@@ -1213,6 +1213,21 @@ def build_turn_context(
         except Exception:
             pass
 
+    # COGNITIVE_MEMORY_SHADOW_F1
+    # Read-only shadow retrieval: audit candidates, but do NOT append them to
+    # ext_prefetch_cache, api_content, system prompt, or TurnContext.
+    try:
+        _shadow_query = original_user_message if isinstance(original_user_message, str) else ""
+        if _shadow_query and not is_trivial_prompt(_shadow_query):
+            from honeyos.memory.runtime_shadow import run_cognitive_memory_shadow
+            run_cognitive_memory_shadow(
+                _shadow_query,
+                session_id=str(getattr(agent, "session_id", "") or ""),
+                turn_id=str(turn_id or ""),
+            )
+    except Exception:
+        logger.debug("Cognitive Memory F1 shadow retrieval failed (non-fatal)", exc_info=True)
+
     # ── api_content sidecar: persist what you send ──
     # The prefetch/plugin context above is injected into the API copy of this
     # turn's user message, never into the stored content — so on the next
