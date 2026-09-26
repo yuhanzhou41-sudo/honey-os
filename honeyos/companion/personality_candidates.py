@@ -189,6 +189,23 @@ class PersonalityCandidateStore:
 
             CREATE INDEX IF NOT EXISTS idx_personality_candidate_suppressions_trait
                 ON personality_candidate_suppressions(trait_key);
+
+            CREATE TABLE IF NOT EXISTS personality_pending_observations (
+                observation_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL DEFAULT '',
+                user_reference TEXT NOT NULL DEFAULT '',
+                assistant_reference TEXT NOT NULL DEFAULT '',
+                observed_at TEXT NOT NULL,
+                signal_flags TEXT NOT NULL DEFAULT '[]',
+                user_excerpt TEXT NOT NULL DEFAULT '',
+                assistant_excerpt TEXT NOT NULL DEFAULT '',
+                processed_at TEXT,
+                reflection_batch_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_personality_pending_observations_pending
+                ON personality_pending_observations(processed_at, observed_at);
             """
         )
         conn.commit()
@@ -621,6 +638,148 @@ class PersonalityCandidateStore:
             },
         )
         return updated
+
+
+    def capture_observation(
+        self,
+        *,
+        session_id: str = "",
+        user_reference: str = "",
+        assistant_reference: str = "",
+        observed_at: str | None = None,
+        signal_flags: list[str] | tuple[str, ...] | None = None,
+        user_excerpt: str = "",
+        assistant_excerpt: str = "",
+    ) -> str:
+        """Record bounded, model-free observation material for later reflection."""
+        now = _utcnow()
+        observed = observed_at or now
+        observation_id = uuid.uuid4().hex
+
+        flags: list[str] = []
+        for item in signal_flags or []:
+            flag = str(item or "").strip()
+            if flag and flag not in flags:
+                flags.append(flag[:80])
+
+        user_text = str(user_excerpt or "").strip()[:800]
+        assistant_text = str(assistant_excerpt or "").strip()[:1200]
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO personality_pending_observations (
+                    observation_id,
+                    session_id,
+                    user_reference,
+                    assistant_reference,
+                    observed_at,
+                    signal_flags,
+                    user_excerpt,
+                    assistant_excerpt,
+                    processed_at,
+                    reflection_batch_id,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, '', ?)
+                """,
+                (
+                    observation_id,
+                    str(session_id or "").strip()[:160],
+                    str(user_reference or "").strip()[:200],
+                    str(assistant_reference or "").strip()[:200],
+                    observed,
+                    json.dumps(flags, ensure_ascii=False),
+                    user_text,
+                    assistant_text,
+                    now,
+                ),
+            )
+            conn.commit()
+
+        self._audit(
+            "observation_captured",
+            {"observation_id": observation_id, "signal_flags": flags},
+        )
+        return observation_id
+
+    def list_pending_observations(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        limit_value = max(1, min(int(limit), 500))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM personality_pending_observations
+                WHERE processed_at IS NULL
+                ORDER BY observed_at, created_at, observation_id
+                LIMIT ?
+                """,
+                (limit_value,),
+            ).fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["signal_flags"] = json.loads(item.get("signal_flags") or "[]")
+            except Exception:
+                item["signal_flags"] = []
+            results.append(item)
+        return results
+
+    def mark_observations_processed(
+        self,
+        observation_ids: list[str] | tuple[str, ...],
+        *,
+        reflection_batch_id: str,
+        processed_at: str | None = None,
+    ) -> int:
+        ids = [str(x).strip() for x in observation_ids if str(x).strip()]
+        if not ids:
+            return 0
+
+        batch = _clean_text(
+            reflection_batch_id,
+            field="reflection_batch_id",
+            limit=160,
+        )
+        when = processed_at or _utcnow()
+        placeholders = ",".join("?" for _ in ids)
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE personality_pending_observations
+                SET processed_at = ?,
+                    reflection_batch_id = ?
+                WHERE observation_id IN ({placeholders})
+                  AND processed_at IS NULL
+                """,
+                (when, batch, *ids),
+            )
+            conn.commit()
+            changed = int(cursor.rowcount or 0)
+
+        if changed:
+            self._audit(
+                "observations_processed",
+                {"reflection_batch_id": batch, "count": changed},
+            )
+        return changed
+
+    def pending_observation_count(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM personality_pending_observations
+                WHERE processed_at IS NULL
+                """
+            ).fetchone()
+        return int(row["count"] if row is not None else 0)
 
     def get_candidate(self, candidate_id: str) -> PersonalityCandidate | None:
         with self._connect() as conn:

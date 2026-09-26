@@ -251,3 +251,103 @@ def test_materially_different_evidence_can_form_new_candidate_after_rejection(tm
     rows = store.list_candidates()
     assert len(rows) == 2
     assert {row.status for row in rows} == {"candidate", "rejected"}
+
+
+def test_observation_buffer_is_model_free_and_isolated(tmp_path):
+    store = PersonalityCandidateStore(tmp_path)
+    before = _authoritative_hashes(tmp_path)
+
+    observation_id = store.capture_observation(
+        session_id="session-1",
+        user_reference="user-10",
+        assistant_reference="assistant-11",
+        signal_flags=["preference", "disagreement"],
+        user_excerpt="What do you think?",
+        assistant_excerpt="I prefer the second approach.",
+    )
+
+    after = _authoritative_hashes(tmp_path)
+
+    assert observation_id
+    assert store.pending_observation_count() == 1
+    assert before == after
+
+    pending = store.list_pending_observations()
+    assert pending[0]["observation_id"] == observation_id
+    assert pending[0]["signal_flags"] == ["preference", "disagreement"]
+
+
+def test_observation_excerpts_are_bounded(tmp_path):
+    store = PersonalityCandidateStore(tmp_path)
+
+    store.capture_observation(
+        user_excerpt="u" * 5000,
+        assistant_excerpt="a" * 5000,
+        signal_flags=["x" * 200],
+    )
+
+    row = store.list_pending_observations()[0]
+    assert len(row["user_excerpt"]) == 800
+    assert len(row["assistant_excerpt"]) == 1200
+    assert len(row["signal_flags"][0]) == 80
+
+
+def test_processed_observations_do_not_reappear_as_pending(tmp_path):
+    store = PersonalityCandidateStore(tmp_path)
+    first = store.capture_observation(
+        assistant_excerpt="I disagree.",
+        signal_flags=["disagreement"],
+    )
+    second = store.capture_observation(
+        assistant_excerpt="I am curious about that.",
+        signal_flags=["curiosity"],
+    )
+
+    assert store.pending_observation_count() == 2
+
+    changed = store.mark_observations_processed(
+        [first],
+        reflection_batch_id="batch-1",
+    )
+
+    assert changed == 1
+    assert store.pending_observation_count() == 1
+    pending = store.list_pending_observations()
+    assert [row["observation_id"] for row in pending] == [second]
+
+    assert store.mark_observations_processed(
+        [first],
+        reflection_batch_id="batch-2",
+    ) == 0
+
+
+def test_observation_buffer_does_not_create_personality_candidate(tmp_path):
+    store = PersonalityCandidateStore(tmp_path)
+
+    store.capture_observation(
+        assistant_excerpt="I prefer the direct version.",
+        signal_flags=["preference"],
+    )
+
+    assert store.list_candidates() == []
+
+
+def test_observation_schema_contains_no_name_fields(tmp_path):
+    store = PersonalityCandidateStore(tmp_path)
+    store.capture_observation(assistant_excerpt="Something happened.")
+
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    try:
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(personality_pending_observations)"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert "companion_name" not in columns
+    assert "name" not in columns
