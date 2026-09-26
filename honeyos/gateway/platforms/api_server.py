@@ -2539,6 +2539,15 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/new-ui/{asset_path:.*}", self._handle_companion_react),
             ("GET", "/api/companion/bootstrap", self._handle_companion_bootstrap),
             ("GET", "/api/companion/memories", self._handle_companion_memories),
+            # === Cognitive Memory Library Phase A/B (read-only) ===
+            ("GET", "/api/memory/library", self._handle_memory_library),
+            ("GET", "/api/memory/library/{memory_id}", self._handle_memory_library_item),
+            ("PATCH", "/api/memory/library/{memory_id}", self._handle_memory_library_update),
+            ("DELETE", "/api/memory/library/{memory_id}", self._handle_memory_library_delete),
+            ("POST", "/api/memory/library/{memory_id}/restore", self._handle_memory_library_restore),
+            ("GET", "/api/memory/trash", self._handle_memory_trash),
+            ("DELETE", "/api/memory/trash/{memory_id}/permanent", self._handle_memory_permanent_delete),
+            # === /Cognitive Memory Library Phase A/B ===
             ("GET", "/api/companion/diary", self._handle_companion_diary),
             (
                 "POST",
@@ -3318,6 +3327,172 @@ class APIServerAdapter(BasePlatformAdapter):
                 "distillation": distillation,
             }
         )
+
+    async def _handle_memory_library(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.memory.library import CognitiveMemoryLibrary
+
+        try:
+            limit = int(request.query.get("limit", "50"))
+            offset = int(request.query.get("offset", "0"))
+        except ValueError:
+            return web.json_response(
+                _openai_error("Invalid pagination", code="invalid_pagination"),
+                status=400,
+            )
+
+        page = await asyncio.to_thread(
+            CognitiveMemoryLibrary().list_historical,
+            source_system=request.query.get("source"),
+            partition=request.query.get("partition"),
+            query=request.query.get("q"),
+            limit=limit,
+            offset=offset,
+        )
+        return web.json_response(page.to_dict())
+
+    async def _handle_memory_library_item(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.memory.library import CognitiveMemoryLibrary
+        from honeyos.memory.repository import MemoryNotFoundError
+
+        memory_id = str(request.match_info.get("memory_id") or "").strip()
+        try:
+            item = await asyncio.to_thread(
+                CognitiveMemoryLibrary().get_historical,
+                memory_id,
+                include_suppressed=True,
+            )
+        except MemoryNotFoundError:
+            return web.json_response(
+                _openai_error("Memory not found", code="memory_not_found"),
+                status=404,
+            )
+        return web.json_response({"item": item})
+
+
+    async def _handle_memory_library_update(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.memory.library import CognitiveMemoryLibrary
+        from honeyos.memory.repository import MemoryNotFoundError
+        memory_id = str(request.match_info.get("memory_id") or "").strip()
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        summary = str(body.get("summary") or "").strip()
+        if not summary:
+            return web.json_response(_openai_error("Memory summary cannot be empty", code="invalid_memory_summary"), status=400)
+        try:
+            item = await asyncio.to_thread(CognitiveMemoryLibrary().update_historical, memory_id, summary)
+        except MemoryNotFoundError:
+            return web.json_response(_openai_error("Memory not found", code="memory_not_found"), status=404)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="invalid_memory_update"), status=400)
+        return web.json_response({"item": item})
+
+    async def _handle_memory_library_delete(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.memory.library import CognitiveMemoryLibrary
+        from honeyos.memory.repository import MemoryNotFoundError
+        memory_id = str(request.match_info.get("memory_id") or "").strip()
+        try:
+            item = await asyncio.to_thread(CognitiveMemoryLibrary().move_to_trash, memory_id)
+        except MemoryNotFoundError:
+            return web.json_response(_openai_error("Memory not found", code="memory_not_found"), status=404)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="invalid_memory_delete"), status=400)
+        return web.json_response({"item": item})
+
+    async def _handle_memory_library_restore(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.memory.library import CognitiveMemoryLibrary
+        from honeyos.memory.repository import MemoryNotFoundError
+        memory_id = str(request.match_info.get("memory_id") or "").strip()
+        try:
+            item = await asyncio.to_thread(CognitiveMemoryLibrary().restore_from_trash, memory_id)
+        except MemoryNotFoundError:
+            return web.json_response(_openai_error("Memory not found", code="memory_not_found"), status=404)
+        except (ValueError, RuntimeError) as exc:
+            return web.json_response(_openai_error(str(exc), code="invalid_memory_restore"), status=400)
+        return web.json_response({"item": item})
+
+    async def _handle_memory_trash(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.memory.library import CognitiveMemoryLibrary
+        try:
+            limit = int(request.query.get("limit", "50"))
+            offset = int(request.query.get("offset", "0"))
+        except ValueError:
+            return web.json_response(_openai_error("Invalid pagination", code="invalid_pagination"), status=400)
+        page = await asyncio.to_thread(CognitiveMemoryLibrary().list_trash, limit=limit, offset=offset)
+        return web.json_response(page.to_dict())
+
+    async def _handle_memory_permanent_delete(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        from honeyos.memory.library import CognitiveMemoryLibrary
+        from honeyos.memory.repository import MemoryNotFoundError
+
+        memory_id = str(request.match_info.get("memory_id") or "").strip()
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        confirmation = str(body.get("confirmation") or "").strip()
+        if confirmation != "PERMANENT_DELETE":
+            return web.json_response(
+                _openai_error(
+                    "Permanent delete requires explicit confirmation",
+                    code="permanent_delete_confirmation_required",
+                ),
+                status=400,
+            )
+
+        try:
+            result = await asyncio.to_thread(
+                CognitiveMemoryLibrary().permanently_delete_from_trash,
+                memory_id,
+            )
+        except MemoryNotFoundError:
+            return web.json_response(
+                _openai_error("Memory not found", code="memory_not_found"),
+                status=404,
+            )
+        except (ValueError, RuntimeError) as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="invalid_permanent_delete"),
+                status=400,
+            )
+
+        return web.json_response(result)
 
     async def _handle_companion_settings(
         self, request: "web.Request"
@@ -6017,59 +6192,6 @@ class APIServerAdapter(BasePlatformAdapter):
             "data": [self._message_response(m) for m in messages],
         })
 
-    async def _handle_session_timeline_rollback(
-        self, request: "web.Request"
-    ) -> "web.Response":
-        """Permanently delete an unorganized timeline suffix."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        session_id = request.match_info["session_id"]
-        _, err = await self._get_existing_session_or_404(session_id)
-        if err:
-            return err
-        body, err = await self._read_json_body(request)
-        if err:
-            return err
-        try:
-            target_id = int(body.get("target_message_id"))
-        except (TypeError, ValueError):
-            return web.json_response(
-                _openai_error("target_message_id must be an integer", code="invalid_message_id"),
-                status=400,
-            )
-        preserve_target = bool(body.get("preserve_target", False))
-        session_key, key_err = self._parse_session_key_header(request)
-        if key_err is not None:
-            return key_err
-        if not session_key:
-            return web.json_response(
-                _openai_error("Missing companion session key", code="session_key_required"),
-                status=400,
-            )
-        db = await self._ensure_session_db_async()
-        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
-        raw_messages = await asyncio.to_thread(db.get_messages, resolved_id)
-        target = next(
-            (item for item in raw_messages if int(item.get("id") or item.get("_row_id") or 0) == target_id),
-            None,
-        )
-        if target is None or not self._is_companion_visible_message(target):
-            return web.json_response(
-                _openai_error("Message is no longer available", code="message_not_found"),
-                status=404,
-            )
-        from honeyos.companion.distillation import MemoryDistiller
-        from honeyos.core.constants import get_honeyos_home
-
-        distiller = MemoryDistiller(get_honeyos_home())
-        edit_state = await asyncio.to_thread(
-            distiller.timeline_edit_state,
-            lane_key=session_key,
-            session_id=resolved_id,
-        )
-        if target_id <= int(edit_state["cursor"]):
-            return web.json_response(
     async def _handle_session_message_events(
         self, request: "web.Request"
     ) -> "web.StreamResponse":
@@ -6125,6 +6247,59 @@ class APIServerAdapter(BasePlatformAdapter):
                     "[api_server] message-event queue full for session %s", session_id
                 )
 
+    async def _handle_session_timeline_rollback(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """Permanently delete an unorganized timeline suffix."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        try:
+            target_id = int(body.get("target_message_id"))
+        except (TypeError, ValueError):
+            return web.json_response(
+                _openai_error("target_message_id must be an integer", code="invalid_message_id"),
+                status=400,
+            )
+        preserve_target = bool(body.get("preserve_target", False))
+        session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        if not session_key:
+            return web.json_response(
+                _openai_error("Missing companion session key", code="session_key_required"),
+                status=400,
+            )
+        db = await self._ensure_session_db_async()
+        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+        raw_messages = await asyncio.to_thread(db.get_messages, resolved_id)
+        target = next(
+            (item for item in raw_messages if int(item.get("id") or item.get("_row_id") or 0) == target_id),
+            None,
+        )
+        if target is None or not self._is_companion_visible_message(target):
+            return web.json_response(
+                _openai_error("Message is no longer available", code="message_not_found"),
+                status=404,
+            )
+        from honeyos.companion.distillation import MemoryDistiller
+        from honeyos.core.constants import get_honeyos_home
+
+        distiller = MemoryDistiller(get_honeyos_home())
+        edit_state = await asyncio.to_thread(
+            distiller.timeline_edit_state,
+            lane_key=session_key,
+            session_id=resolved_id,
+        )
+        if target_id <= int(edit_state["cursor"]):
+            return web.json_response(
                 _openai_error("Message has already entered memory organization", code="timeline_locked"),
                 status=409,
             )

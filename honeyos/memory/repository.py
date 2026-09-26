@@ -366,6 +366,253 @@ class CognitiveMemoryRepository:
 
         return self.get_tombstone(tid)
 
+
+    def update_episode_summary(
+        self,
+        episode_id,
+        summary,
+        *,
+        actor="user",
+    ):
+        summary = str(summary or "").strip()
+        if not summary:
+            raise ValueError("summary cannot be empty")
+
+        with self.connect() as db:
+            row = db.execute(
+                """
+                SELECT summary,status,content_fingerprint
+                FROM memory_episodes
+                WHERE episode_id=?
+                """,
+                (episode_id,),
+            ).fetchone()
+            if row is None:
+                raise MemoryNotFoundError(episode_id)
+            if row["status"] == "user_suppressed":
+                raise ValueError("cannot edit a memory in recycle bin")
+
+        new_fp = content_fingerprint(summary)
+        self.assert_not_suppressed(content_fp=new_fp)
+
+        old_summary = str(row["summary"])
+        if old_summary == summary:
+            return self.get_episode(episode_id)
+
+        now = _now()
+        feedback_id = "mfb_" + uuid4().hex
+        payload = {
+            "actor": str(actor or "user"),
+            "old_summary": old_summary,
+            "new_summary": summary,
+            "old_content_fingerprint": row["content_fingerprint"],
+            "new_content_fingerprint": new_fp,
+        }
+
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO memory_feedback_events(
+                    feedback_id,memory_kind,memory_id,event_type,payload_json,created_at
+                ) VALUES (?, 'episode', ?, 'user_edit', ?, ?)
+                """,
+                (feedback_id, episode_id, _json(payload), now),
+            )
+            db.execute(
+                """
+                UPDATE memory_episodes
+                SET summary=?, content_fingerprint=?
+                WHERE episode_id=?
+                """,
+                (summary, new_fp, episode_id),
+            )
+
+        return self.get_episode(episode_id)
+
+    def restore_memory(self, memory_kind, memory_id, *, actor="user"):
+        if memory_kind == "episode":
+            table = "memory_episodes"
+            id_column = "episode_id"
+            restored_status = "active"
+        elif memory_kind == "fact":
+            table = "memory_facts"
+            id_column = "fact_id"
+            restored_status = "current"
+        elif memory_kind == "procedural":
+            table = "procedural_memories"
+            id_column = "procedure_id"
+            restored_status = "active"
+        else:
+            raise ValueError(f"unsupported memory kind: {memory_kind}")
+
+        now = _now()
+        feedback_id = "mfb_" + uuid4().hex
+        with self.connect() as db:
+            row = db.execute(
+                f"SELECT status FROM {table} WHERE {id_column}=?",
+                (memory_id,),
+            ).fetchone()
+            if row is None:
+                raise MemoryNotFoundError(memory_id)
+            if row["status"] != "user_suppressed":
+                raise ValueError("memory is not in recycle bin")
+
+            tombstones = db.execute(
+                """
+                SELECT tombstone_id FROM memory_tombstones
+                WHERE active=1 AND scope='memory'
+                  AND memory_kind=? AND memory_id=?
+                """,
+                (memory_kind, memory_id),
+            ).fetchall()
+            if not tombstones:
+                raise RuntimeError("suppressed memory is missing its active tombstone")
+
+            db.execute(
+                f"UPDATE {table} SET status=? WHERE {id_column}=?",
+                (restored_status, memory_id),
+            )
+            db.execute(
+                """
+                UPDATE memory_tombstones
+                SET active=0,lifted_at=?
+                WHERE active=1 AND scope='memory'
+                  AND memory_kind=? AND memory_id=?
+                """,
+                (now, memory_kind, memory_id),
+            )
+            db.execute(
+                """
+                INSERT INTO memory_feedback_events(
+                    feedback_id,memory_kind,memory_id,event_type,payload_json,created_at
+                ) VALUES (?, ?, ?, 'user_restore', ?, ?)
+                """,
+                (feedback_id, memory_kind, memory_id, _json({"actor": str(actor or "user")}), now),
+            )
+
+        if memory_kind == "episode":
+            return self.get_episode(memory_id)
+        if memory_kind == "fact":
+            return self.get_fact(memory_id)
+        return self.get_procedural(memory_id)
+
+
+    def permanently_delete_external_episode(
+        self,
+        episode_id,
+        *,
+        reason="user_permanent_delete",
+    ):
+        """
+        Erase an external episode payload but retain a minimal source-level
+        anti-resurrection tombstone keyed by (source_system, source_key).
+        """
+        now = _now()
+
+        with self.connect() as db:
+            row = db.execute(
+                """
+                SELECT episode_id,status,memory_origin,source_system,source_scope,source_key
+                FROM memory_episodes
+                WHERE episode_id=?
+                """,
+                (episode_id,),
+            ).fetchone()
+
+            if row is None:
+                raise MemoryNotFoundError(episode_id)
+            if row["memory_origin"] != "external":
+                raise ValueError("permanent delete here only supports external memory")
+            if row["status"] != "user_suppressed":
+                raise ValueError("memory must be in recycle bin before permanent delete")
+
+            source_system = str(row["source_system"] or "").strip()
+            source_key = str(row["source_key"] or "").strip()
+            if not source_system or not source_key:
+                raise RuntimeError(
+                    "external memory is missing source identity; refusing permanent delete"
+                )
+
+            derived_fact_count = db.execute(
+                "SELECT COUNT(*) FROM memory_facts WHERE derived_from_episode_id=?",
+                (episode_id,),
+            ).fetchone()[0]
+            if derived_fact_count:
+                raise RuntimeError(
+                    "memory has derived facts; refusing permanent delete until dependencies are resolved"
+                )
+
+            existing_source_tombstone = db.execute(
+                """
+                SELECT tombstone_id
+                FROM memory_tombstones
+                WHERE active=1
+                  AND scope='source'
+                  AND source_system=?
+                  AND source_id=?
+                LIMIT 1
+                """,
+                (source_system, source_key),
+            ).fetchone()
+
+            if existing_source_tombstone is None:
+                source_tid = "mt_" + uuid4().hex
+                db.execute(
+                    """
+                    INSERT INTO memory_tombstones(
+                        tombstone_id,scope,memory_kind,memory_id,
+                        subject_key,source_system,source_id,
+                        content_fingerprint,reason,active,
+                        created_at,lifted_at,metadata_json
+                    )
+                    VALUES (
+                        ?,'source',NULL,NULL,
+                        NULL,?,?,NULL,?,1,
+                        ?,NULL,?
+                    )
+                    """,
+                    (
+                        source_tid,
+                        source_system,
+                        source_key,
+                        reason,
+                        now,
+                        _json({
+                            "source_scope": row["source_scope"],
+                            "permanent_delete": True,
+                        }),
+                    ),
+                )
+
+            db.execute(
+                "DELETE FROM memory_provenance WHERE memory_kind='episode' AND memory_id=?",
+                (episode_id,),
+            )
+            db.execute(
+                "DELETE FROM memory_feedback_events WHERE memory_kind='episode' AND memory_id=?",
+                (episode_id,),
+            )
+            db.execute(
+                """
+                DELETE FROM memory_tombstones
+                WHERE scope='memory'
+                  AND memory_kind='episode'
+                  AND memory_id=?
+                """,
+                (episode_id,),
+            )
+            db.execute(
+                "DELETE FROM memory_episodes WHERE episode_id=?",
+                (episode_id,),
+            )
+
+        return {
+            "episode_id": episode_id,
+            "source_system": source_system,
+            "source_key": source_key,
+            "reason": reason,
+        }
+
     def create_episode(
         self,
         *,

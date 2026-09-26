@@ -36,6 +36,64 @@ export type MemoryItem = {
   updated_at?: string | null;
 };
 
+export type HistoricalMemoryItem = {
+  id: string;
+  memory_kind: "episode";
+  summary: string;
+  occurred_at?: string | null;
+  captured_at?: string | null;
+  status: string;
+  origin: "external";
+  source_system: string;
+  source_scope?: string | null;
+  source_key?: string | null;
+  confidence: number;
+  partition: string;
+  partition_label: string;
+  time_start?: string | null;
+  time_end?: string | null;
+  raw_time?: string | null;
+  provenance_count: number;
+  deleted_at?: string | null;
+};
+
+export type HistoricalMemoryDetail = HistoricalMemoryItem & {
+  metadata: Record<string, unknown>;
+  revisions: Array<{
+    id: string;
+    event_type: string;
+    created_at: string;
+    payload: { actor?: string; old_summary?: string; new_summary?: string };
+  }>;
+  trash?: {
+    tombstone_id: string;
+    reason: string;
+    deleted_at: string;
+    restored_at?: string | null;
+    active: boolean;
+  } | null;
+  provenance: Array<{
+    id: string;
+    source_system: string;
+    source_type: string;
+    source_id?: string | null;
+    session_id?: string | null;
+    message_id?: string | null;
+    evidence_quote?: string | null;
+    created_at: string;
+    metadata: Record<string, unknown>;
+  }>;
+};
+
+export type HistoricalMemoryPage = {
+  items: HistoricalMemoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  partitions: Array<{ key: string; label: string; count: number }>;
+  sources: Array<{ key: string; label: string; count: number }>;
+};
+
 export type DiaryEntry = {
   id: string;
   author: "user" | "assistant";
@@ -209,6 +267,55 @@ export async function waitForCompanionReady(options: {
   }
   return false;
 }
+
+export const fetchHistoricalMemory = (memoryId: string) =>
+  requestJson<{ item: HistoricalMemoryDetail }>(`/api/memory/library/${encodeURIComponent(memoryId)}`);
+
+export const updateHistoricalMemory = (memoryId: string, summary: string) =>
+  requestJson<{ item: HistoricalMemoryDetail }>(`/api/memory/library/${encodeURIComponent(memoryId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ summary }),
+  });
+
+export const deleteHistoricalMemory = (memoryId: string) =>
+  requestJson<{ item: HistoricalMemoryDetail }>(`/api/memory/library/${encodeURIComponent(memoryId)}`, { method: "DELETE" });
+
+export const restoreHistoricalMemory = (memoryId: string) =>
+  requestJson<{ item: HistoricalMemoryDetail }>(`/api/memory/library/${encodeURIComponent(memoryId)}/restore`, { method: "POST" });
+
+export const permanentlyDeleteHistoricalMemory = (memoryId: string) =>
+  requestJson<{ id: string; deleted: true; source_system: string; reason: string }>(
+    `/api/memory/trash/${encodeURIComponent(memoryId)}/permanent`,
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmation: "PERMANENT_DELETE" }),
+    },
+  );
+
+export const fetchHistoricalTrash = (options: { limit?: number; offset?: number } = {}) => {
+  const params = new URLSearchParams();
+  params.set("limit", String(options.limit ?? 50));
+  params.set("offset", String(options.offset ?? 0));
+  return requestJson<HistoricalMemoryPage>(`/api/memory/trash?${params.toString()}`);
+};
+
+export const fetchHistoricalMemories = (options: {
+  source?: string;
+  partition?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  const params = new URLSearchParams();
+  if (options.source) params.set("source", options.source);
+  if (options.partition) params.set("partition", options.partition);
+  if (options.q) params.set("q", options.q);
+  params.set("limit", String(options.limit ?? 50));
+  params.set("offset", String(options.offset ?? 0));
+  return requestJson<HistoricalMemoryPage>(`/api/memory/library?${params.toString()}`);
+};
 
 export const updateCompanionMemory = (memoryId: string, action: "resolve" | "forget") =>
   requestJson<{ success: true; id: string; action: string }>(
