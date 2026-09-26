@@ -1220,8 +1220,15 @@ def build_turn_context(
         _shadow_query = original_user_message if isinstance(original_user_message, str) else ""
         if _shadow_query and not is_trivial_prompt(_shadow_query):
             from honeyos.memory.runtime_shadow import run_cognitive_memory_shadow
-            run_cognitive_memory_shadow(
+            _cognitive_shadow_result = run_cognitive_memory_shadow(
                 _shadow_query,
+                session_id=str(getattr(agent, "session_id", "") or ""),
+                turn_id=str(turn_id or ""),
+            )
+            # COGNITIVE_MEMORY_CONTEXT_SHADOW_F2_2
+            from honeyos.memory.runtime_context import run_silent_memory_context_shadow
+            _cognitive_context = run_silent_memory_context_shadow(
+                _cognitive_shadow_result,
                 session_id=str(getattr(agent, "session_id", "") or ""),
                 turn_id=str(turn_id or ""),
             )
@@ -1252,6 +1259,15 @@ def build_turn_context(
         and messages[current_turn_user_idx].get("role") == "user"
     ):
         _turn_user_msg = messages[current_turn_user_idx]
+        # COGNITIVE_MEMORY_CONTEXT_INJECTION_F2_3
+        from honeyos.memory.runtime_context import inject_silent_memory_context
+        ext_prefetch_cache = inject_silent_memory_context(
+            ext_prefetch_cache,
+            _cognitive_context,
+            _cognitive_shadow_result,
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            turn_id=str(turn_id or ""),
+        )
         _api_content = compose_user_api_content(
             _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
         )
