@@ -14,7 +14,6 @@ from pathlib import Path
 
 DEFAULT_WEB_HOST = "127.0.0.1"
 DEFAULT_WEB_PORT = 8642
-DEFAULT_COMPANION_NAME = "Honey"
 
 _NAME_LINE = re.compile(
     r"^\s*(?:[-*]\s*)?(?:名字|姓名|名称|name)\s*[：:]\s*(.+?)\s*$",
@@ -105,7 +104,7 @@ def companion_profile(home: Path) -> dict[str, str]:
                 break
     except OSError:
         pass
-    return {"name": name or DEFAULT_COMPANION_NAME, "status": "在这儿"}
+    return {"name": name, "status": "在这儿"}
 
 
 __all__ = [

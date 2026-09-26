@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -202,6 +203,15 @@ async def test_upgrade_reopens_latest_batch_when_recent_chapters_are_missing(tmp
         ).fetchone()[0]
     assert status == "failed"
     assert cursor == 0
+
+
+def test_distillation_preserves_unset_companion_name():
+    import honeyos.companion.distillation as distillation
+
+    source = Path(distillation.__file__).resolve()
+    text = source.read_text(encoding="utf-8")
+    assert 'supplied_profile.get("companion_name") or "Honey"' not in text
+    assert '"companion_name": str(supplied_profile.get("companion_name") or "")' in text
 
 
 @pytest.mark.asyncio

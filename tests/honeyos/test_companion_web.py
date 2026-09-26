@@ -250,6 +250,17 @@ def test_initialize_home_enables_loopback_web_without_an_account(tmp_path):
     assert len(env_text.split("API_SERVER_KEY=", 1)[1].splitlines()[0]) >= 32
 
 
+
+def test_companion_profile_preserves_unset_name(tmp_path):
+    from honeyos.companion.config import initialize_home
+    from honeyos.companion.web import companion_profile
+
+    initialize_home(tmp_path)
+    profile = companion_profile(tmp_path)
+    assert profile["name"] == ""
+    assert profile["status"] == "在这儿"
+
+
 def test_companion_profile_uses_identity_name_and_never_returns_file_body(tmp_path):
     memories = tmp_path / "memories"
     memories.mkdir(parents=True)

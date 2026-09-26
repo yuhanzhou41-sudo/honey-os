@@ -247,7 +247,7 @@ async def extract_with_auxiliary_model(
         local_now = job.now
     supplied_profile = getattr(job, "companion_profile", {})
     profile = {
-        "companion_name": str(supplied_profile.get("companion_name") or "Honey"),
+        "companion_name": str(supplied_profile.get("companion_name") or ""),
         "personality": str(supplied_profile.get("personality") or ""),
         "speaking_style": str(supplied_profile.get("speaking_style") or ""),
         "user_nickname": str(supplied_profile.get("user_nickname") or ""),
