@@ -593,12 +593,29 @@ def finalize_turn(
             from honeyos.companion.personality_observation_hook import (
                 capture_completed_agent_turn_observation,
             )
-            capture_completed_agent_turn_observation(
+            _personality_observation_result = capture_completed_agent_turn_observation(
                 agent,
                 turn_id=turn_id,
                 user_message=original_user_message,
                 assistant_response=final_response,
             )
+            if _personality_observation_result.get("captured"):
+                try:
+                    from honeyos.companion.personality_reflection_execution import (
+                        maybe_start_background_personality_reflection,
+                    )
+                    from honeyos.companion.personality_observation_hook import (
+                        _resolve_companion_home,
+                    )
+
+                    maybe_start_background_personality_reflection(
+                        _resolve_companion_home(agent),
+                    )
+                except Exception as _personality_reflection_trigger_err:
+                    logger.debug(
+                        "personality reflection trigger skipped: %s",
+                        _personality_reflection_trigger_err,
+                    )
         except Exception as _personality_observation_err:
             logger.debug(
                 "personality observation capture skipped: %s",

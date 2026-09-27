@@ -84,6 +84,16 @@ def _coerce_message_text(value: Any) -> str:
     return str(value or "")
 
 
+def _resolve_companion_home(agent: Any) -> Path:
+    import os
+
+    configured_home = os.environ.get("HONEYOS_HOME", "").strip()
+    if configured_home:
+        return Path(configured_home).expanduser()
+    agent_home = getattr(agent, "honeyos_home", None)
+    return Path(agent_home).expanduser() if agent_home else Path.home() / ".honeyos"
+
+
 def capture_completed_agent_turn_observation(
     agent: Any,
     *,
@@ -93,14 +103,7 @@ def capture_completed_agent_turn_observation(
     observed_at: str | None = None,
 ) -> dict[str, Any]:
     try:
-        import os
-
-        configured_home = os.environ.get("HONEYOS_HOME", "").strip()
-        if configured_home:
-            home = Path(configured_home).expanduser()
-        else:
-            agent_home = getattr(agent, "honeyos_home", None)
-            home = Path(agent_home).expanduser() if agent_home else Path.home() / ".honeyos"
+        home = _resolve_companion_home(agent)
 
         turn = str(turn_id or "").strip()
         return capture_completed_turn_observation(
