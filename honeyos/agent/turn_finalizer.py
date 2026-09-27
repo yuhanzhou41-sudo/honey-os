@@ -583,6 +583,28 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
 
+    # G2.1B.2c: silent, model-free personality observation capture.
+    _personality_persist_failed = any(
+        str(_err).startswith("persist_session:")
+        for _err in _cleanup_errors
+    )
+    if final_response and not interrupted and not _personality_persist_failed:
+        try:
+            from honeyos.companion.personality_observation_hook import (
+                capture_completed_agent_turn_observation,
+            )
+            capture_completed_agent_turn_observation(
+                agent,
+                turn_id=turn_id,
+                user_message=original_user_message,
+                assistant_response=final_response,
+            )
+        except Exception as _personality_observation_err:
+            logger.debug(
+                "personality observation capture skipped: %s",
+                _personality_observation_err,
+            )
+
     # Context engine observation hook: notify the active engine that this
     # turn has finished, with the finalized transcript. Complements the
     # per-request select_context() hook (selection before the request;
