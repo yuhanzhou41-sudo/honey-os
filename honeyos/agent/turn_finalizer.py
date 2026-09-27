@@ -591,6 +591,25 @@ def finalize_turn(
     if final_response and not interrupted and not _personality_persist_failed:
         try:
             from honeyos.companion.personality_observation_hook import (
+                _resolve_companion_home,
+            )
+            from honeyos.companion.momentary_state import (
+                update_momentary_state_from_turn,
+            )
+
+            update_momentary_state_from_turn(
+                _resolve_companion_home(agent),
+                assistant_response=final_response,
+                turn_id=turn_id,
+            )
+        except Exception as _momentary_state_err:
+            logger.debug(
+                "momentary companion state update skipped: %s",
+                _momentary_state_err,
+            )
+
+        try:
+            from honeyos.companion.personality_observation_hook import (
                 capture_completed_agent_turn_observation,
             )
             _personality_observation_result = capture_completed_agent_turn_observation(

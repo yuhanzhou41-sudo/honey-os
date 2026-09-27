@@ -316,8 +316,13 @@ def companion_profile_note(home):
         promoted = personality_authority_note(home)
     except Exception:
         promoted = ""
+    try:
+        from honeyos.companion.momentary_state import momentary_state_note
+        momentary = momentary_state_note(home)
+    except Exception:
+        momentary = ""
     parts = [
-        part for part in (base, promoted)
+        part for part in (base, promoted, momentary)
         if isinstance(part, str) and part.strip()
     ]
     return "\n\n".join(parts)
