@@ -277,7 +277,7 @@ def permission_narration(profile: CompanionProfile) -> str:
     return f"{nickname}这一步得借一下你电脑的能力。只动下面这一处，让我继续吗？"
 
 
-def companion_profile_note(home: Path) -> str | None:
+def _base_companion_profile_note_g2_1c(home: Path) -> str | None:
     """Render the current confirmed profile for per-turn cache-safe injection."""
 
     profile = load_companion_profile(home)
@@ -307,3 +307,17 @@ __all__ = [
     "permission_narration",
     "update_companion_profile",
 ]
+
+
+def companion_profile_note(home):
+    base = _base_companion_profile_note_g2_1c(home)
+    try:
+        from honeyos.companion.personality_promotion import personality_authority_note
+        promoted = personality_authority_note(home)
+    except Exception:
+        promoted = ""
+    parts = [
+        part for part in (base, promoted)
+        if isinstance(part, str) and part.strip()
+    ]
+    return "\n\n".join(parts)

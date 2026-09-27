@@ -275,12 +275,20 @@ def run_personality_reflection_once(
             }
 
         result = runner.run_once(force=force)
+        promotion_result = {"promoted_count": 0, "results": []}
+        if result.status == "success":
+            try:
+                from honeyos.companion.personality_promotion import promote_eligible_candidates
+                promotion_result = promote_eligible_candidates(home)
+            except Exception:
+                logger.exception("personality candidate promotion scan failed")
         return {
             "status": result.status,
             "batch_id": result.batch_id,
             "observation_count": result.observation_count,
             "operation_count": result.operation_count,
             "error": result.error,
+            "promotion": promotion_result,
         }
 
 

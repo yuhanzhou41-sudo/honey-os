@@ -372,10 +372,16 @@ class PersonalityReflectionRunner:
                 assistant_excerpt = str(row.get("assistant_excerpt") or "").strip()
                 user_excerpt = str(row.get("user_excerpt") or "").strip()
                 summary = assistant_excerpt or user_excerpt or "Observed interaction signal."
-                evidence_summaries.append((observation_id, summary))
+                signal_flags = set(row.get("signal_flags") or [])
+                evidence_type = (
+                    "user_feedback"
+                    if signal_flags == {"explicit_user_feedback"}
+                    else "self_observation"
+                )
+                evidence_summaries.append((observation_id, summary, evidence_type))
 
             if action == "create":
-                first_id, first_summary = evidence_summaries[0]
+                first_id, first_summary, first_type = evidence_summaries[0]
                 candidate = self.store.create_candidate(
                     target_layer=target_layer,
                     trait_key=trait_key,
@@ -383,12 +389,12 @@ class PersonalityReflectionRunner:
                     confidence=confidence,
                     evidence_summary=first_summary,
                     evidence_reference=first_id,
-                    origin="self_observation",
+                    origin=first_type,
                 )
-                for observation_id, summary in evidence_summaries[1:]:
+                for observation_id, summary, evidence_type in evidence_summaries[1:]:
                     candidate = self.store.add_evidence(
                         candidate.candidate_id,
-                        evidence_type="self_observation",
+                        evidence_type=evidence_type,
                         summary=summary,
                         reference=observation_id,
                     )
@@ -405,10 +411,10 @@ class PersonalityReflectionRunner:
                 )
 
             if action == "support":
-                for observation_id, summary in evidence_summaries:
+                for observation_id, summary, evidence_type in evidence_summaries:
                     candidate = self.store.add_evidence(
                         candidate.candidate_id,
-                        evidence_type="self_observation",
+                        evidence_type=evidence_type,
                         summary=summary,
                         reference=observation_id,
                     )
@@ -416,7 +422,7 @@ class PersonalityReflectionRunner:
                 continue
 
             if action == "contradict":
-                for observation_id, summary in evidence_summaries:
+                for observation_id, summary, evidence_type in evidence_summaries:
                     candidate = self.store.record_contradiction(
                         candidate.candidate_id,
                         summary=summary,
