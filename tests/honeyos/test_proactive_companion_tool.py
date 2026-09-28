@@ -16,6 +16,12 @@ NOW = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
 @pytest.fixture
 def scoped_home(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(tool_module, "_tool_scope", lambda: tmp_path)
+    real_store = TopicPoolStore
+    monkeypatch.setattr(
+        tool_module,
+        "TopicPoolStore",
+        lambda home: real_store(home, now_fn=lambda: NOW),
+    )
     return tmp_path
 
 

@@ -19151,6 +19151,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         store = self._topic_pool_store_instance()
         try:
+            try:
+                from honeyos.companion.proactive_initiative import (
+                    seed_personal_initiative_if_due,
+                )
+                seed_personal_initiative_if_due(
+                    get_honeyos_home(),
+                    store,
+                    now=now,
+                )
+            except Exception as _initiative_err:
+                logger.debug(
+                    "personal proactive initiative seed skipped: %s",
+                    _initiative_err,
+                )
+
             reservation = await asyncio.to_thread(
                 store.reserve_due_delivery,
                 now=now or self._topic_pool_now(),
