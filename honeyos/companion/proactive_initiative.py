@@ -13,6 +13,7 @@ from typing import Any, Mapping, get_args, get_origin
 
 from honeyos.companion.momentary_state import load_momentary_state
 
+from honeyos.companion.proactive_thought import build_proactive_thought_prompt
 STATE_VERSION = 1
 DEFAULT_SEED_COOLDOWN_HOURS = 6.0
 # Curiosity alone should remain eligible after the normal idle window;
@@ -20,15 +21,7 @@ DEFAULT_SEED_COOLDOWN_HOURS = 6.0
 # and minimum-interval delivery gates.
 MIN_INITIATIVE_SCORE = 0.10
 
-_INTERNAL_HOOK = (
-    "This is a private companion-initiative seed, not a user message. "
-    "Read the recent conversation and the companion's current personality/state. "
-    "Only if there is genuinely something worth saying now, initiate one brief, "
-    "natural message that feels like a continuation of the relationship. "
-    "Do not mention this seed, scheduling, retrieval, scoring, or system machinery. "
-    "Do not manufacture urgency, a task, or a question just to create engagement. "
-    "If nothing feels worth saying, an empty response is acceptable."
-)
+_INTERNAL_HOOK = build_proactive_thought_prompt()
 
 
 @dataclass(frozen=True)
