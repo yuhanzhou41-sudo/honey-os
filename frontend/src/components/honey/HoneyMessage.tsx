@@ -1,3 +1,5 @@
+import { pureAnimatedEmoji } from "../../runtime/animated-emoji";
+import { AnimatedNotoEmoji } from "./AnimatedNotoEmoji";
 import { ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { useState, type ReactNode } from "react";
 
@@ -173,6 +175,18 @@ export function HoneyMessage({
   messageId?: string;
   isStreaming?: boolean;
 }) {
+  const animatedEmoji = role === "assistant" && !plain && !isStreaming
+    ? pureAnimatedEmoji(content)
+    : null;
+
+  if (animatedEmoji) {
+    return (
+      <HoneyOSMessageFrame role={role} messageId={messageId} isStreaming={isStreaming}>
+        <AnimatedNotoEmoji emoji={animatedEmoji} />
+      </HoneyOSMessageFrame>
+    );
+  }
+
   if (plain) {
     return (
       <HoneyOSMessageFrame role={role} messageId={messageId} isStreaming={isStreaming}>

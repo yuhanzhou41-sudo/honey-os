@@ -7,7 +7,6 @@ import {
   answerApproval,
   fetchChatRunStatus,
   naturalReplyInstructions,
-  splitAssistantReply,
   splitUserMessages,
   stopChat,
   streamChat,
@@ -24,12 +23,12 @@ import { HoneyMessage } from "../../components/honey/HoneyMessage";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
 import { Button } from "../../components/ui/Button";
 import type { PermissionChoice } from "../../runtime/honey-events";
+import { assistantBubblesForDisplay } from "../../runtime/chat-bubble-segmenter";
 import { useHoneyStore } from "../../runtime/honey-store";
 import { HoneyRun } from "./HoneyRun";
 
 type ChatAttachment = { id: string; name: string; dataUrl: string };
 type QueuedMessage = { id: string; display: string; input: ChatInput };
-type RevealingReply = { content: string; visibleCount: number; total: number };
 
 const draftKey = (sessionId: string) => `honeyos-chat-draft:${sessionId}`;
 const queueKey = (sessionId: string) => `honeyos-chat-pending:${sessionId}`;
@@ -48,11 +47,29 @@ function sortHistory(items: HistoryItem[]) {
   });
 }
 
-function AssistantTurn({ name, children, live = false }: { name: string; children: ReactNode; live?: boolean }) {
+function AssistantTurn({
+  name,
+  children,
+  live = false,
+  compact = false,
+}: {
+  name: string;
+  children: ReactNode;
+  live?: boolean;
+  compact?: boolean;
+}) {
   return (
     <article className="flex w-full items-start gap-3 text-[15px] leading-7" aria-live={live ? "polite" : undefined}>
       <HoneyAvatar name={name} className="mt-1 size-8 rounded-full text-xs" />
-      <div className="min-w-0 flex-1 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] px-4 py-4 shadow-[0_8px_24px_rgba(56,48,39,0.05)] sm:px-5">
+      <div
+        className={[
+          "min-w-0 rounded-[var(--radius-lg)] border border-[var(--border)]",
+          "bg-[var(--surface-raised)] px-4 py-3 shadow-[0_8px_24px_rgba(56,48,39,0.05)]",
+          compact
+            ? "w-fit max-w-[85%] sm:max-w-[78%]"
+            : "flex-1",
+        ].join(" ")}
+      >
         {children}
       </div>
     </article>
@@ -111,7 +128,6 @@ export function ChatPage() {
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [submittedMessages, setSubmittedMessages] = useState<QueuedMessage[]>([]);
-  const [revealingReply, setRevealingReply] = useState<RevealingReply | null>(null);
   const [attachmentError, setAttachmentError] = useState("");
   const [approvalPending, setApprovalPending] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -122,6 +138,7 @@ export function ChatPage() {
   const [recoverRunId, setRecoverRunId] = useState<string | null>(null);
   const [retryUserMessageId, setRetryUserMessageId] = useState<number | null>(null);
   const [timelineError, setTimelineError] = useState("");
+  const [activeMessageActions, setActiveMessageActions] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -133,7 +150,6 @@ export function ChatPage() {
     onSuccess: (data) => {
       setQueuedMessages([]);
       setSubmittedMessages([]);
-      setRevealingReply(null);
       startConversation(data.session_id, data.session_key);
     },
   });
@@ -142,7 +158,6 @@ export function ChatPage() {
     onSuccess: (data) => {
       setQueuedMessages([]);
       setSubmittedMessages([]);
-      setRevealingReply(null);
       switchConversation(data);
       setHistoryOpen(false);
       setHistoryError("");
@@ -211,22 +226,6 @@ export function ChatPage() {
     if (queuedMessages.length) localStorage.setItem(queueKey(sessionId), JSON.stringify(queuedMessages));
     else localStorage.removeItem(queueKey(sessionId));
   }, [queuedMessages, sessionId]);
-
-  useEffect(() => {
-    if (!revealingReply) return;
-    const finished = revealingReply.visibleCount >= revealingReply.total;
-    const timer = window.setTimeout(() => {
-      if (finished) {
-        setRevealingReply(null);
-      } else {
-        setRevealingReply((current) => current ? {
-          ...current,
-          visibleCount: Math.min(current.total, current.visibleCount + 1),
-        } : null);
-      }
-    }, finished ? 300 : 700);
-    return () => window.clearTimeout(timer);
-  }, [revealingReply]);
 
   function finishWithStatus(status: ChatRunStatus): boolean {
     if (status.content) {
@@ -375,16 +374,6 @@ export function ChatPage() {
         },
       });
       if (terminalStatus && finishWithStatus(terminalStatus)) return;
-      const completedRun = useHoneyStore.getState().run;
-      const reply = completedRun.parts
-        .filter((part) => part.kind === "text")
-        .map((part) => part.content)
-        .filter(Boolean)
-        .join("\n\n") || completedRun.content;
-      const replyCount = splitAssistantReply(reply).length;
-      if (replyCount > 1) {
-        setRevealingReply({ content: reply, visibleCount: 1, total: replyCount });
-      }
       finishTurn();
       setQueuedMessages([]);
       setSubmittedMessages([]);
@@ -448,10 +437,6 @@ export function ChatPage() {
       }
       return;
     }
-    setRevealingReply((current) => current ? {
-      ...current,
-      visibleCount: current.total,
-    } : null);
   }
 
   async function regenerateStoppedReply() {
@@ -652,27 +637,41 @@ export function ChatPage() {
   const recentStart = Math.max(0, messages.length - 40);
   const recentMessages = messages.slice(recentStart);
   const visible = recentMessages.flatMap((message, messageIndex) => {
-    let parts = message.role === "assistant"
-      ? splitAssistantReply(message.content)
+    const sourceIndex = recentStart + messageIndex;
+    const previousUserText = message.role === "assistant"
+      ? messages.slice(0, sourceIndex).reverse().find((item) => item.role === "user")?.content || ""
+      : "";
+    const parts = message.role === "assistant"
+      ? assistantBubblesForDisplay(message.content, previousUserText)
       : splitUserMessages(message.content);
-    const isRevealingLatest = message.role === "assistant"
-      && messageIndex === recentMessages.length - 1
-      && revealingReply?.content === message.content;
-    if (isRevealingLatest) parts = parts.slice(0, revealingReply.visibleCount);
     return parts.map((content, partIndex) => ({
       ...message,
       content,
       displayKey: `${message.role}-${messageIndex}-${partIndex}`,
       partIndex,
-      sourceIndex: recentStart + messageIndex,
+      sourceIndex,
     }));
   });
+  const activeBubbleUserText = (submittedMessages.length ? submittedMessages : queuedMessages)
+    .map((item) => item.display)
+    .join(`\n${userMessageBreak}\n`);
+  const liveAssistantText = run.parts
+    .filter((part) => part.kind === "text")
+    .map((part) => part.content)
+    .filter(Boolean)
+    .join("\n\n") || run.content;
+  const liveAssistantBubbles = liveAssistantText.trim()
+    ? assistantBubblesForDisplay(liveAssistantText, activeBubbleUserText)
+    : [];
   const activityRun = {
     ...run,
     content: "",
     parts: run.parts.filter((part) => part.kind !== "text"),
   };
-  const replyBusy = sending || Boolean(revealingReply);
+  const showActivityRun = run.phase !== "idle" && Boolean(
+    activityRun.presence || activityRun.parts.length || run.phase === "failed"
+  );
+  const replyBusy = sending;
   return (
     <section className="relative flex h-full min-h-0 w-full flex-col bg-[var(--background)] px-3 sm:px-7">
       <header className="mx-auto flex min-h-[4.75rem] w-full max-w-[56rem] shrink-0 items-center gap-3 border-b border-[var(--border)] px-1">
@@ -738,23 +737,60 @@ export function ChatPage() {
         {visible.length ? (
           visible.map((message) => (
             message.role === "assistant" ? (
-              <AssistantTurn key={message.displayKey} name={name}>
-                <HoneyMessage
-                  content={message.content}
-                  role={message.role}
-                  messageId={message.displayKey}
-                />
-                {message.timeline_editable && message.id ? (
-                  <div className="mt-2 flex justify-end">
-                    <Button type="button" variant="ghost" onClick={() => void rollbackMessage(message, "regenerate")}>
-                      <ArrowClockwiseIcon size={15} />重新生成
-                    </Button>
-                  </div>
-                ) : null}
+              <AssistantTurn key={message.displayKey} name={name} compact>
+                <div
+                  className="relative outline-none"
+                  tabIndex={message.timeline_editable && message.id ? 0 : undefined}
+                  onClick={() => {
+                    if (!message.timeline_editable || !message.id) return;
+                    setActiveMessageActions((current) =>
+                      current === message.displayKey ? null : message.displayKey
+                    );
+                  }}
+                >
+                  <HoneyMessage
+                    content={message.content}
+                    role={message.role}
+                    messageId={message.displayKey}
+                  />
+                  {message.timeline_editable && message.id ? (
+                    <div
+                      className={[
+                        "absolute right-0 top-full z-10 mt-1 flex items-center gap-1 rounded-md",
+                        "border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-sm transition-opacity",
+                        activeMessageActions === message.displayKey
+                          ? "pointer-events-auto opacity-100"
+                          : "pointer-events-none opacity-0",
+                      ].join(" ")}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="size-7 opacity-70 hover:opacity-100"
+                        aria-label="重新生成这条回复"
+                        title="重新生成"
+                        onClick={() => void rollbackMessage(message, "regenerate")}
+                      >
+                        <ArrowClockwiseIcon size={14} />
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
               </AssistantTurn>
             ) : (
               <article key={message.displayKey} className="ml-auto flex max-w-[92%] items-start gap-2 text-[15px] leading-7 sm:max-w-[78%]">
-                <div className="min-w-0 rounded-[var(--radius-lg)] bg-[var(--surface-subtle)] px-4 py-3">
+                <div
+                  className="relative min-w-0 rounded-[var(--radius-lg)] bg-[var(--surface-subtle)] px-4 py-3 outline-none"
+                  tabIndex={message.timeline_editable || !message.id ? 0 : undefined}
+                  onClick={() => {
+                    if (!(message.timeline_editable || !message.id)) return;
+                    setActiveMessageActions((current) =>
+                      current === message.displayKey ? null : message.displayKey
+                    );
+                  }}
+                >
                   <HoneyMessage
                     content={message.content}
                     plain={!message.content.includes("data:image/")}
@@ -762,15 +798,58 @@ export function ChatPage() {
                     messageId={message.displayKey}
                   />
                   {message.timeline_editable && message.id ? (
-                    <div className="mt-1 flex justify-end">
-                      <Button type="button" variant="ghost" aria-label="删除并回滚后续聊天" onClick={() => void rollbackMessage(message, "delete", message.partIndex)}>
-                        <TrashIcon size={14} />删除
+                    <div
+                      className={[
+                        "absolute right-1 top-full z-10 mt-1 flex items-center gap-1 rounded-md",
+                        "border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-sm transition-opacity",
+                        activeMessageActions === message.displayKey
+                          ? "pointer-events-auto opacity-100"
+                          : "pointer-events-none opacity-0",
+                      ].join(" ")}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="size-7 opacity-70 hover:opacity-100"
+                        aria-label="删除并回滚后续聊天"
+                        title="删除"
+                        onClick={() => void rollbackMessage(message, "delete", message.partIndex)}
+                      >
+                        <TrashIcon size={14} />
                       </Button>
                     </div>
                   ) : !message.id ? (
-                    <div className="mt-1 flex justify-end gap-1">
-                      <Button type="button" variant="ghost" onClick={() => rollbackLocalMessage(message.sourceIndex, message.partIndex, true)}>编辑</Button>
-                      <Button type="button" variant="ghost" onClick={() => rollbackLocalMessage(message.sourceIndex, message.partIndex, false)}>删除</Button>
+                    <div
+                      className={[
+                        "absolute right-1 top-full z-10 mt-1 flex items-center gap-1 rounded-md",
+                        "border border-[var(--border)] bg-[var(--surface-raised)] px-1 py-0.5 shadow-sm transition-opacity",
+                        activeMessageActions === message.displayKey
+                          ? "pointer-events-auto opacity-100"
+                          : "pointer-events-none opacity-0",
+                      ].join(" ")}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs opacity-70 hover:opacity-100"
+                        onClick={() => rollbackLocalMessage(message.sourceIndex, message.partIndex, true)}
+                      >
+                        编辑
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="size-7 opacity-70 hover:opacity-100"
+                        aria-label="删除这条待发送消息"
+                        title="删除"
+                        onClick={() => rollbackLocalMessage(message.sourceIndex, message.partIndex, false)}
+                      >
+                        <TrashIcon size={14} />
+                      </Button>
                     </div>
                   ) : null}
                 </div>
@@ -784,7 +863,22 @@ export function ChatPage() {
             <p className="mt-2 leading-7 text-[var(--foreground-muted)]">想说什么都可以。</p>
           </div>
         )}
-        {run.phase !== "idle" ? (
+        {liveAssistantBubbles.map((content, index) => (
+          <AssistantTurn
+            key={`live-${run.runId || "reply"}-${index}`}
+            name={name}
+            live={index === liveAssistantBubbles.length - 1}
+            compact
+          >
+            <HoneyMessage
+              content={content}
+              role="assistant"
+              messageId={`live-${run.runId || "reply"}-${index}`}
+              isStreaming={sending && index === liveAssistantBubbles.length - 1}
+            />
+          </AssistantTurn>
+        ))}
+        {showActivityRun ? (
           <AssistantTurn name={name} live>
             <HoneyRun
               run={activityRun}

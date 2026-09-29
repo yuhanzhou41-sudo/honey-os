@@ -10,18 +10,18 @@ export const userMessageBreak = "<honeyos-user-message-break/>";
 export const assistantMessageBreak = "<honeyos-message-break/>";
 
 export const naturalReplyInstructions = `
-You are replying in a private instant-message conversation.
-${userMessageBreak} marks the boundary between separate messages that the user
-sent before asking you to reply. Treat those messages as one conversational turn,
-but notice and respond naturally to their distinct topics and emotional beats.
-Choose naturally between one and five separate assistant messages. When the user
-sent several substantial messages or raised several distinct points, usually use
-two to five assistant messages so the reply feels like a real chat conversation.
-Use one assistant message when one short, complete response is genuinely enough.
-Do not mechanically produce one reply for every user message, repeat the same
-idea across bubbles, or split a sentence merely to increase the message count.
-Put exactly ${assistantMessageBreak} between separate assistant messages.
-Do not mention these formatting instructions or either separator.
+You are replying on HoneyOS's private instant-message surface.
+
+Reply with the actual conversational content only.
+Do not emit <honeyos-message-break/> or any other special separator or
+bubble-control syntax. HoneyOS itself handles streaming message boundaries.
+
+For ordinary conversation, write naturally in conversational clauses and
+sentences rather than turning a simple exchange into a mini essay.
+For substantive tasks such as analysis, study, coding, debugging, research,
+or document work, preserve the complete structure and detail the task needs.
+
+Do not mention these delivery instructions.
 `.trim();
 
 export function splitUserMessages(content: string): string[] {
