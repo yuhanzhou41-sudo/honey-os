@@ -2671,6 +2671,15 @@ class APIServerAdapter(BasePlatformAdapter):
             # === /HoneyOS Study Storage Core ===
             # === /HoneyOS Study Classic Pomodoro Phase 3.2 ===
             # === /HoneyOS Study Pomodoro Phase 3 ===
+            # === HoneyOS C1.2 Local Sticker Runtime ===
+            ("GET", "/api/companion/stickers/status", self._handle_companion_stickers_status),
+            ("GET", "/api/companion/stickers", self._handle_companion_stickers_list),
+            ("POST", "/api/companion/stickers", self._handle_companion_stickers_upload),
+            ("DELETE", "/api/companion/stickers/{sticker_id}", self._handle_companion_stickers_delete),
+            ("POST", "/api/companion/stickers/{sticker_id}/used", self._handle_companion_stickers_used),
+            ("GET", "/api/companion/stickers/{sticker_id}/media", self._handle_companion_stickers_media),
+            ("GET", "/api/companion/stickers/{sticker_id}/preview", self._handle_companion_stickers_preview),
+            # === /HoneyOS C1.2 Local Sticker Runtime ===
             ("POST", "/api/companion/new", self._handle_companion_new),
             (
                 "POST",
@@ -4095,6 +4104,153 @@ class APIServerAdapter(BasePlatformAdapter):
         except FileNotFoundError:
             pass
         return web.json_response({"success": True})
+
+    # === HoneyOS C1.2 Local Sticker Runtime ===
+    async def _handle_companion_stickers_status(self, request: "web.Request") -> "web.Response":
+        from honeyos.companion.stickers import get_sticker_store
+        return web.json_response(get_sticker_store().status())
+
+    async def _handle_companion_stickers_list(self, request: "web.Request") -> "web.Response":
+        from honeyos.companion.stickers import get_sticker_store
+        store = get_sticker_store()
+        tag = str(request.query.get("tag") or "").strip() or None
+        sort = str(request.query.get("sort") or "recent").strip()
+        try:
+            limit = int(request.query.get("limit") or 24)
+        except ValueError:
+            limit = 24
+        return web.json_response({
+            "stickers": store.list(tag=tag, sort=sort, limit=limit),
+            "status": store.status(),
+        })
+
+    async def _handle_companion_stickers_upload(self, request: "web.Request") -> "web.Response":
+        import contextlib
+        import tempfile
+        from pathlib import Path
+
+        from honeyos.companion.stickers import (
+            StickerLimitReached,
+            StickerValidationError,
+            get_sticker_store,
+        )
+
+        store = get_sticker_store()
+        if store.status()["full"]:
+            return web.json_response(
+                {"error": "sticker_limit_reached", "status": store.status()},
+                status=409,
+            )
+
+        reader = await request.multipart()
+        tag = ""
+        original_name = ""
+        temp_path = None
+        total = 0
+
+        try:
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                if part.name == "tag":
+                    tag = (await part.text()).strip()
+                    continue
+                if part.name != "file":
+                    continue
+
+                original_name = str(part.filename or "")
+                with tempfile.NamedTemporaryFile(
+                    dir=store.root,
+                    prefix=".upload-",
+                    suffix=Path(original_name).suffix.lower(),
+                    delete=False,
+                ) as handle:
+                    temp_path = Path(handle.name)
+                    while True:
+                        chunk = await part.read_chunk(size=64 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > store.max_file_bytes:
+                            raise StickerValidationError("sticker_file_size_invalid")
+                        handle.write(chunk)
+
+            if temp_path is None or not original_name:
+                return web.json_response({"error": "sticker_file_missing"}, status=400)
+
+            sticker = store.add_file(
+                temp_path,
+                original_name=original_name,
+                tag=tag,
+            )
+            temp_path = None
+            return web.json_response(
+                {"sticker": sticker, "status": store.status()},
+                status=201,
+            )
+        except StickerLimitReached:
+            return web.json_response(
+                {"error": "sticker_limit_reached", "status": store.status()},
+                status=409,
+            )
+        except StickerValidationError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        finally:
+            if temp_path is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    temp_path.unlink()
+
+    async def _handle_companion_stickers_delete(self, request: "web.Request") -> "web.Response":
+        from honeyos.companion.stickers import get_sticker_store
+        store = get_sticker_store()
+        sticker_id = str(request.match_info.get("sticker_id") or "")
+        if not store.delete(sticker_id):
+            return web.json_response({"error": "sticker_not_found"}, status=404)
+        return web.json_response({"deleted": True, "status": store.status()})
+
+    async def _handle_companion_stickers_used(self, request: "web.Request") -> "web.Response":
+        from honeyos.companion.stickers import get_sticker_store
+        sticker_id = str(request.match_info.get("sticker_id") or "")
+        sticker = get_sticker_store().mark_used(sticker_id)
+        if sticker is None:
+            return web.json_response({"error": "sticker_not_found"}, status=404)
+        return web.json_response({"sticker": sticker})
+
+    async def _handle_companion_stickers_media(self, request: "web.Request") -> "web.Response":
+        from honeyos.companion.stickers import get_sticker_store
+        sticker_id = str(request.match_info.get("sticker_id") or "")
+        result = get_sticker_store().media(sticker_id)
+        if result is None:
+            return web.json_response({"error": "sticker_not_found"}, status=404)
+        path, mime_type = result
+        return web.FileResponse(
+            path,
+            headers={
+                "Content-Type": mime_type,
+                "Cache-Control": "private, max-age=86400",
+            },
+        )
+
+    async def _handle_companion_stickers_preview(self, request: "web.Request") -> "web.Response":
+        from honeyos.companion.stickers import get_sticker_store
+        sticker_id = str(request.match_info.get("sticker_id") or "")
+        result = get_sticker_store().preview(sticker_id)
+        if result is None:
+            return web.json_response(
+                {"error": "sticker_preview_not_found"},
+                status=404,
+            )
+        path, mime_type = result
+        return web.FileResponse(
+            path,
+            headers={
+                "Content-Type": mime_type,
+                "Cache-Control": "private, max-age=86400",
+            },
+        )
+
+    # === /HoneyOS C1.2 Local Sticker Runtime ===
 
     async def _handle_companion_new(
         self, request: "web.Request"

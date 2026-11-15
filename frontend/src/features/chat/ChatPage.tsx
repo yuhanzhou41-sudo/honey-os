@@ -1,4 +1,5 @@
-import { ArrowClockwiseIcon, ArrowDownIcon, ArrowUpIcon, ClockCounterClockwiseIcon, ImageIcon, PaperPlaneTiltIcon, PlusIcon, StopIcon, TrashIcon, XIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, ArrowDownIcon, ArrowUpIcon, ClockCounterClockwiseIcon, ImageIcon, PaperPlaneTiltIcon, PlusIcon, StopIcon, TrashIcon, XIcon, SmileyIcon } from "@phosphor-icons/react";
+import { fetchStickerStatus, markStickerUsed, stickerChatMessage, type StickerItem, type StickerStatus } from "../../api/stickers";
 import { useMutation } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -15,11 +16,10 @@ import {
   type ChatInput,
   type ChatRunStatus,
 } from "../../api/chat";
-import { fetchModelOptions, type ModelOptions } from "../../api/models";
-import { CHAT_DOCUMENT_ACCEPT, chatStudyDocumentContext, uploadChatStudyDocument, type ChatStudyDocument } from "../../api/chat-study-library";
 import { deleteCompanionConversation, fetchCompanionMessages, rollbackCompanionTimeline, startNewCompanionConversation, switchCompanionConversation, type ChatMessage, type HistoryItem } from "../../api/companion";
 import { HoneyAvatar } from "../../components/honey/HoneyAvatar";
 import { HoneyMessage } from "../../components/honey/HoneyMessage";
+import { StickerDrawer } from "../../components/honey/StickerDrawer";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
 import { Button } from "../../components/ui/Button";
 import type { PermissionChoice } from "../../runtime/honey-events";
@@ -138,6 +138,8 @@ export function ChatPage() {
   const [recoverRunId, setRecoverRunId] = useState<string | null>(null);
   const [retryUserMessageId, setRetryUserMessageId] = useState<number | null>(null);
   const [timelineError, setTimelineError] = useState("");
+  const [stickerOpen, setStickerOpen] = useState(false);
+  const [stickerStatus, setStickerStatus] = useState<StickerStatus | null>(null);
   const [activeMessageActions, setActiveMessageActions] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -180,6 +182,12 @@ export function ChatPage() {
       setShowScrollButton(false);
     }
   }, [messages, run]);
+
+  useEffect(() => {
+    void fetchStickerStatus()
+      .then(setStickerStatus)
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -597,6 +605,18 @@ export function ChatPage() {
     }
   }
 
+  function sendSticker(item: StickerItem) {
+    if (sending) return;
+    const message = stickerChatMessage(item);
+    queueUserMessage(message);
+    setQueuedMessages((current) => [
+      ...current,
+      { id: `${Date.now()}-${Math.random()}`, display: message, input: message },
+    ]);
+    setStickerOpen(false);
+    void markStickerUsed(item.id).catch(() => undefined);
+  }
+
   function createConversation() {
     if (sending || newConversation.isPending) return;
     if ((messages.length || queuedMessages.length) && !window.confirm("开启新的聊天？之前的内容和记忆仍会保留。")) return;
@@ -914,7 +934,7 @@ export function ChatPage() {
         ) : null}
       </div>
 
-      <form className="mx-auto w-full max-w-[56rem] shrink-0 pb-[calc(14px+env(safe-area-inset-bottom))] pt-2" onSubmit={send}>
+      <form className="relative mx-auto w-full max-w-[56rem] shrink-0 pb-[calc(14px+env(safe-area-inset-bottom))] pt-2" onSubmit={send}>
         {stoppedReply && queuedMessages.length && !replyBusy ? (
           <div className="mb-2 flex justify-center">
             <Button type="button" variant="secondary" onClick={regenerateStoppedReply}>
@@ -922,6 +942,13 @@ export function ChatPage() {
               重新生成
             </Button>
           </div>
+        ) : null}
+        {stickerOpen ? (
+          <StickerDrawer
+            onClose={() => setStickerOpen(false)}
+            onSendSticker={sendSticker}
+            onStatusChange={setStickerStatus}
+          />
         ) : null}
         {attachments.length ? (
           <div className="mb-2 flex gap-2 overflow-x-auto" aria-label="待发送图片">
@@ -939,6 +966,24 @@ export function ChatPage() {
           <input ref={fileRef} type="file" accept="image/*" multiple className="sr-only" onChange={attachImages} />
           <Button type="button" size="icon" variant="ghost" aria-label="添加图片" disabled={replyBusy || attachments.length >= 4} onClick={() => fileRef.current?.click()}>
             <ImageIcon size={20} />
+          </Button>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="relative"
+            aria-label="Honey 表情包"
+            title="Honey 表情包"
+            aria-expanded={stickerOpen}
+            onClick={() => setStickerOpen((current) => !current)}
+          >
+            <SmileyIcon size={20} />
+            {stickerStatus?.warning ? (
+              <span
+                className="absolute right-0.5 top-0.5 size-2 rounded-full bg-[var(--danger)]"
+                aria-label="表情包接近容量上限"
+              />
+            ) : null}
           </Button>
           <textarea
             value={draft}

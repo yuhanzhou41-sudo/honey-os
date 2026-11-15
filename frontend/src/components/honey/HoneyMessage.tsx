@@ -1,5 +1,6 @@
+import { parseStickerChatMessage, stickerMediaUrl } from "../../api/stickers";
 import { pureAnimatedEmoji } from "../../runtime/animated-emoji";
-import { AnimatedNotoEmoji } from "./AnimatedNotoEmoji";
+import { ExpressiveReaction } from "./ExpressiveReaction";
 import { ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { useState, type ReactNode } from "react";
 
@@ -162,6 +163,29 @@ function MessageImage({ src, alt }: { src: string; alt: string }) {
   );
 }
 
+function LocalStickerMessage({ id, label }: { id: string; label: string }) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return (
+      <p className="text-sm text-[var(--foreground-muted)]">
+        表情包：{label}（本地文件已删除）
+      </p>
+    );
+  }
+
+  return (
+    <img
+      src={stickerMediaUrl(id)}
+      alt={`表情包：${label}`}
+      className="block max-h-32 max-w-32 object-contain"
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 export function HoneyMessage({
   content,
   plain = false,
@@ -175,6 +199,15 @@ export function HoneyMessage({
   messageId?: string;
   isStreaming?: boolean;
 }) {
+  const localSticker = parseStickerChatMessage(content);
+  if (localSticker) {
+    return (
+      <HoneyOSMessageFrame role={role} messageId={messageId} isStreaming={isStreaming}>
+        <LocalStickerMessage id={localSticker.id} label={localSticker.label} />
+      </HoneyOSMessageFrame>
+    );
+  }
+
   const animatedEmoji = role === "assistant" && !plain && !isStreaming
     ? pureAnimatedEmoji(content)
     : null;
@@ -182,7 +215,7 @@ export function HoneyMessage({
   if (animatedEmoji) {
     return (
       <HoneyOSMessageFrame role={role} messageId={messageId} isStreaming={isStreaming}>
-        <AnimatedNotoEmoji emoji={animatedEmoji} />
+        <ExpressiveReaction emoji={animatedEmoji} messageId={messageId} />
       </HoneyOSMessageFrame>
     );
   }
