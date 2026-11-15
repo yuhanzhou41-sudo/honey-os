@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 import json
 import sqlite3
 from pathlib import Path
@@ -269,8 +270,14 @@ class StudyRepository:
                 raise StudyPlanNotFoundError(plan_id)
 
     # === Phase 4 Study Library resource persistence ===
-    def save_resource(self, resource: StudyResource) -> StudyResource:
+    @contextmanager
+    def resource_transaction(self):
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
+
+    def save_resource(self, resource: StudyResource, *, connection=None) -> StudyResource:
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
             conn.execute("""
                 INSERT INTO study_resources(id, attachment_id, title, resource_type, course_or_subject, metadata_json, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -284,13 +291,46 @@ class StudyRepository:
             """, (resource.id, resource.attachment_id, resource.title, resource.resource_type,
                   resource.course_or_subject, json.dumps(resource.metadata, ensure_ascii=False),
                   resource.created_at.isoformat(), resource.updated_at.isoformat()))
-        return self.get_resource(resource.id)
+        return resource
 
-    def get_resource(self, resource_id: str) -> StudyResource:
-        with self._connect() as conn:
-            row=conn.execute("SELECT * FROM study_resources WHERE id = ?", (resource_id,)).fetchone()
+    def find_resource_by_local_digest(self, digest: str, *, connection=None) -> StudyResource | None:
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM study_resources "
+                "WHERE json_extract(metadata_json, '$.local_source.sha256') = ? "
+                "ORDER BY created_at, id LIMIT 1",
+                (digest,),
+            ).fetchone()
+        return self._resource_from_row(row) if row is not None else None
+
+    def find_indexed_resource_by_attachments(self, attachment_ids: list[str], *, connection=None) -> StudyResource | None:
+        if not attachment_ids:
+            return None
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
+            row = conn.execute(
+                "SELECT r.* FROM study_resources r JOIN study_resource_content c ON c.resource_id = r.id "
+                "WHERE r.attachment_id IN (SELECT value FROM json_each(?)) "
+                "ORDER BY r.created_at, r.id LIMIT 1",
+                (json.dumps(attachment_ids),),
+            ).fetchone()
+        return self._resource_from_row(row) if row is not None else None
+
+    def local_source_paths(self, *, connection) -> set[Path]:
+        rows = connection.execute(
+            "SELECT json_extract(metadata_json, '$.local_source.path') AS path "
+            "FROM study_resources WHERE json_type(metadata_json, '$.local_source.path') = 'text'"
+        )
+        return {Path(row["path"]) for row in rows}
+
+    def get_resource(self, resource_id: str, *, connection=None) -> StudyResource:
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
+            row = conn.execute("SELECT * FROM study_resources WHERE id = ?", (resource_id,)).fetchone()
         if row is None:
             raise StudyResourceNotFoundError(resource_id)
+        return self._resource_from_row(row)
+
+    @staticmethod
+    def _resource_from_row(row: sqlite3.Row) -> StudyResource:
         return StudyResource.model_validate({
             "id":row["id"], "attachment_id":row["attachment_id"], "title":row["title"],
             "resource_type":row["resource_type"], "course_or_subject":row["course_or_subject"],
@@ -311,8 +351,8 @@ class StudyRepository:
             rows=conn.execute(sql, tuple(params)).fetchall()
         return [self.get_resource(row["id"]) for row in rows]
 
-    def delete_resource(self, resource_id: str) -> None:
-        with self._connect() as conn:
+    def delete_resource(self, resource_id: str, *, connection=None) -> None:
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
             result=conn.execute("DELETE FROM study_resources WHERE id = ?", (resource_id,))
         if result.rowcount == 0:
             raise StudyResourceNotFoundError(resource_id)

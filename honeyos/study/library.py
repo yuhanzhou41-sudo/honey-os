@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import re
 import sqlite3
@@ -55,9 +56,9 @@ class StudyLibraryIndex:
         tokens=[t for t in re.split(r"\s+", raw) if t]
         return " OR ".join('"'+t.replace('"','""')+'"' for t in tokens)
 
-    def index_resource(self, *, resource_id: str, title: str, course_or_subject: str, content: str, extraction_kind: str='utf8_text') -> None:
+    def index_resource(self, *, resource_id: str, title: str, course_or_subject: str, content: str, extraction_kind: str='utf8_text', connection=None) -> None:
         stamp=datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
             conn.execute("""
                 INSERT INTO study_resource_content(resource_id, extracted_text, extraction_kind, indexed_at)
                 VALUES (?, ?, ?, ?)
@@ -78,8 +79,8 @@ class StudyLibraryIndex:
         if row is not None:
             self.index_resource(resource_id=resource_id, title=title, course_or_subject=course_or_subject, content=row['extracted_text'])
 
-    def delete_resource(self, resource_id: str) -> None:
-        with self._connect() as conn:
+    def delete_resource(self, resource_id: str, *, connection=None) -> None:
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
             conn.execute("DELETE FROM study_resource_fts WHERE resource_id = ?", (resource_id,))
             conn.execute("DELETE FROM study_resource_content WHERE resource_id = ?", (resource_id,))
 
