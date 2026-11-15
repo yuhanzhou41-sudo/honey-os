@@ -39,9 +39,12 @@ from honeyos.agent.conversation_compression import (
     recover_rotated_compression_session,
 )
 from honeyos.agent.context_engine import automatic_compaction_status_message
+from honeyos.agent.context_trace import context_trace_enabled, write_context_source_trace
+from honeyos.agent.g0_4_trace import write_g0_4_runtime_trace
 from honeyos.agent.iteration_budget import IterationBudget
 from honeyos.agent.memory_manager import build_memory_context_block
 from honeyos.agent.memory_provider import is_trivial_prompt
+from honeyos.agent.memory_style_guard import natural_memory_expression_block
 from honeyos.agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
@@ -1129,6 +1132,8 @@ def build_turn_context(
     # and turns crossing midnight cannot mistake that historical date for
     # "today".  Multimodal turns need a durable text part because their list
     # content cannot use compose_user_api_content().
+    trace_context = context_trace_enabled()
+    plugin_hook_context = plugin_user_context if trace_context else ""
     try:
         _time_context = current_turn_time_context()
     except Exception as exc:
@@ -1216,6 +1221,8 @@ def build_turn_context(
     # COGNITIVE_MEMORY_SHADOW_F1
     # Read-only shadow retrieval: audit candidates, but do NOT append them to
     # ext_prefetch_cache, api_content, system prompt, or TurnContext.
+    _cognitive_context = None
+    _cognitive_shadow_result = None
     try:
         _shadow_query = original_user_message if isinstance(original_user_message, str) else ""
         if _shadow_query and not is_trivial_prompt(_shadow_query):
@@ -1260,17 +1267,53 @@ def build_turn_context(
     ):
         _turn_user_msg = messages[current_turn_user_idx]
         # COGNITIVE_MEMORY_CONTEXT_INJECTION_F2_3
-        from honeyos.memory.runtime_context import inject_silent_memory_context
-        ext_prefetch_cache = inject_silent_memory_context(
-            ext_prefetch_cache,
-            _cognitive_context,
-            _cognitive_shadow_result,
-            session_id=str(getattr(agent, "session_id", "") or ""),
-            turn_id=str(turn_id or ""),
-        )
+        native_memory_context = ext_prefetch_cache
+        if _cognitive_context is not None:
+            from honeyos.memory.runtime_context import inject_silent_memory_context
+
+            ext_prefetch_cache = inject_silent_memory_context(
+                ext_prefetch_cache,
+                _cognitive_context,
+                _cognitive_shadow_result,
+                session_id=str(getattr(agent, "session_id", "") or ""),
+                turn_id=str(turn_id or ""),
+            )
+        turn_content = _turn_user_msg.get("content", "")
+        memory_style = ""
+        if ext_prefetch_cache and isinstance(turn_content, str):
+            memory_style = natural_memory_expression_block()
+            plugin_user_context = "\n\n".join(
+                part for part in (plugin_user_context, memory_style) if part
+            )
         _api_content = compose_user_api_content(
-            _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+            turn_content, ext_prefetch_cache, plugin_user_context
         )
+        if trace_context:
+            cognitive_injected = _cognitive_context is not None and ext_prefetch_cache != native_memory_context
+            write_context_source_trace(
+                session_id=getattr(agent, "session_id", ""),
+                turn_id=turn_id,
+                query_namespace=getattr(_cognitive_shadow_result, "namespace", ""),
+                system_prompt=active_system_prompt,
+                history_messages=messages[:current_turn_user_idx],
+                clean_user_message=original_user_message,
+                native_memory_context=native_memory_context,
+                cognitive_context=_cognitive_context.text if cognitive_injected else "",
+                cognitive_item_count=len(_cognitive_context.included) if cognitive_injected else 0,
+                plugin_user_context=plugin_user_context,
+                final_memory_context=ext_prefetch_cache,
+                api_content=_api_content if _api_content is not None else turn_content,
+            )
+            write_g0_4_runtime_trace(
+                session_id=getattr(agent, "session_id", ""),
+                turn_id=turn_id,
+                system_prompt=active_system_prompt,
+                plugin_final_context=plugin_user_context,
+                plugin_hook_context=plugin_hook_context,
+                runtime_time_context=_time_context,
+                gateway_notes_context=_gateway_notes,
+                memory_style_context=memory_style,
+            )
         if _api_content is not None and _api_content != _turn_user_msg.get("content"):
             _turn_user_msg["api_content"] = _api_content
             # In-place preflight compaction has ALREADY inserted this turn's
