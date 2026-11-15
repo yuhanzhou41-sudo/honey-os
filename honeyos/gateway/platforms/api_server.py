@@ -2519,6 +2519,16 @@ class APIServerAdapter(BasePlatformAdapter):
 
     # === /HoneyOS Study Storage Core handlers ===
 
+    def _authenticated_attachment_handler(self, handler):
+        @wraps(handler)
+        async def handle(request: "web.Request") -> "web.Response":
+            auth_error = self._check_auth(request)
+            if auth_error is not None:
+                return auth_error
+            return await handler(request)
+
+        return handle
+
     def _http_route_table(self) -> List[tuple]:
         """Return (method, path, handler) rows registered by ``connect()``.
 
@@ -2727,27 +2737,27 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
             # === HoneyOS Files / Attachment Core ===
-            ("POST", "/api/attachments", self._attachment_http.upload),
-            ("GET", "/api/attachments", self._attachment_http.list),
+            ("POST", "/api/attachments", self._authenticated_attachment_handler(self._attachment_http.upload)),
+            ("GET", "/api/attachments", self._authenticated_attachment_handler(self._attachment_http.list)),
             (
                 "GET",
                 "/api/attachments/{attachment_id}",
-                self._attachment_http.get,
+                self._authenticated_attachment_handler(self._attachment_http.get),
             ),
             (
                 "GET",
                 "/api/attachments/{attachment_id}/content",
-                self._attachment_http.content,
+                self._authenticated_attachment_handler(self._attachment_http.content),
             ),
             (
                 "DELETE",
                 "/api/attachments/{attachment_id}",
-                self._attachment_http.delete,
+                self._authenticated_attachment_handler(self._attachment_http.delete),
             ),
             (
                 "POST",
                 "/api/attachments/{attachment_id}/restore",
-                self._attachment_http.restore,
+                self._authenticated_attachment_handler(self._attachment_http.restore),
             ),
             # === /HoneyOS Files / Attachment Core ===
             ("GET", "/api/sessions", self._handle_list_sessions),
