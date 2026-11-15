@@ -38,7 +38,7 @@ def test_attachment_routes_do_not_replace_existing_namespaces():
 
     preserved = [
         ("GET", "/api/companion/memories"),
-        ("GET", "/api/companion/study"),
+        ("GET", "/api/study/plans"),
         ("GET", "/api/companion/diary"),
         ("GET", "/api/sessions"),
         ("POST", "/api/sessions"),
