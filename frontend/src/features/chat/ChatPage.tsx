@@ -11,11 +11,14 @@ import {
   splitUserMessages,
   stopChat,
   streamChat,
-  userMessageBreak,
   watchSessionMessages,
+  userMessageBreak,
+  fetchChatSessionModel,
+  setChatSessionModel,
   type ChatInput,
   type ChatRunStatus,
 } from "../../api/chat";
+import { fetchModelOptions, type ModelOptions } from "../../api/models";
 import { deleteCompanionConversation, fetchCompanionMessages, rollbackCompanionTimeline, startNewCompanionConversation, switchCompanionConversation, type ChatMessage, type HistoryItem } from "../../api/companion";
 import { HoneyAvatar } from "../../components/honey/HoneyAvatar";
 import { HoneyMessage } from "../../components/honey/HoneyMessage";
@@ -137,6 +140,79 @@ export function ChatPage() {
   const [stoppedUserMessageId, setStoppedUserMessageId] = useState<number | null>(null);
   const [recoverRunId, setRecoverRunId] = useState<string | null>(null);
   const [retryUserMessageId, setRetryUserMessageId] = useState<number | null>(null);
+  const [chatModelOptions, setChatModelOptions] = useState<ModelOptions | null>(null);
+  const [chatModelSelection, setChatModelSelection] = useState("");
+  const [chatModelBusy, setChatModelBusy] = useState(false);
+  const [chatModelError, setChatModelError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchModelOptions()
+      .then((payload) => {
+        if (!cancelled) setChatModelOptions(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setChatModelError("模型列表暂时无法读取");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionId || !sessionKey || !chatModelOptions) return;
+    let cancelled = false;
+    setChatModelError("");
+    void fetchChatSessionModel({ sessionId, sessionKey })
+      .then((session) => {
+        if (cancelled) return;
+        const model = String((session.modelProvider && session.model) || chatModelOptions.model || "");
+        const preferredProvider = String(session.modelProvider || chatModelOptions.provider || "");
+        const providers = chatModelOptions.providers.filter(
+          (provider) => provider.authenticated && provider.models.includes(model),
+        );
+        const preferred = providers.find((item) => item.slug === preferredProvider);
+        const provider = session.modelProvider
+          ? preferred
+          : preferred || providers.find((item) => item.is_current) || providers[0];
+        setChatModelSelection(
+          provider && model ? `${provider.slug}::${model}` : "",
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setChatModelError("当前会话模型状态暂时无法读取");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, sessionKey, chatModelOptions]);
+
+  async function handleChatModelChange(value: string) {
+    if (!sessionId || !sessionKey || !value || sending || chatModelBusy) return;
+    const splitAt = value.indexOf("::");
+    if (splitAt <= 0) return;
+    const provider = value.slice(0, splitAt);
+    const model = value.slice(splitAt + 2);
+    if (!provider || !model) return;
+
+    const previous = chatModelSelection;
+    setChatModelSelection(value);
+    setChatModelBusy(true);
+    setChatModelError("");
+    try {
+      await setChatSessionModel({ sessionId, sessionKey, provider, model });
+    } catch (modelError) {
+      setChatModelSelection(previous);
+      setChatModelError(
+        modelError instanceof Error ? modelError.message : "模型切换失败",
+      );
+    } finally {
+      setChatModelBusy(false);
+    }
+  }
+
+  const authenticatedChatModelProviders = (chatModelOptions?.providers || [])
+    .filter((provider) => provider.authenticated && provider.models.length > 0);
   const [timelineError, setTimelineError] = useState("");
   const [stickerOpen, setStickerOpen] = useState(false);
   const [stickerStatus, setStickerStatus] = useState<StickerStatus | null>(null);
@@ -346,7 +422,7 @@ export function ChatPage() {
   }
 
   async function generateReply() {
-    if (!queuedMessages.length || sending || !sessionId || !sessionKey) return;
+    if (!queuedMessages.length || sending || chatModelBusy || !sessionId || !sessionKey) return;
     const submitted = [...queuedMessages];
     followRef.current = true;
     setStoppedReply(false);
@@ -411,7 +487,7 @@ export function ChatPage() {
 
   function send(event: FormEvent) {
     event.preventDefault();
-    if (sending) return;
+    if (sending || chatModelBusy) return;
     const text = draft.trim();
     if (!text && !attachments.length) return;
     const message = [text, ...attachments.map((item) => `![${item.name}](${item.dataUrl})`)].filter(Boolean).join("\n\n");
@@ -712,6 +788,39 @@ export function ChatPage() {
         >
           <HoneyAvatar name={name} className="size-10 rounded-full shadow-none" />
         </Link>
+        {authenticatedChatModelProviders.length ? (
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <label className="sr-only" htmlFor="honeyos-chat-model">当前会话模型</label>
+            <select
+              id="honeyos-chat-model"
+              aria-label="聊天模型"
+              title="当前会话模型覆盖（优先于全局默认）"
+              className="h-8 w-[6.75rem] max-w-[24vw] shrink-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-raised)] px-2 text-[11px] text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] disabled:opacity-50 sm:w-[8.5rem]"
+              value={chatModelSelection}
+              disabled={sending || chatModelBusy || !sessionId || !sessionKey}
+              onChange={(event) => void handleChatModelChange(event.target.value)}
+            >
+              {!chatModelSelection ? <option value="">选择模型</option> : null}
+              {authenticatedChatModelProviders.map((provider) => (
+                <optgroup key={provider.slug} label={provider.name}>
+                  {provider.models.map((model) => (
+                    <option key={`${provider.slug}::${model}`} value={`${provider.slug}::${model}`}>
+                      {model}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            {chatModelError ? (
+              <span
+                className="max-w-[14rem] truncate text-[10px] text-[var(--danger)]"
+                title={chatModelError}
+              >
+                {chatModelError}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </header>
 
       {historyOpen ? (
@@ -1000,7 +1109,7 @@ export function ChatPage() {
             disabled={replyBusy}
             className="max-h-40 min-h-11 flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2.5 text-[15px] leading-6 outline-none placeholder:text-[var(--foreground-faint)] [field-sizing:content]"
           />
-          <Button type="submit" size="icon" aria-label="发送消息" title="发送消息" disabled={replyBusy || (!draft.trim() && !attachments.length) || !sessionId || !sessionKey}>
+          <Button type="submit" size="icon" aria-label="发送消息" title="发送消息" disabled={replyBusy || chatModelBusy || (!draft.trim() && !attachments.length) || !sessionId || !sessionKey}>
             <ArrowUpIcon size={20} weight="bold" />
           </Button>
           {replyBusy ? (
@@ -1008,7 +1117,7 @@ export function ChatPage() {
               <StopIcon size={18} weight="fill" />
             </Button>
           ) : (
-            <Button type="button" size="icon" variant="secondary" aria-label="让 AI 回复" title="让 AI 回复" disabled={!queuedMessages.length || !sessionId || !sessionKey} onClick={() => void generateReply()}>
+            <Button type="button" size="icon" variant="secondary" aria-label="让 AI 回复" title="让 AI 回复" disabled={chatModelBusy || !queuedMessages.length || !sessionId || !sessionKey} onClick={() => void generateReply()}>
               <PaperPlaneTiltIcon size={20} weight="fill" />
             </Button>
           )}

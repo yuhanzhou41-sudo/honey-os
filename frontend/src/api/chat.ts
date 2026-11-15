@@ -197,6 +197,66 @@ export async function fetchChatRunStatus(options: {
   return response.json() as Promise<ChatRunStatus>;
 }
 
+export type ChatSessionModelState = {
+  model?: string | null;
+  modelProvider?: string | null;
+};
+
+
+export async function fetchChatSessionModel(options: {
+  sessionId: string;
+  sessionKey: string;
+}): Promise<ChatSessionModelState> {
+  const response = await fetchWithLocalSessionRecovery(
+    apiPath(`/api/sessions/${encodeURIComponent(options.sessionId)}`),
+    {
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "X-HoneyOS-Session-Key": options.sessionKey,
+      },
+    },
+  );
+  if (!response.ok) throw await responseError(response);
+
+  const payload = await response.json() as Record<string, unknown>;
+  const session = (
+    payload.session && typeof payload.session === "object"
+      ? payload.session
+      : payload
+  ) as Record<string, unknown>;
+
+  return {
+    model: typeof session.model === "string" ? session.model : null,
+    modelProvider: typeof session.model_provider === "string" ? session.model_provider : null,
+  };
+}
+
+export async function setChatSessionModel(options: {
+  sessionId: string;
+  sessionKey: string;
+  model: string;
+  provider: string;
+}): Promise<Record<string, unknown>> {
+  const response = await fetchWithLocalSessionRecovery(
+    apiPath(`/api/sessions/${encodeURIComponent(options.sessionId)}/model`),
+    {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        "X-HoneyOS-Session-Key": options.sessionKey,
+      },
+      body: JSON.stringify({
+        model: options.model,
+        provider: options.provider,
+      }),
+    },
+  );
+  if (!response.ok) throw await responseError(response);
+  return response.json() as Promise<Record<string, unknown>>;
+}
+
 export type SessionMessageNotice = {
   session_id: string;
   message_id: number | string;

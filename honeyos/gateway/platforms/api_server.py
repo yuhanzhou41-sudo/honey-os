@@ -380,6 +380,25 @@ def _runtime_provider_identity(runtime_kwargs: Dict[str, Any]) -> Optional[str]:
     )
 
 
+def _actual_api_runtime_provider(agent: Any) -> str:
+    from honeyos.runtime.route_identity import normalize_route_base_url
+
+    transport = getattr(agent, "provider", "")
+    provider = transport if isinstance(transport, str) else ""
+    if provider != "custom":
+        return provider
+    resolved_provider, resolved_endpoint = getattr(agent, "_honeyos_api_custom_route", ("", ""))
+    if (
+        resolved_provider.startswith("custom:")
+        and resolved_provider == getattr(agent, "requested_provider", "")
+        and resolved_endpoint
+        and normalize_route_base_url(resolved_endpoint)
+        == normalize_route_base_url(getattr(agent, "base_url", ""))
+    ):
+        return resolved_provider
+    return provider
+
+
 def _companion_tool_event_type(event_type: str, *, is_error: bool = False) -> str:
     """Translate executor completion metadata into companion event semantics."""
     if event_type == "tool.completed" and is_error:
@@ -2733,6 +2752,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/health", self._handle_health),
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
+            ("POST", "/api/model/default", self._handle_global_model_switch),
             ("GET", "/v1/capabilities", self._handle_capabilities),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
@@ -5610,6 +5630,11 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_kwargs["service_tier"] = request_service_tier
 
         agent = AIAgent(**agent_kwargs)
+        if runtime_kwargs.get("provider") == "custom":
+            agent._honeyos_api_custom_route = (
+                _runtime_provider_identity(runtime_kwargs) or "",
+                runtime_kwargs.get("base_url") or "",
+            )
         agent._honeyos_api_runtime = {
             "provider": runtime_kwargs.get("provider") or getattr(agent, "provider", "") or "",
             "model": getattr(agent, "model", None) or model,
@@ -5756,19 +5781,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         refresh = _coerce_request_bool(request.query.get("refresh"), default=False)
         try:
-            from honeyos.runtime.inventory import build_model_options_payload, load_picker_context
-
-            def _build_payload() -> Dict[str, Any]:
-                return build_model_options_payload(
-                    load_picker_context(),
-                    include_unconfigured=True,
-                    refresh=refresh,
-                )
-
-            # Inventory enrichment can fetch pricing and provider catalogs.
-            # Keep all synchronous picker work off aiohttp's event loop.
-            payload = await asyncio.to_thread(_build_payload)
-            return web.json_response(payload)
+            return web.json_response(await self._picker_model_options(refresh=refresh))
         except Exception:
             logger.exception("[%s] GET /api/model/options failed", self.name)
             return web.json_response(
@@ -5778,6 +5791,38 @@ class APIServerAdapter(BasePlatformAdapter):
                 ),
                 status=500,
             )
+
+    @staticmethod
+    async def _picker_model_options(*, refresh: bool = False) -> Dict[str, Any]:
+        from honeyos.runtime.inventory import build_model_options_payload, load_picker_context
+
+        def build() -> Dict[str, Any]:
+            return build_model_options_payload(
+                load_picker_context(), include_unconfigured=True, refresh=refresh
+            )
+
+        return await asyncio.to_thread(build)
+
+    async def _validate_picker_model(self, provider: str, model: str) -> Optional["web.Response"]:
+        try:
+            options = await self._picker_model_options()
+        except Exception:
+            logger.exception("[%s] Failed to validate model selection", self.name)
+            return web.json_response(
+                _openai_error("Model options are temporarily unavailable.", code="model_options_failed"),
+                status=503,
+            )
+        if any(
+            item.get("slug") == provider
+            and item.get("authenticated")
+            and model in item.get("models", [])
+            for item in options.get("providers", [])
+        ):
+            return None
+        return web.json_response(
+            _openai_error("The selected model is unavailable for this provider.", code="model_unavailable"),
+            status=400,
+        )
 
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
@@ -5978,8 +6023,14 @@ class APIServerAdapter(BasePlatformAdapter):
             "_lineage_root_id",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
-        # Avoid exposing full system prompts/model_config through the client API;
-        # callers only need to know whether those snapshots exist.
+        lock = APIServerAdapter._parse_session_model_config(session.get("model_config")).get(
+            "browser_model_lock"
+        )
+        if isinstance(lock, dict) and lock.get("confirmed"):
+            provider = APIServerAdapter._clean_runtime_id(lock.get("provider"), max_len=80)
+            if provider:
+                payload["model_provider"] = provider
+        # Keep the rest of the model configuration and the system prompt private.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
         payload["has_model_config"] = bool(session.get("model_config"))
         return payload
@@ -7232,6 +7283,87 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         return web.json_response({"choice": choice, "resolved": resolved})
 
+    async def _handle_global_model_switch(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, error = await self._read_json_body(request)
+        if error:
+            return error
+        model = self._clean_runtime_id(body.get("model"))
+        provider = self._clean_runtime_id(body.get("provider"), max_len=80)
+        if not model or not provider:
+            return web.json_response(
+                _openai_error("Select a provider and a model.", code="model_and_provider_required"),
+                status=400,
+            )
+        selection_error = await self._validate_picker_model(provider, model)
+        if selection_error is not None:
+            return selection_error
+
+        from honeyos.gateway.run import _load_gateway_config
+        from honeyos.runtime.config import get_compatible_custom_providers
+        from honeyos.runtime.model_switch import switch_model
+
+        config = await asyncio.to_thread(_load_gateway_config)
+        model_config = config.get("model")
+        if not isinstance(model_config, dict):
+            model_config = {}
+
+        result = await asyncio.to_thread(
+            switch_model,
+            raw_input=model,
+            current_provider=str(model_config.get("provider") or "openrouter"),
+            current_model=str(model_config.get("default") or ""),
+            current_base_url=str(model_config.get("base_url") or ""),
+            current_api_key="",
+            is_global=True,
+            explicit_provider=provider,
+            user_providers=config.get("providers"),
+            custom_providers=get_compatible_custom_providers(config),
+        )
+        if not result.success:
+            return web.json_response(
+                _openai_error(str(result.error_message or "Model switch failed."), code="model_switch_failed"),
+                status=400,
+            )
+
+        from honeyos.runtime.config import clear_model_endpoint_credentials, read_raw_config, save_config
+
+        def persist() -> None:
+            raw_config = read_raw_config()
+            raw_model = raw_config.get("model")
+            if not isinstance(raw_model, dict):
+                raw_model = {}
+            if raw_model.get("provider") != result.target_provider:
+                clear_model_endpoint_credentials(raw_model, clear_base_url=True)
+            raw_model["provider"] = result.target_provider
+            raw_model["default"] = result.new_model
+            if result.base_url:
+                raw_model["base_url"] = result.base_url
+            if result.target_provider == "custom" and result.api_mode:
+                raw_model["api_mode"] = result.api_mode
+            raw_config["model"] = raw_model
+            save_config(raw_config)
+            saved = read_raw_config().get("model")
+            if not isinstance(saved, dict) or (saved.get("provider"), saved.get("default")) != (
+                result.target_provider,
+                result.new_model,
+            ):
+                raise RuntimeError("The selected default was not saved.")
+
+        try:
+            await asyncio.to_thread(persist)
+        except Exception:
+            logger.exception("[%s] Failed to save the global model", self.name)
+            return web.json_response(
+                _openai_error("Could not save the global default model.", code="model_persist_failed"),
+                status=500,
+            )
+        return web.json_response(
+            {"success": True, "provider": result.target_provider, "model": result.new_model}
+        )
+
     async def _handle_session_model_lock(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/model — backend-ack a Browser model lock."""
         auth_err = self._check_auth(request)
@@ -7249,6 +7381,13 @@ class APIServerAdapter(BasePlatformAdapter):
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return lock_error
+        requested = runtime_request.get("requested") or {}
+        if requested.get("provider") and runtime_request.get("route_source") != "model_routes":
+            selection_error = await self._validate_picker_model(
+                requested["provider"], requested.get("model") or ""
+            )
+            if selection_error is not None:
+                return selection_error
         if not self._persist_session_runtime_lock(session_id, runtime_request):
             return web.json_response(
                 _openai_error(
@@ -7257,7 +7396,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 ),
                 status=500,
             )
-        requested = runtime_request.get("requested") or {}
         route = runtime_request.get("route") or {}
         runtime = self._sanitize_runtime_metadata(
             runtime={
@@ -9482,12 +9620,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     if include_runtime:
                         runtime = dict(getattr(agent, "_honeyos_api_runtime", {}) or {})
-                        raw_provider = getattr(agent, "provider", "")
                         raw_model = getattr(agent, "model", "")
-                        actual_provider = (
-                            self._clean_runtime_id(raw_provider, max_len=80)
-                            if isinstance(raw_provider, str)
-                            else ""
+                        actual_provider = self._clean_runtime_id(
+                            _actual_api_runtime_provider(agent), max_len=80
                         )
                         actual_model = (
                             self._clean_runtime_id(raw_model)

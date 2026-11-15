@@ -1596,3 +1596,22 @@ async def test_companion_stream_chat_schedules_background_memory_distillation(
     scheduler.assert_called_once()
     assert delivery_order == ["reply_completed", "memory"]
     assert scheduler.call_args.kwargs["session_id"] == "shared-session"
+
+
+def test_named_custom_reply_retains_provider_only_for_resolved_endpoint():
+    from honeyos.gateway.platforms.api_server import _actual_api_runtime_provider
+
+    agent = SimpleNamespace(
+        provider="custom",
+        requested_provider="custom:qwen-local",
+        base_url="http://127.0.0.1:8080/v1/",
+        _honeyos_api_custom_route=("custom:qwen-local", "http://127.0.0.1:8080/v1"),
+    )
+    assert _actual_api_runtime_provider(agent) == "custom:qwen-local"
+
+    agent.base_url = "http://127.0.0.1:8081/v1"
+    assert _actual_api_runtime_provider(agent) == "custom"
+
+    agent.base_url = "http://127.0.0.1:8080/v1"
+    agent.requested_provider = "custom:alternate"
+    assert _actual_api_runtime_provider(agent) == "custom"

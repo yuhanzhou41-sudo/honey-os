@@ -16,6 +16,7 @@ import { Button } from "../../components/ui/Button";
 import { applyHoneyTheme, readHoneyTheme, type HoneyTheme } from "../../design-system/theme";
 import { useHoneyStore } from "../../runtime/honey-store";
 
+import { fetchModelOptions, setGlobalDefaultModel } from "../../api/models";
 const providers = [
   { value: "openai-api", label: "OpenAI", baseUrl: "https://api.openai.com/v1" },
   { value: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
@@ -29,6 +30,7 @@ export function SettingsPage() {
   const summary = useHoneyStore((state) => state.summarySettings);
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ["companion-settings"], queryFn: fetchCompanionSettings });
+  const modelOptions = useQuery({ queryKey: ["model-options"], queryFn: fetchModelOptions });
   const [theme, setTheme] = useState<HoneyTheme>(readHoneyTheme);
   const [provider, setProvider] = useState("custom");
   const [baseUrl, setBaseUrl] = useState("");
@@ -44,6 +46,7 @@ export function SettingsPage() {
     setBaseUrl(value.base_url || "");
     setModel(value.model || "");
   }, [settings.data]);
+
 
   const discover = useMutation({
     mutationFn: discoverCompanionModels,
@@ -63,6 +66,63 @@ export function SettingsPage() {
     },
     onError: (error) => setStatus(error instanceof Error ? error.message : "刚才没有保存成功"),
   });
+
+  const authenticatedModelProviders = (modelOptions.data?.providers || [])
+    .filter((item) => item.authenticated && item.models.length > 0);
+  const [globalProvider, setGlobalProvider] = useState("");
+  const [globalModel, setGlobalModel] = useState("");
+  const [globalStatus, setGlobalStatus] = useState("");
+
+  useEffect(() => {
+    if (!modelOptions.data) return;
+    const providerFromServer = modelOptions.data.provider || "";
+    const providerOption = authenticatedModelProviders.find((item) => item.slug === providerFromServer)
+      || authenticatedModelProviders[0];
+    if (!providerOption) return;
+    setGlobalProvider(providerOption.slug);
+    const modelFromServer = modelOptions.data.model || "";
+    setGlobalModel(
+      providerOption.models.includes(modelFromServer)
+        ? modelFromServer
+        : (providerOption.models[0] || ""),
+    );
+  }, [modelOptions.data]);
+
+  const saveGlobal = useMutation({
+    mutationFn: setGlobalDefaultModel,
+    onSuccess: async (data) => {
+      setGlobalProvider(data.provider);
+      setGlobalModel(data.model);
+      setGlobalStatus(`全局默认模型已切换为 ${data.model}`);
+      await modelOptions.refetch();
+      await settings.refetch();
+    },
+    onError: (error) => setGlobalStatus(
+      error instanceof Error ? error.message : "全局默认模型保存失败",
+    ),
+  });
+
+  function chooseGlobalProvider(next: string) {
+    setGlobalProvider(next);
+    const option = authenticatedModelProviders.find((item) => item.slug === next);
+    setGlobalModel(option?.models[0] || "");
+    setGlobalStatus("");
+  }
+
+  function saveGlobalModel(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!globalProvider || !globalModel) {
+      setGlobalStatus("请先选择模型服务和模型");
+      return;
+    }
+    setGlobalStatus("正在切换全局默认模型");
+    saveGlobal.mutate({ provider: globalProvider, model: globalModel });
+  }
+
+  const globalProviderOption = authenticatedModelProviders.find(
+    (item) => item.slug === globalProvider,
+  );
+
 
   if (runtimeLoading || settings.isLoading) return <PageFrame><LoadingState /></PageFrame>;
   if (runtimeError || settings.isError || !settings.data) return <PageFrame><ErrorState /></PageFrame>;
@@ -122,45 +182,81 @@ export function SettingsPage() {
 
         <section className="border-t border-[var(--border)] pt-8">
           <h2 className="text-lg font-semibold">模型</h2>
-          <p className="mt-2 max-w-[65ch] text-sm leading-6 text-[var(--foreground-muted)]">选择它思考和说话时使用的模型。已有密钥不会显示，也不需要重复填写。</p>
-          <form onSubmit={saveModel} className="mt-5 grid gap-5">
+          <p className="mt-2 max-w-[65ch] text-sm leading-6 text-[var(--foreground-muted)]">
+            这里设置 HoneyOS 的全局默认模型。当前聊天若手动锁定了模型，仍会优先使用当前聊天的选择。
+          </p>
+
+          <form onSubmit={saveGlobalModel} className="mt-5 grid gap-5">
             <div className="grid gap-5 sm:grid-cols-2">
               <Field label="模型服务">
-                <select value={provider} onChange={(event) => chooseProvider(event.target.value)} className="honey-setting-control">
-                  {providers.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                <select value={globalProvider} onChange={(event) => chooseGlobalProvider(event.target.value)} className="honey-setting-control">
+                  {authenticatedModelProviders.map((item) => (
+                    <option key={item.slug} value={item.slug}>{item.is_current ? `${item.name} · 当前` : item.name}</option>
+                  ))}
                 </select>
               </Field>
-              <Field label="API Key" hint={editable.model.api_key_configured ? "本机已经保存过密钥，留空表示继续使用" : "输入时不会显示"}>
-                <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="new-password" placeholder={editable.model.api_key_configured ? "已经配置" : "粘贴 API Key"} className="honey-setting-control" />
-              </Field>
-            </div>
-            {provider === "custom" ? (
-              <Field label="接口地址">
-                <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} type="url" inputMode="url" placeholder="https://api.example.com/v1" className="honey-setting-control" />
-              </Field>
-            ) : null}
-            <div className="flex flex-wrap items-end gap-3">
-              <Button type="button" variant="secondary" disabled={discover.isPending} onClick={discoverModels}>
-                <LinkIcon size={17} />连接并读取模型
-              </Button>
-              <span className="text-xs leading-5 text-[var(--foreground-muted)]" role="status">{status || "连接后可以直接选择模型"}</span>
-            </div>
-            {models.length ? (
-              <Field label="选择模型">
-                <select value={models.includes(model) ? model : ""} onChange={(event) => setModel(event.target.value)} className="honey-setting-control">
-                  <option value="">请选择模型</option>
-                  {models.map((item) => <option key={item} value={item}>{item}</option>)}
+              <Field label="默认模型">
+                <select value={globalModel} onChange={(event) => setGlobalModel(event.target.value)} className="honey-setting-control" disabled={!globalProviderOption}>
+                  {(globalProviderOption?.models || []).map((item) => <option key={item} value={item}>{item}</option>)}
                 </select>
               </Field>
-            ) : null}
-            <Field label="模型 ID" hint="列表里没有时可以直接填写">
-              <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="例如 provider/model-name" className="honey-setting-control" />
-            </Field>
+            </div>
             <div className="flex flex-wrap items-center gap-3">
-              <Button type="submit" disabled={save.isPending}><KeyIcon size={17} />保存模型配置</Button>
-              {editable.model.model ? <span className="flex items-center gap-1.5 text-xs text-[var(--success)]"><CheckIcon size={16} />当前模型：{editable.model.model}</span> : null}
+              <Button type="submit" disabled={saveGlobal.isPending || !globalProvider || !globalModel}>
+                <KeyIcon size={17} />保存全局默认
+              </Button>
+              <span className="text-xs leading-5 text-[var(--foreground-muted)]" role="status">
+                {globalStatus || (modelOptions.data?.model
+                  ? `当前全局默认：${modelOptions.data.provider || ""} / ${modelOptions.data.model}`
+                  : "正在读取当前全局默认模型")}
+              </span>
             </div>
           </form>
+
+          <details className="mt-6 rounded-[var(--radius-lg)] border border-[var(--border)] p-4">
+            <summary className="cursor-pointer text-sm font-medium">高级：手工 API Provider 配置</summary>
+            <p className="mt-2 text-xs leading-5 text-[var(--foreground-muted)]">
+              仅在新增 API Key / 自定义兼容接口时使用。已登录的 Codex、Copilot 等运行时 Provider 不需要在这里重复配置。
+            </p>
+            <form onSubmit={saveModel} className="mt-5 grid gap-5">
+              <div className="grid gap-5 sm:grid-cols-2">
+                <Field label="模型服务">
+                  <select value={provider} onChange={(event) => chooseProvider(event.target.value)} className="honey-setting-control">
+                    {providers.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </Field>
+                <Field label="API Key" hint={editable.model.api_key_configured ? "本机已经保存过密钥，留空表示继续使用" : "输入时不会显示"}>
+                  <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="new-password" placeholder={editable.model.api_key_configured ? "已经配置" : "粘贴 API Key"} className="honey-setting-control" />
+                </Field>
+              </div>
+              {provider === "custom" ? (
+                <Field label="接口地址">
+                  <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} type="url" inputMode="url" placeholder="https://api.example.com/v1" className="honey-setting-control" />
+                </Field>
+              ) : null}
+              <div className="flex flex-wrap items-end gap-3">
+                <Button type="button" variant="secondary" disabled={discover.isPending} onClick={discoverModels}>
+                  <LinkIcon size={17} />连接并读取模型
+                </Button>
+                <span className="text-xs leading-5 text-[var(--foreground-muted)]" role="status">{status || "连接后可以直接选择模型"}</span>
+              </div>
+              {models.length ? (
+                <Field label="选择模型">
+                  <select value={models.includes(model) ? model : ""} onChange={(event) => setModel(event.target.value)} className="honey-setting-control">
+                    <option value="">请选择模型</option>
+                    {models.map((item) => <option key={item} value={item}>{item}</option>)}
+                  </select>
+                </Field>
+              ) : null}
+              <Field label="模型 ID" hint="列表里没有时可以直接填写">
+                <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="例如 provider/model-name" className="honey-setting-control" />
+              </Field>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button type="submit" disabled={save.isPending}><KeyIcon size={17} />保存手工 Provider 配置</Button>
+                {editable.model.model ? <span className="flex items-center gap-1.5 text-xs text-[var(--success)]"><CheckIcon size={16} />手工配置：{editable.model.model}</span> : null}
+              </div>
+            </form>
+          </details>
         </section>
 
         <section className="border-t border-[var(--border)] pt-8">
