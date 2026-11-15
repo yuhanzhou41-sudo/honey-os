@@ -119,3 +119,40 @@ export const searchStudyResources=(filters:{
 }={})=>
   requestJson<{results:StudyResourceSearchHit[]}>(`/api/study/resources/search${studyResourceQuery(filters)}`);
 // === /Phase 4 Study Library ===
+
+
+export type StudyResourceStorage = {
+  source_path: string | null;
+  source_status: "online" | "offline" | "changed" | "managed";
+  original_bytes: number | null;
+  indexed_text_bytes: number;
+  has_managed_attachment: boolean;
+};
+
+export type StudyLibraryStorage = {
+  library_id: string;
+  name: string;
+  root: string;
+  online: boolean;
+  temp_bytes: number;
+};
+
+export const referenceLocalStudyFile = (path: string, resourceId?: string) =>
+  requestJson<{ resource: StudyResource; reused: boolean }>("/api/study/resources/local", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, ...(resourceId ? { resource_id: resourceId } : {}) }),
+  });
+
+export const getStudyResourceStorage = (id: string) =>
+  requestJson<{ storage: StudyResourceStorage }>(`/api/study/resources/${encodeURIComponent(id)}/storage`);
+
+export const listStudyLibraryStorage = () =>
+  requestJson<{ libraries: StudyLibraryStorage[] }>("/api/study/storage/libraries");
+
+export const clearExpiredStudyFiles = (libraryId: string) =>
+  requestJson<{ freed_bytes: number }>(`/api/study/storage/libraries/${encodeURIComponent(libraryId)}/cleanup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target: "expired_temp" }),
+  });

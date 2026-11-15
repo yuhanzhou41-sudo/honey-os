@@ -3,11 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   listAttachments,
-  uploadAttachment,
   type Attachment,
 } from "../../api/attachments";
 import {
+  clearExpiredStudyFiles,
   createStudyResource,
+  getStudyResourceStorage,
+  listStudyLibraryStorage,
+  referenceLocalStudyFile,
   deleteStudyResource,
   getStudyResourceContent,
   listStudyResources,
@@ -18,6 +21,14 @@ import {
 
 const attachmentsKey = ["attachments"] as const;
 const resourcesKey = ["study", "resources"] as const;
+const storageKey = ["study", "storage"] as const;
+
+const sourceStatusLabels = {
+  online: "原文件可访问",
+  offline: "原文件暂不可访问",
+  changed: "原文件内容可能已更改",
+  managed: "已有附件",
+};
 
 type LibraryRow = StudyResource | StudyResourceSearchHit;
 
@@ -64,6 +75,9 @@ export function StudyLibraryPanel() {
   const [title, setTitle] = useState("");
   const [course, setCourse] = useState("");
   const [resourceType, setResourceType] = useState("notes");
+  const [sourcePath, setSourcePath] = useState("");
+  const [relinkPath, setRelinkPath] = useState("");
+  const [notice, setNotice] = useState("");
 
   const attachmentsQuery = useQuery({
     queryKey: attachmentsKey,
@@ -86,6 +100,16 @@ export function StudyLibraryPanel() {
       const response = await listStudyResources();
       return response.resources as LibraryRow[];
     },
+  });
+
+  const storageQuery = useQuery({
+    queryKey: storageKey,
+    queryFn: listStudyLibraryStorage,
+  });
+  const sourceQuery = useQuery({
+    queryKey: [...resourcesKey, "source", selectedResourceId],
+    queryFn: () => getStudyResourceStorage(selectedResourceId),
+    enabled: Boolean(selectedResourceId),
   });
 
   const contentQuery = useQuery({
@@ -120,18 +144,28 @@ export function StudyLibraryPanel() {
   const refreshResources = () =>
     qc.invalidateQueries({ queryKey: resourcesKey });
 
-  const upload = useMutation({
-    mutationFn: (file: File) => uploadAttachment(file, "study"),
-    onSuccess: ({ attachment }) => {
-      setSelectedAttachmentId(attachment.id);
-      setTitle(attachment.original_filename);
-      qc.invalidateQueries({ queryKey: attachmentsKey });
+  const reference = useMutation({
+    mutationFn: ({ path, existingId }: { path: string; existingId?: string }) =>
+      referenceLocalStudyFile(path, existingId),
+    onSuccess: ({ resource, reused }, { existingId }) => {
+      setSelectedResourceId(resource.id);
+      setSourcePath("");
+      setRelinkPath("");
+      setNotice(existingId ? "已重新定位原文件" : reused ? "已复用资料库中的相同文档" : "已引用原文件");
+      refreshResources();
+    },
+  });
+  const clean = useMutation({
+    mutationFn: clearExpiredStudyFiles,
+    onSuccess: ({ freed_bytes }) => {
+      setNotice(`已释放 ${formatBytes(freed_bytes)}`);
+      qc.invalidateQueries({ queryKey: storageKey });
     },
   });
 
   const create = useMutation({
     mutationFn: async () => {
-      if (!selectedAttachmentId) throw new Error("请先上传或选择一个支持的学习资料");
+      if (!selectedAttachmentId) throw new Error("请选择已有的学习附件");
       const normalizedTitle =
         title.trim() || selectedAttachment?.original_filename || "";
       if (!normalizedTitle) throw new Error("请输入资料名称");
@@ -162,7 +196,7 @@ export function StudyLibraryPanel() {
   const error =
     attachmentsQuery.error ||
     resourcesQuery.error ||
-    upload.error ||
+    reference.error || clean.error || storageQuery.error || sourceQuery.error ||
     create.error ||
     remove.error;
 
@@ -178,20 +212,20 @@ export function StudyLibraryPanel() {
             支持文本层 PDF、DOCX、PPTX、XLSX；扫描 PDF 与图片内容暂不做 OCR / 视觉理解。
           </p>
 
-          <label className="mt-4 block cursor-pointer rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] px-3 py-4 text-center text-sm hover:bg-[var(--surface)]">
-            {upload.isPending ? "上传中…" : "＋ 上传学习资料"}
-            <input
-              type="file"
-              className="hidden"
-              accept=".txt,.md,.markdown,.json,.csv,.tsv,.xml,.pdf,.docx,.pptx,.xlsx,text/*,application/json,application/xml,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              disabled={upload.isPending}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) upload.mutate(file);
-                event.currentTarget.value = "";
-              }}
-            />
-          </label>
+          <form className="mt-3 space-y-2" onSubmit={(event) => {
+            event.preventDefault();
+            if (sourcePath.trim()) reference.mutate({ path: sourcePath });
+          }}>
+            <label className="block text-xs" htmlFor="study-source-path">原文件路径</label>
+            <input id="study-source-path" value={sourcePath} onChange={(event) => setSourcePath(event.target.value)}
+              placeholder="粘贴完整 Windows 文件路径"
+              className="w-full rounded border border-[var(--border)] px-2 py-2 text-sm" />
+            <button type="submit" disabled={!sourcePath.trim() || reference.isPending}
+              className="rounded border border-[var(--border)] px-3 py-2 text-sm disabled:opacity-45">
+              {reference.isPending ? "正在提取…" : "引用本机文件"}
+            </button>
+            <p className="text-xs text-[var(--foreground-muted)]">原文件保留在原位置，资料库只保存引用和索引。</p>
+          </form>
 
           <div className="mt-4">
             <label className="text-xs text-[var(--foreground-muted)]">
@@ -251,6 +285,19 @@ export function StudyLibraryPanel() {
               {messageOf(error)}
             </p>
           ) : null}
+        </section>
+        <section className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-4">
+          <h3 className="text-sm font-medium">存储管理</h3>
+          <p className="mt-2 text-xs text-[var(--foreground-muted)]">打开这里会自动清理超过 24 小时的临时文件。</p>
+          {(storageQuery.data?.libraries ?? []).map((library) => (
+            <div key={library.library_id} className="mt-2 text-xs">
+              <p>{library.name} · {library.online ? `临时文件 ${formatBytes(library.temp_bytes)}` : "磁盘离线"}</p>
+              <button type="button" className="mt-1 underline disabled:opacity-45"
+                disabled={!library.online || clean.isPending}
+                onClick={() => clean.mutate(library.library_id)}>清理过期临时文件</button>
+            </div>
+          ))}
+          {notice ? <p className="mt-2 text-xs" role="status">{notice}</p> : null}
         </section>
       </aside>
 
@@ -321,11 +368,13 @@ export function StudyLibraryPanel() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => remove.mutate(id)}
+                      onClick={() => {
+                        if (window.confirm("移除此资料及索引？原文件和已有附件会保留。")) remove.mutate(id);
+                      }}
                       disabled={remove.isPending}
                       className="mt-3 text-xs text-[var(--foreground-muted)] hover:text-red-500 disabled:opacity-45"
                     >
-                      从学习资料库删除
+                      移除资料和索引
                     </button>
                   </article>
                 );
@@ -334,13 +383,39 @@ export function StudyLibraryPanel() {
               <div className="rounded-[var(--radius-lg)] border border-dashed border-[var(--border-strong)] px-5 py-12 text-center">
                 <p className="text-sm font-medium">还没有匹配的学习资料</p>
                 <p className="mt-1 text-xs text-[var(--foreground-muted)]">
-                  左侧上传文本资料，或调整搜索条件。
+                  左侧引用本机资料，或调整搜索条件。
                 </p>
               </div>
             )}
           </section>
 
           <section className="min-w-0 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-4 sm:p-5">
+            {sourceQuery.data?.storage ? (
+              <div className="mb-4 space-y-2 border-b border-[var(--border)] pb-3 text-xs">
+                <p>{sourceStatusLabels[sourceQuery.data.storage.source_status]}</p>
+                {sourceQuery.data.storage.has_managed_attachment ? (
+                  <p className="text-[var(--foreground-muted)]">此资料关联已有附件。移除资料后，该附件仍可供其他功能使用。</p>
+                ) : null}
+                {sourceQuery.data.storage.source_path ? (
+                  <p className="break-all">{sourceQuery.data.storage.source_path}</p>
+                ) : null}
+                <p>索引正文 {formatBytes(sourceQuery.data.storage.indexed_text_bytes)}
+                  {sourceQuery.data.storage.original_bytes !== null
+                    ? ` · 原文件 ${formatBytes(sourceQuery.data.storage.original_bytes)}` : ""}
+                </p>
+                {sourceQuery.data.storage.source_path && sourceQuery.data.storage.source_status !== "online" ? (
+                  <form className="flex gap-2" onSubmit={(event) => {
+                    event.preventDefault();
+                    if (relinkPath.trim()) reference.mutate({ path: relinkPath, existingId: selectedResourceId });
+                  }}>
+                    <input aria-label="新原文件路径" placeholder="粘贴同一文件的新路径" value={relinkPath}
+                      className="min-w-0 flex-1 rounded border border-[var(--border)] px-2 py-1"
+                      onChange={(event) => setRelinkPath(event.target.value)} />
+                    <button type="submit" disabled={!relinkPath.trim() || reference.isPending}>重新定位</button>
+                  </form>
+                ) : null}
+              </div>
+            ) : null}
             {!selectedResourceId ? (
               <div className="py-12 text-center">
                 <p className="text-sm font-medium">选择一份资料查看索引正文</p>

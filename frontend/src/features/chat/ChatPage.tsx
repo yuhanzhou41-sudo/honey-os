@@ -19,6 +19,8 @@ import {
   type ChatRunStatus,
 } from "../../api/chat";
 import { fetchModelOptions, type ModelOptions } from "../../api/models";
+import { referenceChatStudyDocument, studyDocumentMarker } from "../../api/chat-study-library";
+import type { StudyResource } from "../../api/study";
 import { deleteCompanionConversation, fetchCompanionMessages, rollbackCompanionTimeline, startNewCompanionConversation, switchCompanionConversation, type ChatMessage, type HistoryItem } from "../../api/companion";
 import { HoneyAvatar } from "../../components/honey/HoneyAvatar";
 import { HoneyMessage } from "../../components/honey/HoneyMessage";
@@ -129,6 +131,38 @@ export function ChatPage() {
   } = useHoneyStore();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [studyDocuments, setStudyDocuments] = useState<StudyResource[]>([]);
+  const [documentOpen, setDocumentOpen] = useState(false);
+  const [documentPath, setDocumentPath] = useState("");
+  const [documentNotice, setDocumentNotice] = useState("");
+
+  useEffect(() => {
+    setStudyDocuments([]);
+    setDocumentPath("");
+    setDocumentNotice("");
+    setDocumentOpen(false);
+  }, [sessionId]);
+
+  const documentReference = useMutation({
+    mutationFn: ({ path }: { path: string; session: string }) => referenceChatStudyDocument(path),
+    onSuccess: ({ resource, reused }, { session }) => {
+      if (useHoneyStore.getState().sessionId !== session) return;
+      setStudyDocuments((current) =>
+        current.some(({ id }) => id === resource.id) ? current : [...current, resource],
+      );
+      setDocumentPath("");
+      setDocumentNotice(reused ? "已引用资料库中的相同文档" : "已在资料库引用原文件");
+    },
+    onError: (error: Error, { session }) => {
+      if (useHoneyStore.getState().sessionId === session) setDocumentNotice(error.message);
+    },
+  });
+
+  function referenceDocument() {
+    if (!documentPath.trim() || !sessionId || studyDocuments.length >= 4 || documentReference.isPending) return;
+    setDocumentNotice("");
+    documentReference.mutate({ path: documentPath, session: sessionId });
+  }
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [submittedMessages, setSubmittedMessages] = useState<QueuedMessage[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
@@ -487,8 +521,11 @@ export function ChatPage() {
 
   function send(event: FormEvent) {
     event.preventDefault();
-    if (sending || chatModelBusy) return;
-    const text = draft.trim();
+    if (sending || chatModelBusy || documentReference.isPending) return;
+    const text = [
+      draft.trim(),
+      ...studyDocuments.map((resource) => studyDocumentMarker(resource.id, resource.title)),
+    ].filter(Boolean).join("\n\n");
     if (!text && !attachments.length) return;
     const message = [text, ...attachments.map((item) => `![${item.name}](${item.dataUrl})`)].filter(Boolean).join("\n\n");
     const input: ChatInput = attachments.length ? [
@@ -498,6 +535,9 @@ export function ChatPage() {
     setDraft("");
     if (sessionId) localStorage.removeItem(draftKey(sessionId));
     setAttachments([]);
+    setStudyDocuments([]);
+    setDocumentNotice("");
+    setDocumentOpen(false);
     setAttachmentError("");
     setStoppedReply(false);
     queueUserMessage(message);
@@ -1059,6 +1099,35 @@ export function ChatPage() {
             onStatusChange={setStickerStatus}
           />
         ) : null}
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+          <Button type="button" variant="ghost" aria-expanded={documentOpen} disabled={replyBusy} onClick={() => setDocumentOpen((value) => !value)}>
+            引用本机文档
+          </Button>
+          {studyDocuments.map((resource) => (
+            <div key={resource.id} className="flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] px-2 py-1">
+              <span className="max-w-52 truncate" title={resource.title}>{resource.title}</span>
+              <button type="button" aria-label={`移除引用 ${resource.title}`} onClick={() => setStudyDocuments((current) => current.filter(({ id }) => id !== resource.id))}>
+                <XIcon size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        {documentOpen ? (
+          <div className="mb-2 space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-2">
+            <p className="text-xs text-[var(--foreground-muted)]">使用原文件，资料库只保存引用和索引。发送后，所选聊天模型会收到引用的正文片段。</p>
+            <div className="flex gap-2">
+              <input aria-label="聊天文档路径" placeholder="粘贴原文件的完整 Windows 路径" value={documentPath}
+                className="min-w-0 flex-1 rounded border border-[var(--border)] px-2 text-sm"
+                onChange={(event) => setDocumentPath(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); referenceDocument(); } }} />
+              <Button type="button" variant="secondary" onClick={referenceDocument}
+                disabled={!documentPath.trim() || !sessionId || studyDocuments.length >= 4 || documentReference.isPending}>
+                {documentReference.isPending ? "正在引用…" : "加入并引用"}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        {documentNotice ? <p className="mb-2 text-xs" role="status">{documentNotice}</p> : null}
         {attachments.length ? (
           <div className="mb-2 flex gap-2 overflow-x-auto" aria-label="待发送图片">
             {attachments.map((item) => (
@@ -1109,7 +1178,7 @@ export function ChatPage() {
             disabled={replyBusy}
             className="max-h-40 min-h-11 flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2.5 text-[15px] leading-6 outline-none placeholder:text-[var(--foreground-faint)] [field-sizing:content]"
           />
-          <Button type="submit" size="icon" aria-label="发送消息" title="发送消息" disabled={replyBusy || chatModelBusy || (!draft.trim() && !attachments.length) || !sessionId || !sessionKey}>
+          <Button type="submit" size="icon" aria-label="发送消息" title="发送消息" disabled={replyBusy || chatModelBusy || documentReference.isPending || (!draft.trim() && !attachments.length && !studyDocuments.length) || !sessionId || !sessionKey}>
             <ArrowUpIcon size={20} weight="bold" />
           </Button>
           {replyBusy ? (

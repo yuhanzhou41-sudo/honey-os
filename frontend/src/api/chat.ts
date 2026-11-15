@@ -1,3 +1,4 @@
+import { studyResourceIds } from "./chat-study-library";
 import type { HoneyEvent, PermissionChoice } from "../runtime/honey-events";
 import { apiPath, fetchWithLocalSessionRecovery } from "./client";
 
@@ -87,6 +88,7 @@ export async function streamChat(options: {
   signal?: AbortSignal;
   onEvent: (event: HoneyEvent) => void;
 }): Promise<void> {
+  const resourceIds = studyResourceIds(options.message);
   const response = await fetchWithLocalSessionRecovery(
     apiPath(`/api/sessions/${encodeURIComponent(options.sessionId)}/chat/stream`),
     {
@@ -100,6 +102,7 @@ export async function streamChat(options: {
       },
       body: JSON.stringify({
         message: options.message,
+        ...(resourceIds.length ? { study_resource_ids: resourceIds } : {}),
         ...(options.reuseUserMessageId ? { reuse_user_message_id: options.reuseUserMessageId } : {}),
         ...(options.instructions ? { system_message: options.instructions } : {}),
       }),
