@@ -345,7 +345,8 @@ export function ChatPage() {
     else localStorage.removeItem(queueKey(sessionId));
   }, [queuedMessages, sessionId]);
 
-  function finishWithStatus(status: ChatRunStatus): boolean {
+  async function finishWithStatus(status: ChatRunStatus): Promise<boolean> {
+    if (useHoneyStore.getState().sessionId !== sessionId) return true;
     if (status.content) {
       applyRunEvent({
         name: "assistant.completed",
@@ -353,7 +354,24 @@ export function ChatPage() {
       });
     }
     if (status.state === "completed") {
-      finishTurn();
+      const beforeSync = useHoneyStore.getState().run;
+      let saved: ChatMessage[] = [];
+      if (sessionId && sessionKey) {
+        try {
+          const timeline = await fetchCompanionMessages(sessionId, sessionKey, AbortSignal.timeout(2500));
+          saved = timeline.data;
+        } catch {
+          // Keep the reply in the UI when the saved timeline cannot be fetched.
+        }
+      }
+      const current = useHoneyStore.getState();
+      if (current.sessionId !== sessionId || current.run !== beforeSync) return true;
+      if (status.content && saved.at(-1)?.role === "assistant"
+          && saved.at(-1)?.content.trim() === status.content.trim()) {
+        replaceTimelineMessages(saved);
+      } else {
+        finishTurn();
+      }
       setQueuedMessages([]);
       setSubmittedMessages([]);
       setRecoverRunId(null);
@@ -446,7 +464,7 @@ export function ChatPage() {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       try {
         const status = await fetchChatRunStatus({ sessionId, sessionKey, runId });
-        if (finishWithStatus(status)) return;
+        if (await finishWithStatus(status)) return;
       } catch {
         break;
       }
@@ -491,7 +509,7 @@ export function ChatPage() {
           applyRunEvent(event);
         },
       });
-      if (terminalStatus && finishWithStatus(terminalStatus)) return;
+      if (terminalStatus && await finishWithStatus(terminalStatus)) return;
       finishTurn();
       setQueuedMessages([]);
       setSubmittedMessages([]);
@@ -555,7 +573,7 @@ export function ChatPage() {
       }
       try {
         const status = await stopChat({ sessionId, sessionKey, runId: run.runId });
-        if (status.state === "cancel_failed") finishWithStatus(status);
+        if (status.state === "cancel_failed") await finishWithStatus(status);
       } catch {
         failTurn("停止请求失败；不会自动重新发送你的消息");
       }
@@ -676,7 +694,7 @@ export function ChatPage() {
           applyRunEvent(event);
         },
       });
-      if (terminalStatus && finishWithStatus(terminalStatus)) return;
+      if (terminalStatus && await finishWithStatus(terminalStatus)) return;
       finishTurn();
       setQueuedMessages([]);
       setSubmittedMessages([]);

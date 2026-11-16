@@ -1066,7 +1066,8 @@ async def test_companion_bootstrap_returns_only_safe_shared_chat_messages(
 
 
 @pytest.mark.asyncio
-async def test_session_messages_companion_view_hides_internal_runtime_rows():
+@pytest.mark.parametrize("has_session_key", [False, True])
+async def test_session_messages_companion_view_hides_internal_runtime_rows(has_session_key):
     adapter = _api_adapter()
     adapter._get_existing_session_or_404 = AsyncMock(
         return_value=({"id": "shared-session"}, None)
@@ -1074,8 +1075,8 @@ async def test_session_messages_companion_view_hides_internal_runtime_rows():
     db = MagicMock()
     db.resolve_resume_session_id.return_value = "shared-session"
     db.get_messages.return_value = [
-        {"role": "user", "content": "在吗"},
-        {"role": "assistant", "content": "在呢。"},
+        {"id": 1, "role": "user", "content": "在吗"},
+        {"id": 2, "role": "assistant", "content": "在呢。"},
         {
             "role": "assistant",
             "content": "[This response was interrupted by a user correction.]",
@@ -1107,17 +1108,26 @@ async def test_session_messages_companion_view_hides_internal_runtime_rows():
     request = SimpleNamespace(
         cookies={"honeyos_local": adapter._local_web_token},
         remote="127.0.0.1",
-        headers={},
+        headers={"X-HoneyOS-Session-Key": "agent:main:api_server:dm:local-owner"}
+        if has_session_key else {},
         match_info={"session_id": "shared-session"},
         query={"view": "companion"},
     )
 
-    response = await adapter._handle_session_messages(request)
+    with patch(
+        "honeyos.companion.distillation.MemoryDistiller.timeline_edit_state",
+        return_value={"cursor": 1},
+    ):
+        response = await adapter._handle_session_messages(request)
 
-    assert json.loads(response.text)["data"] == [
-        {"role": "user", "content": "在吗"},
-        {"role": "assistant", "content": "在呢。"},
+    expected = [
+        {"id": 1, "role": "user", "content": "在吗"},
+        {"id": 2, "role": "assistant", "content": "在呢。"},
     ]
+    if has_session_key:
+        expected[0]["timeline_editable"] = False
+        expected[1]["timeline_editable"] = True
+    assert json.loads(response.text)["data"] == expected
 
 
 @pytest.mark.asyncio

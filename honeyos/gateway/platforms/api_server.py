@@ -6377,16 +6377,26 @@ class APIServerAdapter(BasePlatformAdapter):
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
         messages = await asyncio.to_thread(db.get_messages, resolved_id)
         query = getattr(request, "query", {})
+        data = None
         if query.get("view") == "companion":
-            messages = [
-                message
-                for message in messages
-                if self._is_companion_visible_message(message)
-            ]
+            messages = [message for message in messages if self._is_companion_visible_message(message)]
+            session_key, key_err = self._parse_session_key_header(request)
+            if key_err is not None:
+                return key_err
+            if session_key:
+                from honeyos.companion.distillation import MemoryDistiller
+                from honeyos.core.constants import get_honeyos_home
+
+                edit_state = await asyncio.to_thread(
+                    MemoryDistiller(get_honeyos_home()).timeline_edit_state,
+                    lane_key=session_key,
+                    session_id=resolved_id,
+                )
+                data = [self._companion_message_payload(m, cursor=edit_state["cursor"]) for m in messages]
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": data if data is not None else [self._message_response(m) for m in messages],
         })
 
     async def _handle_session_message_events(
