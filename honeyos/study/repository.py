@@ -105,10 +105,16 @@ class StudyRepository:
                 """
             )
 
-    def save_plan(self, plan: StudyPlan) -> StudyPlan:
+    def save_plan(self, plan: StudyPlan, *, expected_updated_at=None, new=False) -> StudyPlan:
         plan = validate_study_plan(plan)
 
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT updated_at FROM study_plans WHERE id=?", (plan.id,)).fetchone()
+            if new and row:
+                return self.get_plan(plan.id)
+            if expected_updated_at is not None and (row is None or row["updated_at"] != expected_updated_at):
+                raise ValueError("计划已变化，请重新预览再确认。")
             conn.execute(
                 """
                 INSERT INTO study_plans (
@@ -154,14 +160,15 @@ class StudyRepository:
                 ),
             )
 
-            # Tasks are a child collection of the canonical plan. Replacing
-            # them prevents deleted tasks from surviving an update.
-            conn.execute(
-                "DELETE FROM study_tasks WHERE plan_id = ?",
-                (plan.id,),
-            )
+            retained = {task.id for task in plan.tasks}
+            old_ids = conn.execute("SELECT id FROM study_tasks WHERE plan_id=?", (plan.id,)).fetchall()
+            conn.executemany("DELETE FROM study_tasks WHERE plan_id=? AND id=?",
+                             ((plan.id, row["id"]) for row in old_ids if row["id"] not in retained))
 
             for task in plan.tasks:
+                owner = conn.execute("SELECT plan_id FROM study_tasks WHERE id=?", (task.id,)).fetchone()
+                if owner is not None and owner["plan_id"] != plan.id:
+                    raise ValueError("任务编号已属于另一个计划。")
                 conn.execute(
                     """
                     INSERT INTO study_tasks (
@@ -171,6 +178,11 @@ class StudyRepository:
                         created_at, updated_at
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET title=excluded.title, description=excluded.description,
+                        scheduled_date=excluded.scheduled_date, planned_minutes=excluded.planned_minutes,
+                        status=excluded.status, order_index=excluded.order_index,
+                        review_required=excluded.review_required, updated_at=excluded.updated_at
+                    WHERE study_tasks.plan_id=excluded.plan_id
                     """,
                     (
                         task.id,
@@ -188,6 +200,9 @@ class StudyRepository:
                 )
 
         return self.get_plan(plan.id)
+
+    def save_new_plan(self, plan: StudyPlan) -> StudyPlan:
+        return self.save_plan(plan, new=True)
 
     def get_plan(self, plan_id: str) -> StudyPlan:
         with self._connect() as conn:

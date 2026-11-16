@@ -1,3 +1,5 @@
+import { fetchCompanionBootstrap } from "../../api/companion";
+import { listStudyReminders, planExportUrl, planTemplateUrl, setStudyReminder } from "../../api/study-planning";
 import StudyReviewPanel, { StudyQuestionDialog } from "./StudyReviewPanel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
@@ -283,7 +285,7 @@ export function StudyPage() {
 
   const deletePlanMutation = useMutation({
     mutationFn: (id: string) => deleteStudyPlan(id),
-    onSuccess: refreshPlans,
+    onSuccess: () => { setSelectedPlanId(""); refreshPlans(); },
   });
 
   const setPlanStatus = useMutation({
@@ -385,7 +387,14 @@ export function StudyPage() {
               <SecondaryButton onClick={() => createPlan.mutate()}>
                 ＋ 新建
               </SecondaryButton>
+              {selectedPlan && <SecondaryButton danger disabled={deletePlanMutation.isPending} onClick={() => {
+                if (window.confirm("删除整个计划「" + selectedPlan.title + "」以及其中的任务和提醒？")) {
+                  deletePlanMutation.mutate(selectedPlan.id);
+                }
+              }}>删除整个计划</SecondaryButton>}
             </div>
+            {selectedPlan && <a className="mt-2 block text-sm underline" download href={planExportUrl(selectedPlan.id)}>下载当前计划 Markdown</a>}
+            {deletePlanMutation.error && <p role="alert" className="mt-2 text-sm text-red-600">{messageOf(deletePlanMutation.error)}</p>}
             {createPlan.error ? (
               <p className="mt-2 text-xs text-red-500">
                 {messageOf(createPlan.error)}
@@ -396,6 +405,7 @@ export function StudyPage() {
           <div>
             <p className="text-xs text-[var(--foreground-muted)]">
               导入 StudyPlan Markdown
+              {" · "}<a className="underline" href={planTemplateUrl()} download>下载计划模板</a>
             </p>
             <label className="mt-1 flex cursor-pointer items-center justify-between gap-3 rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-3 py-3 text-sm">
               <span className="truncate">
@@ -475,7 +485,12 @@ export function StudyPage() {
             onPlanStatus={(status) =>
               setPlanStatus.mutate({ id: selectedPlan.id, status })
             }
-            onDeletePlan={() => deletePlanMutation.mutate(selectedPlan.id)}
+            onDeletePlan={() => {
+              if (!deletePlanMutation.isPending &&
+                  window.confirm("删除整个计划「" + selectedPlan.title + "」以及其中的任务和提醒？")) {
+                deletePlanMutation.mutate(selectedPlan.id);
+              }
+            }}
             onTaskStatus={(taskId, status) =>
               setTaskStatus.mutate({
                 planId: selectedPlan.id,
@@ -673,7 +688,7 @@ function PlanWorkspace({
               </SecondaryButton>
             )}
             <SecondaryButton danger onClick={onDeletePlan}>
-              删除
+              删除整个计划
             </SecondaryButton>
           </div>
         </div>
@@ -916,6 +931,7 @@ function PlanWorkspace({
             <DayTaskCard
               key={task.id}
               task={task}
+              planId={plan.id}
               editing={taskEditingId === task.id}
               draft={taskEditingId === task.id ? taskDraft : null}
               onEdit={() => onStartTaskEdit(task)}
@@ -947,6 +963,7 @@ function PlanWorkspace({
 
 function DayTaskCard({
   task,
+  planId,
   editing,
   draft,
   onEdit,
@@ -960,6 +977,7 @@ function DayTaskCard({
   onFocus,
 }: {
   task: StudyTask;
+  planId: string;
   editing: boolean;
   draft: TaskDraft | null;
   onEdit: () => void;
@@ -1129,6 +1147,7 @@ function DayTaskCard({
           ) : null}
         </div>
       </div>
+      <TaskReminderControl planId={planId} task={task} />
     </article>
   );
 }
@@ -1741,16 +1760,19 @@ function SecondaryButton({
   children,
   onClick,
   danger = false,
+  disabled = false,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   danger?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-[var(--radius-md)] border px-3 py-2 text-sm ${
+      disabled={disabled}
+      className={`rounded-[var(--radius-md)] border px-3 py-2 text-sm disabled:opacity-50 ${
         danger
           ? "border-red-400/50 text-red-500"
           : "border-[var(--border-strong)]"
@@ -1873,4 +1895,39 @@ function Frame({ children }: { children: React.ReactNode }) {
       {children}
     </section>
   );
+}
+
+
+function TaskReminderControl({ planId, task }: { planId: string; task: StudyTask }) {
+  const cache = useQueryClient();
+  const queryKey = ["study-reminders", planId];
+  const saved = useQuery({
+    queryKey,
+    queryFn: () => listStudyReminders(planId),
+  });
+  const value = saved.data?.reminders[task.id] || "";
+  const [draft, setDraft] = useState<string>();
+  const mutation = useMutation({
+    mutationFn: async (time: string | null) => {
+      const sessionId = time ? (await fetchCompanionBootstrap()).session_id : undefined;
+      return setStudyReminder(planId, task.id, time, sessionId);
+    },
+    onSuccess: ({ time }) => {
+      cache.setQueryData<{ reminders: Record<string, string> }>(queryKey, previous => ({
+        reminders: { ...previous?.reminders, [task.id]: time || "" },
+      }));
+      setDraft(undefined);
+    },
+  });
+  return <details className="mt-2 text-sm">
+    <summary>{value ? "学习提醒 · " + value : "设置学习提醒"}</summary>
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <label>任务当天 <input type="time" aria-label="学习提醒时刻" value={draft ?? value}
+        disabled={mutation.isPending} onChange={event => setDraft(event.target.value)} /></label>
+      <SecondaryButton disabled={!(draft ?? value) || mutation.isPending}
+        onClick={() => mutation.mutate(draft ?? value)}>保存提醒</SecondaryButton>
+      {value && <SecondaryButton disabled={mutation.isPending} onClick={() => mutation.mutate(null)}>取消提醒</SecondaryButton>}
+    </div>
+    {(mutation.error || saved.error) && <p role="alert">{messageOf(mutation.error || saved.error)}</p>}
+  </details>;
 }

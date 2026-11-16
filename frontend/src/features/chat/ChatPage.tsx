@@ -1,3 +1,4 @@
+import StudyPlanDraft, { splitStudyPlanDraft } from "./StudyPlanDraft";
 import { ArrowClockwiseIcon, ArrowDownIcon, ArrowUpIcon, ClockCounterClockwiseIcon, ImageIcon, PaperPlaneTiltIcon, PlusIcon, StopIcon, TrashIcon, XIcon, SmileyIcon } from "@phosphor-icons/react";
 import { fetchStickerStatus, markStickerUsed, stickerChatMessage, type StickerItem, type StickerStatus } from "../../api/stickers";
 import { useMutation } from "@tanstack/react-query";
@@ -796,7 +797,8 @@ export function ChatPage() {
       ? messages.slice(0, sourceIndex).reverse().find((item) => item.role === "user")?.content || ""
       : "";
     const parts = message.role === "assistant"
-      ? assistantBubblesForDisplay(message.content, previousUserText)
+      ? (splitStudyPlanDraft(message.content).draft
+        ? [message.content] : assistantBubblesForDisplay(message.content, previousUserText))
       : splitUserMessages(message.content);
     return parts.map((content, partIndex) => ({
       ...message,
@@ -935,11 +937,7 @@ export function ChatPage() {
                     );
                   }}
                 >
-                  <HoneyMessage
-                    content={message.content}
-                    role={message.role}
-                    messageId={message.displayKey}
-                  />
+                  <StudyAssistantContent content={message.content} messageId={message.displayKey} />
                   {message.timeline_editable && message.id ? (
                     <div
                       className={[
@@ -1215,4 +1213,13 @@ export function ChatPage() {
       </form>
     </section>
   );
+}
+
+
+function StudyAssistantContent({ content, messageId }: { content: string; messageId: string }) {
+  const { text, draft } = splitStudyPlanDraft(content);
+  return <>
+    {text && <HoneyMessage content={text} role="assistant" messageId={messageId} />}
+    {draft && <StudyPlanDraft key={draft.markdown} draft={draft} />}
+  </>;
 }

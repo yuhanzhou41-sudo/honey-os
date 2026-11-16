@@ -129,9 +129,17 @@ class StudyService:
         raw = plan.model_dump()
         raw.update(patch)
         raw["updated_at"] = self._now()
-        return self.repository.save_plan(validate_study_plan(raw))
+        from .reminders import sync_plan_reminders
+
+        saved = self.repository.save_plan(validate_study_plan(raw))
+        sync_plan_reminders(self, saved, plan)
+        return saved
 
     def delete_plan(self, plan_id: str) -> None:
+        from .reminders import cancel_task_reminders
+
+        plan = self.get_plan(plan_id)
+        cancel_task_reminders(self, [task.id for task in plan.tasks])
         self.repository.delete_plan(plan_id)
 
     def create_task(self, plan_id: str, payload: dict[str, Any]) -> StudyPlan:
@@ -164,9 +172,14 @@ class StudyService:
             raw.update(patch)
             raw["plan_id"] = plan.id
             raw["updated_at"] = self._now()
+            from .reminders import sync_plan_reminders
+
+            before = plan.model_copy(deep=True)
             plan.tasks[index] = StudyTask.model_validate(raw)
             plan.updated_at = self._now()
-            return self.repository.save_plan(validate_study_plan(plan))
+            saved = self.repository.save_plan(validate_study_plan(plan))
+            sync_plan_reminders(self, saved, before)
+            return saved
         raise StudyTaskNotFoundError(task_id)
 
     def set_task_status(self, plan_id: str, task_id: str, status: str) -> StudyPlan:
@@ -177,6 +190,9 @@ class StudyService:
         remaining = [task for task in plan.tasks if task.id != task_id]
         if len(remaining) == len(plan.tasks):
             raise StudyTaskNotFoundError(task_id)
+        from .reminders import cancel_task_reminders
+
+        cancel_task_reminders(self, [task_id])
         plan.tasks = remaining
         plan.updated_at = self._now()
         return self.repository.save_plan(validate_study_plan(plan))

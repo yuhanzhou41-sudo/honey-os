@@ -2582,6 +2582,7 @@ class APIServerAdapter(BasePlatformAdapter):
         mirrors without starting a real aiohttp listener.
         """
         from honeyos.study.review_http import review_routes
+        from honeyos.study.planning_http import planning_routes
 
         routes: List[tuple] = [
             ("GET", "/", self._handle_companion_react),
@@ -2852,7 +2853,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated
             # by a NAS-minted JWT (NOT API_SERVER_KEY).
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
-        return routes + review_routes(self)
+        return planning_routes(self) + routes + review_routes(self)
 
     # ------------------------------------------------------------------
     # HoneyOS local companion web channel
@@ -5301,6 +5302,8 @@ class APIServerAdapter(BasePlatformAdapter):
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
         shadow_user_message: Any = None,
+        study_planning: bool = False,
+        study_revision: bool = False,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -5576,6 +5579,17 @@ class APIServerAdapter(BasePlatformAdapter):
             shadow_user_message, configured_toolsets, user_config,
         ))
 
+        if study_planning:
+            from honeyos.study.planning import planning_instructions
+
+            guidance = planning_instructions(revision=study_revision)
+            ephemeral_system_prompt = "\n\n".join(
+                part for part in (ephemeral_system_prompt, guidance) if part
+            )
+            study_tools = {"web", "skills"} & set(configured_toolsets)
+            ordinary_memory_tools = {"memory", "companion_memory", "session_search"}
+            enabled_toolsets = sorted((set(enabled_toolsets) - ordinary_memory_tools) | study_tools)
+
         max_iterations = _current_max_iterations()
 
         # Load fallback provider chain so the API server platform has the
@@ -5595,6 +5609,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "verbose_logging": False,
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
             "enabled_toolsets": enabled_toolsets,
+            "skip_memory": study_planning,
             "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
@@ -6729,13 +6744,16 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
         review_runtime = dict(runtime)
         review_session_id = effective_session_id or session_id
-        loop.call_soon(
-            lambda review_runtime=review_runtime, review_session_id=review_session_id: self._schedule_companion_memory_distillation(
-                gateway_session_key=gateway_session_key,
-                session_id=review_session_id,
-                main_runtime=review_runtime,
+        from honeyos.study.planning import planning_intent
+
+        if not planning_intent(user_message, history):
+            loop.call_soon(
+                lambda review_runtime=review_runtime, review_session_id=review_session_id: self._schedule_companion_memory_distillation(
+                    gateway_session_key=gateway_session_key,
+                    session_id=review_session_id,
+                    main_runtime=review_runtime,
+                )
             )
-        )
         runtime = self._sanitize_runtime_metadata(
             runtime=runtime,
             requested_runtime=runtime_request.get("requested"),
@@ -7074,7 +7092,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     terminal_state = "stopped_partial" if final_response.strip() else "stopped_empty"
                 else:
                     terminal_state = "completed" if final_response.strip() else "empty_response"
-                if terminal_state == "completed":
+                from honeyos.study.planning import planning_intent
+
+                if terminal_state == "completed" and not planning_intent(user_message, history):
                     memory_review = {
                         "gateway_session_key": gateway_session_key,
                         "session_id": effective_session_id,
@@ -9565,6 +9585,9 @@ class APIServerAdapter(BasePlatformAdapter):
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
         """
+        from honeyos.study.planning import planning_intent, planning_revision
+
+        study_planning = planning_intent(user_message, conversation_history)
         loop = asyncio.get_running_loop()
         # Capture before hopping to the executor — ContextVars do not follow
         # run_in_executor threads, so the profile scope must be re-entered
@@ -9608,6 +9631,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_model=session_model,
                         confirmed_runtime_lock=confirmed_runtime_lock,
                         shadow_user_message=user_message,
+                        study_planning=study_planning,
+                        study_revision=study_planning and planning_revision(user_message, conversation_history),
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent

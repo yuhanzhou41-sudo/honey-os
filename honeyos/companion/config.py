@@ -98,6 +98,7 @@ _COMPANION_SKILLS = (
     ("ocr-and-documents", "honeyos", None),
     ("grounded-citations", "honeyos", None),
     ("topic-scout", "honeyos", None),
+    ("study-planning", "honeyos", None),
     ("computer-use", "honeyos", "cua-driver"),
     ("apple-reminders", "honeyos", "remindctl"),
     ("apple-notes", "honeyos", "memo"),
