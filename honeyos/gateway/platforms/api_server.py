@@ -2581,6 +2581,8 @@ class APIServerAdapter(BasePlatformAdapter):
         Kept as a method so multiplex tests can assert the /p/<profile>/
         mirrors without starting a real aiohttp listener.
         """
+        from honeyos.study.review_http import review_routes
+
         routes: List[tuple] = [
             ("GET", "/", self._handle_companion_react),
             ("GET", "/memories", self._handle_companion_react),
@@ -2850,7 +2852,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated
             # by a NAS-minted JWT (NOT API_SERVER_KEY).
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
-        return routes
+        return routes + review_routes(self)
 
     # ------------------------------------------------------------------
     # HoneyOS local companion web channel

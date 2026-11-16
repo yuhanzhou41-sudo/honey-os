@@ -1,3 +1,4 @@
+import StudyReviewPanel, { StudyQuestionPanel } from "./StudyReviewPanel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
@@ -1212,39 +1213,11 @@ function UtilityDrawer({
         {kind === "library" ? (
           <StudyLibraryPanel />
         ) : kind === "review" ? (
-          <ReservedTool
-            icon="🧠"
-            title="复习中心"
-            text="这里已经为闪卡、10 题练习和错题本留好位置。下一阶段接入 Study Review Core。"
-          />
+          <StudyReviewPanel />
         ) : (
-          <ReservedTool
-            icon="❓"
-            title="HoneyOS 答疑"
-            text="后续会自动带入当前计划、当前任务和 Study Library 检索结果；现在先保留干净入口。"
-          />
+          <StudyQuestionPanel />
         )}
       </aside>
-    </div>
-  );
-}
-
-function ReservedTool({
-  icon,
-  title,
-  text,
-}: {
-  icon: string;
-  title: string;
-  text: string;
-}) {
-  return (
-    <div className="rounded-[var(--radius-lg)] border border-dashed border-[var(--border-strong)] px-6 py-14 text-center">
-      <div className="text-4xl">{icon}</div>
-      <h3 className="mt-4 font-semibold">{title}</h3>
-      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--foreground-muted)]">
-        {text}
-      </p>
     </div>
   );
 }

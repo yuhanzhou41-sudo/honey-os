@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+from contextlib import closing
+from datetime import datetime, timezone
+import json
+from uuid import uuid4
+
+from .service import StudyService
+
+
+def text(value, label: str, limit: int) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > limit:
+        raise ValueError(f"{label}须填写，最多 {limit} 字。")
+    return value.strip()
+
+
+class StudyReview:
+    """Practice and cards share the existing profile-local Study database."""
+
+    def __init__(self, study: StudyService):
+        self.study = study
+        with closing(self._connect()) as db, db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS study_review_questions (
+                    id TEXT PRIMARY KEY, prompt TEXT NOT NULL, options TEXT NOT NULL,
+                    correct INTEGER NOT NULL, explanation TEXT NOT NULL,
+                    resource_id TEXT NOT NULL, source_title TEXT NOT NULL, excerpt TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS study_review_attempts (
+                    id TEXT PRIMARY KEY, question_id TEXT NOT NULL REFERENCES study_review_questions(id),
+                    choice INTEGER NOT NULL, correct INTEGER NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS study_review_attempt_question
+                    ON study_review_attempts(question_id);
+                CREATE TABLE IF NOT EXISTS study_review_cards (
+                    id TEXT PRIMARY KEY, question_id TEXT REFERENCES study_review_questions(id),
+                    resource_id TEXT NOT NULL, source_title TEXT NOT NULL,
+                    front TEXT NOT NULL, back TEXT NOT NULL, excerpt TEXT NOT NULL,
+                    UNIQUE(resource_id, front)
+                );
+            """)
+
+    def _connect(self):
+        return self.study.repository._connect()
+
+    def source(self, resource_id):
+        resource_id = text(resource_id, "资料", 100)
+        resource = self.study.get_resource(resource_id)
+        # Reuse online/source verification; prose and evidence come from the index.
+        self.study.build_chat_resource_context([resource_id])
+        content = self.study.get_resource_content(resource_id)["extracted_text"]
+        return resource, content
+
+    @staticmethod
+    def _question(row, *, answered=False):
+        result = dict(row)
+        result["options"] = json.loads(result["options"])
+        if not answered:
+            result.pop("correct")
+            result.pop("explanation")
+        return result
+
+    def list_questions(self, *, wrong_only=False):
+        with closing(self._connect()) as db:
+            rows = db.execute("""
+                SELECT q.*, (SELECT a.correct FROM study_review_attempts a
+                    WHERE a.question_id=q.id ORDER BY a.rowid DESC LIMIT 1) AS latest_correct
+                FROM study_review_questions q ORDER BY q.rowid DESC
+            """)
+            return [self._question(row) for row in rows
+                    if not wrong_only or row["latest_correct"] == 0]
+
+    def create_question(self, payload):
+        resource, content = self.source(payload.get("resource_id"))
+        prompt = text(payload.get("prompt"), "题干", 5000)
+        options = payload.get("options")
+        if not isinstance(options, list) or not 2 <= len(options) <= 6:
+            raise ValueError("单选题须有 2 到 6 个选项。")
+        options = [text(item, "选项", 1000) for item in options]
+        if len(set(options)) != len(options):
+            raise ValueError("选项须互不相同。")
+        correct = payload.get("correct")
+        if type(correct) is not int or not 0 <= correct < len(options):
+            raise ValueError("请选择正确选项。")
+        excerpt = text(payload.get("excerpt"), "出处原文", 1500)
+        if excerpt not in content:
+            raise ValueError("出处须逐字来自所选资料。")
+        explanation = (payload.get("explanation") or "").strip() if isinstance(payload.get("explanation"), str) else ""
+        if len(explanation) > 3000:
+            raise ValueError("解析最多 3000 字。")
+        question_id = uuid4().hex
+        with closing(self._connect()) as db, db:
+            db.execute("INSERT INTO study_review_questions VALUES (?,?,?,?,?,?,?,?)",
+                       (question_id, prompt, json.dumps(options), correct, explanation,
+                        resource.id, resource.title, excerpt))
+        return question_id
+
+    def _get(self, db, question_id):
+        row = db.execute("SELECT * FROM study_review_questions WHERE id=?", (question_id,)).fetchone()
+        if row is None:
+            raise KeyError(question_id)
+        return row
+
+    def attempt(self, question_id, choice, attempt_id):
+        attempt_id = text(attempt_id, "作答编号", 100)
+        with closing(self._connect()) as db, db:
+            question = self._get(db, question_id)
+            if type(choice) is not int or not 0 <= choice < len(json.loads(question["options"])):
+                raise ValueError("请选择一个选项。")
+            db.execute("INSERT OR IGNORE INTO study_review_attempts VALUES (?,?,?,?,?)",
+                       (attempt_id, question_id, choice, choice == question["correct"],
+                        datetime.now(timezone.utc).isoformat()))
+            row = db.execute("SELECT * FROM study_review_attempts WHERE id=?", (attempt_id,)).fetchone()
+            if row["question_id"] != question_id or row["choice"] != choice:
+                raise ValueError("作答编号已用于其他提交，请刷新后重试。")
+            return {"attempt": dict(row), "question": self._question(question, answered=True)}
+
+    def history(self, question_id):
+        with closing(self._connect()) as db:
+            question = self._get(db, question_id)
+            attempts = [dict(row) for row in db.execute(
+                "SELECT * FROM study_review_attempts WHERE question_id=? ORDER BY rowid DESC",
+                (question_id,),
+            )]
+            return {"attempts": attempts, "question": self._question(question, answered=bool(attempts))}
+
+    def card_context(self, resource_id, question_id):
+        question = None
+        if question_id:
+            with closing(self._connect()) as db:
+                question = self._question(self._get(db, question_id), answered=True)
+                wrong = db.execute("SELECT 1 FROM study_review_attempts WHERE question_id=? AND correct=0",
+                                   (question_id,)).fetchone()
+                if not wrong:
+                    raise ValueError("请从已有错题生成闪卡。")
+            resource_id = question["resource_id"]
+        resource, content = self.source(resource_id)
+        if question and question["excerpt"] not in content:
+            raise ValueError("题目出处已更改，请选择当前资料重新整理。")
+        return resource, content, question
+
+    def validate_cards(self, rows, content):
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 8:
+            raise ValueError("请选择 1 到 8 张闪卡。")
+        result = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("闪卡格式无效。")
+            card = {
+                "front": text(row.get("front"), "卡片正面", 500),
+                "back": text(row.get("back"), "卡片背面", 2000),
+                "excerpt": text(row.get("excerpt"), "出处原文", 800),
+            }
+            if card["excerpt"] not in content:
+                raise ValueError("闪卡出处须逐字来自所选资料。")
+            result.append(card)
+        return result
+
+    def save_cards(self, resource_id, question_id, rows):
+        resource, content, question = self.card_context(resource_id, question_id)
+        cards = self.validate_cards(rows, content)
+        with closing(self._connect()) as db, db:
+            for card in cards:
+                db.execute("""
+                    INSERT INTO study_review_cards VALUES (?,?,?,?,?,?,?)
+                    ON CONFLICT(resource_id, front) DO UPDATE SET
+                      question_id=COALESCE(excluded.question_id, study_review_cards.question_id),
+                      source_title=excluded.source_title, back=excluded.back, excerpt=excluded.excerpt
+                """, (uuid4().hex, question["id"] if question else None, resource.id,
+                      resource.title, card["front"], card["back"], card["excerpt"]))
+
+    def list_cards(self):
+        with closing(self._connect()) as db:
+            return [dict(card) for card in db.execute(
+                "SELECT * FROM study_review_cards ORDER BY rowid DESC"
+            )]
