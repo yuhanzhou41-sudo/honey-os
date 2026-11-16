@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { getStudyResourceContent, listStudyResources, type StudyResource } from "../../api/study";
 import {
   studyReview, type AnsweredQuestion, type Attempt, type CardPreview,
@@ -197,6 +197,12 @@ export default function StudyReviewPanel() {
     </>}
 
     {mode === "cards" && <>
+      <header>
+        <h3 className="font-semibold">知识点闪卡</h3>
+        <p className="text-sm text-[var(--foreground-muted)]">
+          从资料整理知识点，或从答错的题生成卡片。复习时先看正面回忆，再翻开背面核对知识点和出处。
+        </p>
+      </header>
       <section className={panel}>
         <ResourcePicker resources={resources} value={cardResource} onChange={setCardResource} />
         <button className={action} disabled={busy || !cardResource}
@@ -224,10 +230,17 @@ export default function StudyReviewPanel() {
         })}>确认保存闪卡</button>
         <button className={action} disabled={busy} onClick={() => setPreview(undefined)}>取消预览</button>
       </section>}
-      {cards.map(card => <details key={card.id} className={panel}>
-        <summary>{card.front}</summary>
-        <p className="whitespace-pre-wrap">{card.back}</p>
-        <Evidence title={card.source_title} excerpt={card.excerpt} />
+      {cards.map(card => <details key={card.id} className={panel + " bg-[var(--surface-raised)]"}>
+        <summary className="cursor-pointer">
+          <span className="text-xs text-[var(--foreground-muted)]">正面 · {card.question_id ? "来自错题" : "来自资料"}</span>
+          <span className="block whitespace-pre-wrap text-base font-medium">{card.front}</span>
+          <span className="text-xs text-[var(--foreground-muted)]">点击翻看背面</span>
+        </summary>
+        <div className="space-y-2 border-t border-[var(--border)] pt-3">
+          <p className="text-xs text-[var(--foreground-muted)]">背面 · 知识点</p>
+          <p className="whitespace-pre-wrap">{card.back}</p>
+          <Evidence title={card.source_title} excerpt={card.excerpt} />
+        </div>
       </details>)}
       {!cards.length && <p>暂无已保存闪卡。</p>}
     </>}
@@ -244,11 +257,40 @@ async function fileData(file: File): Promise<string> {
   });
 }
 
-export function StudyQuestionPanel() {
+export function StudyQuestionDialog({ onClose }: { onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const node = dialog.current;
+    node?.showModal();
+    return () => node?.close();
+  }, []);
+
+  function dismiss() {
+    dialog.current?.close();
+    onClose();
+  }
+
+  return (
+    <dialog ref={dialog} aria-labelledby="study-qa-title"
+      className="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-xl overflow-y-auto border-l border-[var(--border)] bg-[var(--background)] p-0 text-[var(--foreground)] shadow-xl backdrop:bg-black/30"
+      onCancel={event => { event.preventDefault(); dismiss(); }}
+      onClick={event => { if (event.target === event.currentTarget) dismiss(); }}>
+      <aside className="min-h-full space-y-4 p-5">
+        <header className="flex items-center justify-between gap-4">
+          <h2 id="study-qa-title" className="text-lg font-semibold">Study 答疑</h2>
+          <button type="button" className={action} onClick={dismiss} aria-label="关闭答疑">收起</button>
+        </header>
+        <StudyQuestionPanel />
+      </aside>
+    </dialog>
+  );
+}
+
+function StudyQuestionPanel() {
   const { resources, sourceError } = useResources();
   const [question, setQuestion] = useState("");
   const [resourceId, setResourceId] = useState("");
-  const [result, setResult] = useState<StudyAnswer>();
+  const [result, setResult] = useState<StudyAnswer & { question: string }>();
   const [busy, setBusy] = useState(false);
   const [partial, setPartial] = useState(false);
   const [error, setError] = useState("");
@@ -263,8 +305,9 @@ export function StudyQuestionPanel() {
 
   return <form className="space-y-3" onSubmit={event => {
     event.preventDefault();
-    void work(async () => setResult(await studyReview.answer(question, resourceId)));
+    void work(async () => setResult({ ...await studyReview.answer(question, resourceId), question: question.trim() }));
   }}>
+    <p className="text-sm text-[var(--foreground-muted)]">上传题目文件或直接输入问题，核对题干后发送给 HoneyOS。</p>
     <label className="block">上传题目文件
       <input className={field} type="file" accept=".txt,.md,.markdown,.json,.csv,.tsv,.xml,.pdf,.docx,.pptx,.xlsx,.png,.jpeg,.jpg,.webp"
         disabled={busy} onChange={event => {
@@ -287,9 +330,16 @@ export function StudyQuestionPanel() {
     <button className={action} disabled={busy || !question.trim()}>确认题目并答疑</button>
     {busy && <p role="status">正在处理题目…</p>}
     {(error || sourceError) && <p role="alert">{error || sourceError}</p>}
-    {result && <section aria-label="答疑结果" className={panel}>
-      <p className="whitespace-pre-wrap">{result.answer}</p>
-      {result.citations.map(citation => <Evidence key={citation.excerpt} title={citation.source_title} excerpt={citation.excerpt} />)}
+    {result && <section aria-label="答疑对话" className="space-y-3" aria-live="polite">
+      <article className={panel + " ml-8 bg-[var(--surface-subtle)]"}>
+        <h3 className="text-sm font-medium">你的题目</h3>
+        <p className="whitespace-pre-wrap">{result.question}</p>
+      </article>
+      <article aria-label="答疑结果" className={panel + " mr-8 bg-[var(--surface-raised)]"}>
+        <h3 className="text-sm font-medium">HoneyOS 解答</h3>
+        <p className="whitespace-pre-wrap">{result.answer}</p>
+        {result.citations.map(citation => <Evidence key={citation.excerpt} title={citation.source_title} excerpt={citation.excerpt} />)}
+      </article>
     </section>}
   </form>;
 }

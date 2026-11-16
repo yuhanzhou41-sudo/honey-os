@@ -1,4 +1,4 @@
-import StudyReviewPanel, { StudyQuestionPanel } from "./StudyReviewPanel";
+import StudyReviewPanel, { StudyQuestionDialog } from "./StudyReviewPanel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
@@ -1184,6 +1184,8 @@ function UtilityDrawer({
   kind: Exclude<DrawerKind, null>;
   onClose: () => void;
 }) {
+  if (kind === "qa") return <StudyQuestionDialog onClose={onClose} />;
+
   return (
     <div
       className="fixed inset-0 z-40 flex justify-end bg-black/10"
@@ -1195,11 +1197,7 @@ function UtilityDrawer({
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">
-            {kind === "library"
-              ? "学习资料"
-              : kind === "review"
-                ? "复习"
-                : "问 HoneyOS"}
+            {kind === "library" ? "学习资料" : "复习"}
           </h2>
           <button
             type="button"
@@ -1212,10 +1210,8 @@ function UtilityDrawer({
 
         {kind === "library" ? (
           <StudyLibraryPanel />
-        ) : kind === "review" ? (
-          <StudyReviewPanel />
         ) : (
-          <StudyQuestionPanel />
+          <StudyReviewPanel />
         )}
       </aside>
     </div>
