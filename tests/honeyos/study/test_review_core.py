@@ -50,7 +50,10 @@ def test_flashcard_preview_does_not_save_and_checks_quoted_source(monkeypatch, r
         store.card_context(None, question_id)
     store.attempt(question_id, 1, "wrong")
     card = {"front": "What carries energy?", "back": "ATP", "excerpt": QUOTE}
-    monkeypatch.setattr("honeyos.study.review_http._study_reply", lambda *a, **kw: json.dumps({"cards": [card]}))
+    monkeypatch.setattr("honeyos.study.review_http.generate_flashcard_candidates",
+                        lambda *a: json.dumps({"cards": [card]}))
+    monkeypatch.setattr("honeyos.study.review_http._study_reply",
+                        lambda *a, **kw: pytest.fail("Flashcards must not use the main model"))
     preview = _card_preview(store, {"question_id": question_id})
     assert preview["question_id"] == question_id and not store.list_cards()
     with pytest.raises(ValueError):

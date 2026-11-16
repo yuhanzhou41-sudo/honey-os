@@ -38,36 +38,18 @@ class TurnRouter:
 def build_default_router(
     *, config: dict | None = None, timeout_seconds: float = 12.0,
 ) -> TurnRouter:
-    from urllib.parse import urlsplit
-
     if config is None:
         from pathlib import Path
         import yaml
 
         path = Path.home() / ".honeyos" / "config.yaml"
         config = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+    from .local_qwen import configured_qwen_endpoint
 
-    profiles = config.get("model_profiles") or {}
-    for profile in profiles.values():
-        if not isinstance(profile, dict):
-            continue
-        base_url = str(profile.get("base_url") or "").rstrip("/")
-        model = str(profile.get("model") or "")
-        address = urlsplit(base_url)
-        if (
-            address.scheme == "http"
-            and address.hostname in {"127.0.0.1", "localhost", "::1"}
-            and profile.get("api_mode") == "chat_completions"
-            and "qwen" in model.lower()
-        ):
-            return TurnRouter(local_classifier=LocalQwenRouterClient(
-                url=base_url + "/chat/completions",
-                model=model,
-                timeout_seconds=timeout_seconds,
-                max_tokens=64,
-            ))
+    endpoint = configured_qwen_endpoint(config)
+    options = {"url": endpoint[0], "model": endpoint[1]} if endpoint else {}
     return TurnRouter(local_classifier=LocalQwenRouterClient(
-        timeout_seconds=timeout_seconds, max_tokens=64,
+        **options, timeout_seconds=timeout_seconds, max_tokens=64,
     ))
 
 

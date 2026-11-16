@@ -3,12 +3,32 @@ import json
 import os
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from typing import Any
 from .models import MemoryRoute, RouteDecision
 
 DEFAULT_URL = os.getenv("HONEYOS_LOCAL_ROUTER_URL", "http://127.0.0.1:8080/v1/chat/completions")
 DEFAULT_MODEL = os.getenv("HONEYOS_LOCAL_ROUTER_MODEL", "qwen3-4b-router")
+
+def configured_qwen_endpoint(config: dict) -> tuple[str, str] | None:
+    profiles = config.get("model_profiles") or {}
+    for profile in profiles.values():
+        if not isinstance(profile, dict):
+            continue
+        base_url = str(profile.get("base_url") or "").rstrip("/")
+        model = str(profile.get("model") or "")
+        address = urlsplit(base_url)
+        if (
+            address.scheme == "http"
+            and address.hostname in {"127.0.0.1", "localhost", "::1"}
+            and not (address.username or address.password or address.query or address.fragment)
+            and profile.get("api_mode") == "chat_completions"
+            and "qwen" in model.lower()
+        ):
+            return base_url + "/chat/completions", model
+    return None
+
 
 ROUTER_SYSTEM_PROMPT = """Classify a HoneyOS user turn. Do not answer it. Return JSON only.\nRequired keys: intent, skill_groups, capabilities.\nintent: chat|recall|study|files|coding|research|automation|communication|media|system|other\nskill_groups: subset of study,files,memory,coding,research,communication,automation,media,system\ncapabilities: subset of files,web,calendar,email,contacts,github,automation,local_compute\nUse the fewest groups/capabilities needed. No prose, no markdown."""
 

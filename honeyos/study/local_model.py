@@ -1,0 +1,49 @@
+"""Structured, loopback-only generation for lightweight Study features."""
+
+import json
+from threading import BoundedSemaphore
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+from honeyos.routing.local_qwen import configured_qwen_endpoint
+
+
+class LocalStudyModelUnavailable(ValueError):
+    """The user can retry after starting the local model."""
+
+
+class _NoRedirects(HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_SLOT = BoundedSemaphore(1)
+
+
+def generate_flashcard_candidates(system: str, content: str) -> str:
+    from honeyos.gateway.run import _load_gateway_config
+
+    endpoint = configured_qwen_endpoint(_load_gateway_config())
+    if not endpoint:
+        raise LocalStudyModelUnavailable("请先在模型设置里配置本机 Qwen，再生成闪卡。")
+    if not _SLOT.acquire(blocking=False):
+        raise LocalStudyModelUnavailable("本机 Qwen 正在生成闪卡，请稍后重试。")
+    url, model = endpoint
+    try:
+        # Prevent environment proxies or HTTP redirects from sending Study material off device.
+        opener = build_opener(ProxyHandler({}), _NoRedirects())
+        request = Request(url, headers={"Content-Type": "application/json"}, data=json.dumps({
+            "model": model, "temperature": 0, "max_tokens": 500, "stream": False,
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
+        }, ensure_ascii=False).encode())
+        with opener.open(request, timeout=100) as response:
+            payload = json.loads(response.read(200000))
+        result = payload["choices"][0]["message"]["content"]
+        if not isinstance(result, str) or not result.strip():
+            raise ValueError("empty Qwen output")
+        return result
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError, IndexError, KeyError, TypeError) as exc:
+        raise LocalStudyModelUnavailable("本机 Qwen 暂时无法生成闪卡，请确认 Launcher 中本地模型已就绪后重试。") from exc
+    finally:
+        _SLOT.release()

@@ -210,7 +210,7 @@ export default function StudyReviewPanel() {
       </section>
       {preview && <section className={panel}>
         <h3>闪卡预览 · {preview.source_title}</h3>
-        {preview.partial && <p>这批卡片基于资料前 12,000 字。</p>}
+        {preview.partial && <p>这批卡片基于资料开头的片段（最多 1,800 字）。</p>}
         {preview.cards.map((card, index) => <div className={panel} key={index}>
           <label className="block">正面<textarea className={field} value={card.front} disabled={busy}
             onChange={event => editCard(index, "front", event.target.value)} /></label>
