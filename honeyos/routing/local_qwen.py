@@ -5,7 +5,6 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
-from .catalog import compact_manifest
 from .models import MemoryRoute, RouteDecision
 
 DEFAULT_URL = os.getenv("HONEYOS_LOCAL_ROUTER_URL", "http://127.0.0.1:8080/v1/chat/completions")
@@ -74,7 +73,15 @@ class LocalQwenRouterClient:
         except Exception as exc:
             raise RuntimeError("local router returned unexpected response") from exc
         obj = self._parse_json_object(content)
-        obj = self._enrich_compact_route(obj, text)
+        if (
+            not isinstance(obj.get("intent"), str) or not obj["intent"]
+            or not all(
+                isinstance(obj.get(key), list) and all(isinstance(item, str) for item in obj[key])
+                for key in ("skill_groups", "capabilities")
+            )
+        ):
+            raise RuntimeError("local router returned an invalid classification")
+        obj = self._enrich_compact_route(obj, text[:1500])
         return self._decision_from_object(obj)
 
     @staticmethod

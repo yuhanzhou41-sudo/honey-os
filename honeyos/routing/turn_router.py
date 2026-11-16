@@ -35,31 +35,41 @@ class TurnRouter:
             reasons=("local_router_unavailable_or_invalid",),
         ).validate()
 
-def build_default_router() -> TurnRouter:
-    from pathlib import Path
-    import yaml
+def build_default_router(
+    *, config: dict | None = None, timeout_seconds: float = 12.0,
+) -> TurnRouter:
+    from urllib.parse import urlsplit
 
-    cfg = yaml.safe_load((Path.home() / '.honeyos' / 'config.yaml').read_text(encoding='utf-8')) or {}
-    profiles = cfg.get('model_profiles') or {}
-    selected = None
+    if config is None:
+        from pathlib import Path
+        import yaml
+
+        path = Path.home() / ".honeyos" / "config.yaml"
+        config = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+
+    profiles = config.get("model_profiles") or {}
     for profile in profiles.values():
         if not isinstance(profile, dict):
             continue
-        base_url = str(profile.get('base_url') or '').rstrip('/')
-        api_mode = str(profile.get('api_mode') or '')
-        if '127.0.0.1:8080' in base_url and api_mode == 'chat_completions':
-            selected = profile
-            break
-    if selected is None:
-        return TurnRouter(local_classifier=LocalQwenRouterClient())
-    base_url = str(selected.get('base_url') or '').rstrip('/')
-    model = str(selected.get('model') or '')
+        base_url = str(profile.get("base_url") or "").rstrip("/")
+        model = str(profile.get("model") or "")
+        address = urlsplit(base_url)
+        if (
+            address.scheme == "http"
+            and address.hostname in {"127.0.0.1", "localhost", "::1"}
+            and profile.get("api_mode") == "chat_completions"
+            and "qwen" in model.lower()
+        ):
+            return TurnRouter(local_classifier=LocalQwenRouterClient(
+                url=base_url + "/chat/completions",
+                model=model,
+                timeout_seconds=timeout_seconds,
+                max_tokens=64,
+            ))
     return TurnRouter(local_classifier=LocalQwenRouterClient(
-        url=base_url + '/chat/completions',
-        model=model,
-        timeout_seconds=12.0,
-        max_tokens=64,
+        timeout_seconds=timeout_seconds, max_tokens=64,
     ))
+
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Preview HoneyOS cheap turn routing.")
