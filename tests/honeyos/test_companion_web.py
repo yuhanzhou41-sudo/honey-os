@@ -1458,7 +1458,13 @@ async def test_companion_web_does_not_claim_topic_for_another_recent_channel(
 
 
 @pytest.mark.asyncio
-async def test_companion_session_chat_schedules_background_memory_distillation():
+@pytest.mark.parametrize(
+    ("stored_model", "expected_model"),
+    [("deepseek-v4-flash", "deepseek-v4-flash"), ("honeyos-agent", None)],
+)
+async def test_companion_session_chat_schedules_background_memory_distillation(
+    stored_model, expected_model,
+):
     adapter = _api_adapter()
     scheduler = MagicMock(return_value=True)
     adapter.gateway_runner = SimpleNamespace(
@@ -1468,7 +1474,7 @@ async def test_companion_session_chat_schedules_background_memory_distillation()
         return_value=("agent:main:api_server:dm:local-owner", None)
     )
     adapter._get_existing_session_or_404 = AsyncMock(
-        return_value=({"id": "shared-session", "model": "deepseek-v4-flash"}, None)
+        return_value=({"id": "shared-session", "model": stored_model}, None)
     )
     adapter._read_json_body = AsyncMock(return_value=({"message": "在吗"}, None))
     adapter._effective_session_runtime_request = MagicMock(
@@ -1507,6 +1513,7 @@ async def test_companion_session_chat_schedules_background_memory_distillation()
     await asyncio.sleep(0)
 
     assert response.status == 200
+    assert adapter._run_agent.await_args.kwargs["session_model"] == expected_model
     scheduler.assert_called_once()
     call = scheduler.call_args.kwargs
     assert call["lane_key"] == "agent:main:api_server:dm:local-owner"

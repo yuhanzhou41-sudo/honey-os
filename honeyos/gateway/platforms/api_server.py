@@ -6228,7 +6228,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if len(session_id) > self._MAX_SESSION_HEADER_LEN:
             return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
 
-        model = body.get("model") or self._model_name
+        # The advertised Gateway name is not a provider model. Leave the
+        # session unpinned when the caller has not selected a model.
+        model = body.get("model")
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
@@ -6671,7 +6673,10 @@ class APIServerAdapter(BasePlatformAdapter):
             stored_model = session.get("model") if isinstance(session, dict) else None
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
-            session_model = stored_model if (stored_model and stored_route is None) else None
+            # Older unpinned sessions stored the built-in Gateway alias.
+            session_model = (
+                stored_model if stored_route is None and stored_model != "honeyos-agent" else None
+            )
             agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
             selection_error = self._request_route_conflict_error(
                 session_id=session_id,
@@ -6812,7 +6817,10 @@ class APIServerAdapter(BasePlatformAdapter):
             stored_model = session.get("model") if isinstance(session, dict) else None
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
-            session_model = stored_model if (stored_model and stored_route is None) else None
+            # Older unpinned sessions stored the built-in Gateway alias.
+            session_model = (
+                stored_model if stored_route is None and stored_model != "honeyos-agent" else None
+            )
             agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
             selection_error = self._request_route_conflict_error(
                 session_id=session_id,
