@@ -109,12 +109,27 @@ class PersonalityReflectionRunner:
         adapter: ReflectionAdapter,
         policy: ReflectionPolicy | None = None,
         now_fn: Callable[[], datetime] = _utcnow,
+        liked_only: bool = False,
     ):
-        self.store = PersonalityCandidateStore(home)
+        self.store = PersonalityCandidateStore(home, liked_only=liked_only)
         self.adapter = adapter
         self.policy = policy or ReflectionPolicy()
         self.now_fn = now_fn
-        self.state_path = self.store.root / "personality_reflection_state.json"
+        self.state_path = self.store.root / (
+            "personality_liked_reflection_state.json" if liked_only else "personality_reflection_state.json"
+        )
+
+    def _discard_unliked_pending(self) -> None:
+        if not self.store.liked_only:
+            return
+        from honeyos.companion.personality_observation_hook import liked_observation_ids
+
+        rows = self.store.list_pending_observations(limit=500)
+        approved = liked_observation_ids(self.store.home, rows)
+        self.store.mark_observations_processed(
+            [row["observation_id"] for row in rows if row["observation_id"] not in approved],
+            reflection_batch_id="feedback_unavailable",
+        )
 
     def _load_state(self) -> dict[str, Any]:
         if not self.state_path.exists():
@@ -146,6 +161,7 @@ class PersonalityReflectionRunner:
         )
 
     def should_reflect(self, *, force: bool = False) -> ReflectionDecision:
+        self._discard_unliked_pending()
         pending = self.store.pending_observation_count()
         if force:
             return ReflectionDecision(
@@ -476,6 +492,11 @@ class PersonalityReflectionRunner:
 
         try:
             raw = self.adapter(adapter_payload)
+            if self.store.liked_only:
+                from honeyos.companion.personality_observation_hook import liked_observation_ids
+
+                if len(liked_observation_ids(self.store.home, observations)) != len(observations):
+                    raise ValueError("reply approval changed during reflection")
             parsed = self._coerce_adapter_output(raw)
             allowed_ids = {row["observation_id"] for row in observations}
             operations = self._validate_operations(

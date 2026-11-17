@@ -43,7 +43,7 @@ from honeyos.core.constants import get_honeyos_home
 from honeyos.runtime.sqlite_runtime import (
     is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable,
 )
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, TypeVar
 
 from honeyos.core.state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
@@ -5471,6 +5471,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             row = cursor.fetchone()
         return self._session_row_dict(row) if row else None
 
+    def existing_session_ids(self, session_ids: Iterable[str]) -> set[str]:
+        """Check availability without loading the transcripts or token counters."""
+        ids = tuple(dict.fromkeys(value for value in session_ids if value))
+        result = set()
+        with self._read_ctx() as conn:
+            for offset in range(0, len(ids), 400):
+                chunk = ids[offset:offset + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(f"SELECT id FROM sessions WHERE id IN ({placeholders})", chunk)
+                result.update(row[0] for row in rows)
+        return result
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 
@@ -6776,6 +6788,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         emoji: Optional[str],
         *,
         author: str = "user",
+        note: str | None = None,
+        toggle: bool = True,
+        active_assistant_only: bool = False,
     ) -> Optional[List[Dict[str, Any]]]:
         """Set (or with ``emoji=None`` clear) *author*'s reaction on one message.
 
@@ -6788,8 +6803,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return None
 
         def _do(conn):
+            sql = "SELECT display_metadata FROM messages WHERE id = ? AND session_id = ?"
+            if active_assistant_only:
+                sql += " AND active = 1 AND role = 'assistant'"
             row = conn.execute(
-                "SELECT display_metadata FROM messages WHERE id = ? AND session_id = ?",
+                sql,
                 (message_row_id, session_id),
             ).fetchone()
             if row is None:
@@ -6812,12 +6830,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             # Tapping the live reaction again retracts it.
             toggling_off = (
-                emoji is not None and previous is not None and previous.get("emoji") == emoji
+                toggle and emoji is not None and previous is not None and previous.get("emoji") == emoji
             )
             if emoji and not toggling_off:
-                reactions.append(
-                    {"emoji": _scrub_surrogates(emoji), "author": author, "at": time.time()}
-                )
+                reaction = {"emoji": _scrub_surrogates(emoji), "author": author, "at": time.time()}
+                if note is not None:
+                    reaction["note"] = _scrub_surrogates(note)
+                if previous and all(previous.get(key) == reaction.get(key) for key in ("emoji", "note")):
+                    reaction = previous
+                reactions.append(reaction)
 
             if reactions:
                 meta[self.REACTIONS_METADATA_KEY] = reactions
@@ -6831,6 +6852,36 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return reactions
 
         return self._execute_write(_do)
+
+    def recent_rated_replies(self, session_id: str) -> list[tuple[str, int, str, dict]]:
+        """Read active reply feedback from the same authenticated conversation lane."""
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.session_id,m.id,m.content,m.display_metadata FROM messages m
+                JOIN sessions owner ON owner.id=m.session_id
+                JOIN sessions current ON current.id=?
+                WHERE (owner.id=current.id OR (
+                    current.session_key IS NOT NULL AND current.session_key!=''
+                    AND owner.session_key=current.session_key AND owner.source=current.source
+                    AND owner.user_id IS current.user_id AND owner.chat_id IS current.chat_id
+                )) AND m.role='assistant' AND m.active=1
+                AND m.display_metadata LIKE '%reactions%' ORDER BY m.id DESC LIMIT 24
+                """, (session_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            metadata = self._decode_display_metadata(row["display_metadata"]) or {}
+            for reaction in metadata.get(self.REACTIONS_METADATA_KEY) or []:
+                if (
+                    isinstance(reaction, dict) and reaction.get("author") == "user"
+                    and reaction.get("emoji") in ("👍", "👎")
+                ):
+                    content = self._decode_content(row["content"])
+                    if isinstance(content, str) and content.strip():
+                        result.append((row["session_id"], row["id"], content, reaction))
+                    break
+        return result
 
     def get_message_reactions(
         self, session_id: str, message_row_id: int

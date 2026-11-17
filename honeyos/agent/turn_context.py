@@ -1226,11 +1226,31 @@ def build_turn_context(
     try:
         _shadow_query = original_user_message if isinstance(original_user_message, str) else ""
         if _shadow_query and not is_trivial_prompt(_shadow_query):
-            from honeyos.memory.runtime_shadow import run_cognitive_memory_shadow
+            lane = getattr(agent, "_companion_memory_lane", "")
+            if lane:
+                from honeyos.companion.continuity import StructuredMemoryStore
+                from honeyos.core.constants import get_honeyos_home
+
+                native_note = StructuredMemoryStore(get_honeyos_home()).context_for_lane(
+                    lane_key=lane, query=_shadow_query,
+                )
+                if native_note and isinstance(ext_prefetch_cache, (str, type(None))):
+                    ext_prefetch_cache = "\n\n".join(filter(None, (ext_prefetch_cache, native_note)))
+            from honeyos.memory.runtime_shadow import requests_broad_recall, run_cognitive_memory_shadow
+            expanded_recall = (
+                getattr(agent, "_companion_input_budget", False) is True
+                and requests_broad_recall(_shadow_query)
+            )
+            recall_options = {"expanded": True} if expanded_recall else {}
+            adaptive_options = (
+                {"adaptive": True} if getattr(agent, "_companion_input_budget", False) is True else {}
+            )
             _cognitive_shadow_result = run_cognitive_memory_shadow(
                 _shadow_query,
                 session_id=str(getattr(agent, "session_id", "") or ""),
                 turn_id=str(turn_id or ""),
+                **recall_options,
+                **adaptive_options,
             )
             # COGNITIVE_MEMORY_CONTEXT_SHADOW_F2_2
             from honeyos.memory.runtime_context import run_silent_memory_context_shadow
@@ -1238,6 +1258,7 @@ def build_turn_context(
                 _cognitive_shadow_result,
                 session_id=str(getattr(agent, "session_id", "") or ""),
                 turn_id=str(turn_id or ""),
+                **recall_options,
             )
     except Exception:
         logger.debug("Cognitive Memory F1 shadow retrieval failed (non-fatal)", exc_info=True)

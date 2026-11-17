@@ -68,15 +68,23 @@ export function parseEventBlock(block: string): HoneyEvent | null {
   }
 }
 
+export class ChatRequestError extends Error {
+  constructor(message: string, public readonly code?: string) {
+    super(message);
+  }
+}
+
 async function responseError(response: Response): Promise<Error> {
   let message = "chat_unavailable";
+  let code: string | undefined;
   try {
-    const data = await response.json() as { error?: { message?: string }; message?: string };
+    const data = await response.json() as { error?: { message?: string; code?: string }; message?: string };
     message = data.error?.message || data.message || message;
+    code = data.error?.code;
   } catch {
     // A restarting local service may close without a JSON body.
   }
-  return new Error(message);
+  return new ChatRequestError(message, code);
 }
 
 export async function streamChat(options: {

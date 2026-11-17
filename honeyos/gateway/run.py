@@ -5840,18 +5840,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         async def _run() -> None:
             try:
+                async def _current_messages():
+                    return await self.async_session_store.load_transcript(
+                        session_id, include_row_ids=True,
+                    )
+
                 review_messages = messages
                 if review_messages is None:
-                    review_messages = await self.async_session_store.load_transcript(
-                        session_id,
-                        include_row_ids=True,
-                    )
+                    review_messages = await _current_messages()
                 result = await distiller.distill_if_due(
                     lane_key=lane_key,
                     session_id=session_id,
                     messages=review_messages,
                     reason=reason,
                     main_runtime=main_runtime,
+                    reload_messages=_current_messages,
                 )
                 if result is not None and result.status == "failed":
                     logger.debug(

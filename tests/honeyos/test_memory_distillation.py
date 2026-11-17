@@ -66,6 +66,74 @@ def _messages(count: int) -> list[dict]:
 
 
 @pytest.mark.asyncio
+async def test_compresses_a_revisited_unrated_episode_with_cross_session_sources(tmp_path):
+    store = StructuredMemoryStore(tmp_path)
+    episode = store.record(
+        lane_key=LANE, kind="episode", content="On May 14 we found a spare backup disk.",
+        evidence="conversation_event", source_session_id="earlier",
+        source_message_ids=(7,), created_by="background", now=NOW,
+    )
+    messages = [
+        {"_row_id": 20, "role": "user", "content": "On May 14 that spare backup disk was blue."},
+        {"_row_id": 21, "role": "assistant", "content": "The blue one made recovery possible."},
+        {"_row_id": 22, "role": "assistant", "content": "I found a red disk.", "active": 0},
+    ]
+
+    async def extractor(job, active, _runtime):
+        assert active == (episode,)
+        assert [m["_row_id"] for m in job.messages] == [20, 21]
+        return json.dumps({"operations": [{
+            "action": "compress_episode", "item_id": episode.id, "evidence_message_ids": [20],
+            "existing_quote": "May 14 we found a spare backup disk",
+            "revisit_quote": "May 14 that spare backup disk",
+            "content": "On May 14 we found a blue spare backup disk.",
+        }]})
+
+    result = await MemoryDistiller(
+        tmp_path, settings=DistillationSettings(trigger_messages=2), extractor=extractor,
+    ).distill_if_due(lane_key=LANE, session_id="later", messages=messages, reason="periodic",
+                     now=NOW + timedelta(days=1))
+    assert result and result.applied == 1
+    merged, = store.list_active(lane_key=LANE)
+    assert merged.id == episode.id
+    assert merged.source_refs == (("earlier", 7), ("later", 20))
+    assert "blue" in merged.content
+
+
+@pytest.mark.asyncio
+async def test_effective_recall_requires_ordered_exact_evidence(tmp_path):
+    store = StructuredMemoryStore(tmp_path)
+    episode = store.record(
+        lane_key=LANE, kind="episode", content="We used a spare backup disk.",
+        evidence="conversation_event", source_session_id="earlier", source_message_ids=(7,), now=NOW,
+    )
+    messages = [
+        {"_row_id": 30, "role": "user", "content": "How did we restore the files?"},
+        {"_row_id": 31, "role": "assistant", "content": "We used a spare backup disk."},
+        {"_row_id": 32, "role": "user", "content": "I used that disk and restored the files successfully."},
+    ]
+
+    async def extractor(_job, _active, _runtime):
+        return json.dumps({"operations": [{
+            "action": "reinforce_episode", "item_id": episode.id, "evidence_message_ids": [31, 32],
+            "recall_quote": "We used a spare backup disk",
+            "result_quote": "I used that disk and restored the files successfully",
+        }]})
+
+    later = NOW + timedelta(days=1)
+    result = await MemoryDistiller(
+        tmp_path, settings=DistillationSettings(trigger_messages=3), extractor=extractor,
+    ).distill_if_due(lane_key=LANE, session_id="later", messages=messages, reason="periodic", now=later)
+    assert result and result.applied == 1
+    reinforced, = store.list_active(lane_key=LANE)
+    assert reinforced.updated_at == later
+    assert store.reinforce_episode(
+        lane_key=LANE, item_id=episode.id, session_id="later", message_id=32, now=later + timedelta(days=1),
+    )
+    assert store.list_active(lane_key=LANE)[0].updated_at == later
+
+
+@pytest.mark.asyncio
 async def test_periodic_distillation_waits_for_twenty_new_messages(tmp_path):
     calls = []
 

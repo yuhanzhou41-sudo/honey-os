@@ -1369,6 +1369,20 @@ def run_conversation(
     _last_preflight_pressure: Optional[int] = None
     _preflight_compression_blocked = _ctx.preflight_compression_blocked
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+    _companion_turn_context = ""
+    if getattr(agent, "_companion_input_budget", False) is True and isinstance(original_user_message, str):
+        try:
+            from honeyos.companion.reply_style import reply_style_context
+            from honeyos.companion.turn_intention import pending_intention_context
+
+            db = getattr(agent, "_session_db", None)
+            if db is not None:
+                _companion_turn_context = "\n\n".join(filter(None, (
+                    reply_style_context(db, agent.session_id, original_user_message),
+                    pending_intention_context(db, agent.session_id, original_user_message),
+                )))
+        except Exception:
+            logger.debug("Could not load reply style examples", exc_info=True)
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
     # user-facing result available; it must not be confused with error or
@@ -1632,6 +1646,8 @@ def run_conversation(
                     )
                     if _composed is not None:
                         api_msg["content"] = _composed
+                if _companion_turn_context and isinstance(api_msg.get("content"), str):
+                    api_msg["content"] += "\n\n" + _companion_turn_context
             elif (
                 isinstance(_api_content, str)
                 and _api_content
@@ -1646,7 +1662,18 @@ def run_conversation(
                 # ``get_messages_as_conversation``'s sanitize_context/strip
                 # would rewrite on reload — see the capture in
                 # ``_flush_messages_to_session_db``).
-                api_msg["content"] = _api_content
+                # Bounded companion chat recalls context anew each turn.
+                # Replay the clean historical user text so stale or deleted
+                # recall material is not resent from a previous injection.
+                clean = msg.get("content")
+                fresh_context_only = (
+                    getattr(agent, "_companion_input_budget", False) is True
+                    and msg.get("role") == "user"
+                    and isinstance(clean, str)
+                    and _api_content.startswith(clean + "\n\n")
+                )
+                if not fresh_context_only:
+                    api_msg["content"] = _api_content
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved
@@ -2213,11 +2240,23 @@ def run_conversation(
                         tools_for_api=tools_for_api,
                     )
                 )
+                _limit_companion_input = getattr(agent, "_companion_input_budget", False) is True
+                request_messages = api_messages
+                if _limit_companion_input and _moa_prepared_request is None:
+                    from honeyos.agent.companion_input_budget import cap_history, request_input_limit
+
+                    request_messages = cap_history(
+                        api_messages, tools_for_api,
+                        input_limit=request_input_limit(
+                            getattr(agent.context_compressor, "context_length", None),
+                            getattr(agent, "max_tokens", None),
+                        ),
+                    )
                 if tools_for_api == agent.tools:
-                    api_kwargs = agent._build_api_kwargs(api_messages)
+                    api_kwargs = agent._build_api_kwargs(request_messages)
                 else:
                     api_kwargs = agent._build_api_kwargs(
-                        api_messages,
+                        request_messages,
                         tools_for_api=tools_for_api,
                     )
                 if agent._force_ascii_payload:
@@ -2259,6 +2298,28 @@ def run_conversation(
                 except Exception:
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
+
+                if _limit_companion_input and _moa_prepared_request is None:
+                    from honeyos.agent.companion_input_budget import estimate_wire_input, fit_output_to_window
+
+                    output_tokens = max(
+                        (value for key in ("max_tokens", "max_completion_tokens", "max_output_tokens")
+                         if type(value := api_kwargs.get(key)) is int),
+                        default=0,
+                    )
+                    context_window = getattr(agent.context_compressor, "context_length", None)
+                    input_limit = request_input_limit(context_window, output_tokens)
+                    estimated_input = estimate_wire_input(api_kwargs, request_messages)
+                    if estimated_input > input_limit:
+                        return {
+                            "final_response": "这次内容超出了所选模型的上下文容量。可以指定章节、页码或日期范围，或换用上下文更大的模型。",
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": "companion_input_budget_exceeded",
+                        }
+                    fit_output_to_window(api_kwargs, context_window, estimated_input)
 
                 try:
                     from honeyos.runtime.lifecycle import (

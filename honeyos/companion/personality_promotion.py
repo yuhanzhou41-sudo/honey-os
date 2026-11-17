@@ -5,6 +5,8 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
+from functools import wraps
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +30,8 @@ STABLE_MAX_CONTRADICTIONS = 1
 STABLE_MAX_CONTRADICTION_RATIO = 0.25
 
 _ALLOWED_LAYERS = {"relational_self", "stable_core"}
+_AUTHORITY_WRITE_LOCK = threading.RLock()
+_AUTHORITY_PROMPT_LIMIT = 1200
 _RESERVED_TRAIT_KEYS = {
     "name", "companion_name", "assistant_name", "display_name",
     "user_nickname", "relationship", "boundaries", "tool_permissions",
@@ -57,6 +61,7 @@ def _empty_authority() -> dict[str, Any]:
         "relational_self": {},
         "stable_core": {},
         "blocked_candidate_ids": [],
+        "user_deleted_traits": [],
         "history": [],
     }
 
@@ -80,6 +85,8 @@ def load_personality_authority(home: Path | str) -> dict[str, Any]:
         base["blocked_candidate_ids"] = []
     if not isinstance(base.get("history"), list):
         base["history"] = []
+    if not isinstance(base.get("user_deleted_traits"), list):
+        base["user_deleted_traits"] = []
     return base
 
 
@@ -173,6 +180,10 @@ def _evidence_metrics(store: PersonalityCandidateStore, candidate_id: str) -> di
             f"WHERE observation_id IN ({placeholders})",
             refs,
         ).fetchall()
+        if store.liked_only:
+            from honeyos.companion.personality_observation_hook import liked_observation_ids
+
+            result["all_evidence_liked"] = len(refs) == len(rows) and set(refs) == liked_observation_ids(store.home, obs_rows)
 
         batches: set[str] = set()
         sessions: set[str] = set()
@@ -213,8 +224,8 @@ class PromotionDecision:
     metrics: dict[str, Any]
 
 
-def evaluate_candidate_for_promotion(home: Path | str, candidate: Any) -> PromotionDecision:
-    store = PersonalityCandidateStore(home)
+def evaluate_candidate_for_promotion(home: Path | str, candidate: Any, *, liked_only: bool = False) -> PromotionDecision:
+    store = PersonalityCandidateStore(home, liked_only=liked_only)
     candidate_id = str(_candidate_value(candidate, "candidate_id", "") or "")
     layer = str(_candidate_value(candidate, "target_layer", "") or "")
     trait_key = str(_candidate_value(candidate, "trait_key", "") or "")
@@ -223,6 +234,8 @@ def evaluate_candidate_for_promotion(home: Path | str, candidate: Any) -> Promot
     contradictions = int(_candidate_value(candidate, "contradiction_count", 0) or 0)
     confidence = float(_candidate_value(candidate, "confidence", 0.0) or 0.0)
     metrics = _evidence_metrics(store, candidate_id)
+    if liked_only and not metrics.get("all_evidence_liked"):
+        return PromotionDecision(False, layer, "missing_current_reply_approval", metrics)
     metrics.update({
         "support_count": support,
         "contradiction_count": contradictions,
@@ -286,8 +299,17 @@ def _record(candidate: Any, decision: PromotionDecision) -> dict[str, Any]:
     }
 
 
-def promote_candidate(home: Path | str, candidate: Any) -> dict[str, Any]:
-    decision = evaluate_candidate_for_promotion(home, candidate)
+def _serialized_write(fn):
+    @wraps(fn)
+    def update(*args, **kwargs):
+        with _AUTHORITY_WRITE_LOCK:
+            return fn(*args, **kwargs)
+    return update
+
+
+@_serialized_write
+def promote_candidate(home: Path | str, candidate: Any, *, liked_only: bool = False) -> dict[str, Any]:
+    decision = evaluate_candidate_for_promotion(home, candidate, liked_only=liked_only)
     candidate_id = str(_candidate_value(candidate, "candidate_id", "") or "")
     trait_key = str(_candidate_value(candidate, "trait_key", "") or "")
     layer = str(_candidate_value(candidate, "target_layer", "") or "")
@@ -303,6 +325,10 @@ def promote_candidate(home: Path | str, candidate: Any) -> dict[str, Any]:
 
     authority = load_personality_authority(home)
     previous = (authority.get(layer) or {}).get(trait_key)
+    if f"{layer}/{trait_key}" in authority["user_deleted_traits"] or (
+        previous and previous.get("user_edited")
+    ):
+        return {"status": "deferred", "reason": "user_controlled_trait"}
     record = _record(candidate, decision)
     if previous is not None and all(
         previous.get(key) == value
@@ -326,18 +352,19 @@ def promote_candidate(home: Path | str, candidate: Any) -> dict[str, Any]:
     return {"status": "promoted", "layer": layer, "trait_key": trait_key}
 
 
-def promote_eligible_candidates(home: Path | str) -> dict[str, Any]:
-    store = PersonalityCandidateStore(home)
+def promote_eligible_candidates(home: Path | str, *, liked_only: bool = False) -> dict[str, Any]:
+    store = PersonalityCandidateStore(home, liked_only=liked_only)
     results = []
     for candidate in store.list_candidates(status="candidate"):
-        if evaluate_candidate_for_promotion(home, candidate).eligible:
-            results.append(promote_candidate(home, candidate))
+        if evaluate_candidate_for_promotion(home, candidate, liked_only=liked_only).eligible:
+            results.append(promote_candidate(home, candidate, liked_only=liked_only))
     return {
         "promoted_count": sum(1 for row in results if row.get("status") == "promoted"),
         "results": results,
     }
 
 
+@_serialized_write
 def rollback_authoritative_trait(
     home: Path | str,
     *,
@@ -374,6 +401,38 @@ def rollback_authoritative_trait(
     return {"status": "rolled_back", "candidate_id": candidate_id}
 
 
+def list_authoritative_traits(home: Path | str) -> list[dict[str, str]]:
+    authority = load_personality_authority(home)
+    return [
+        {"layer": layer, "key": key, "statement": str(record["statement"])}
+        for layer in ("stable_core", "relational_self")
+        for key, record in sorted(authority[layer].items())
+        if isinstance(record, dict) and record.get("statement")
+    ]
+
+
+@_serialized_write
+def edit_authoritative_trait(
+    home: Path | str, layer: str, key: str, statement: str | None,
+) -> None:
+    if layer not in _ALLOWED_LAYERS:
+        raise ValueError("无效的人格分区")
+    if statement is not None and (
+        not isinstance(statement, str) or not 1 <= len(statement.strip()) <= 280
+    ):
+        raise ValueError("人格描述须为 1 到 280 字")
+    authority = load_personality_authority(home)
+    record = authority[layer].get(key)
+    if not isinstance(record, dict):
+        raise KeyError(key)
+    if statement is None:
+        del authority[layer][key]
+        authority["user_deleted_traits"].append(f"{layer}/{key}")
+    else:
+        authority[layer][key] = {**record, "statement": " ".join(statement.split()), "user_edited": True}
+    _atomic_write_json(_authority_path(home), authority)
+
+
 def personality_authority_note(home: Path | str) -> str:
     authority = load_personality_authority(home)
     stable = authority.get("stable_core") or {}
@@ -384,16 +443,17 @@ def personality_authority_note(home: Path | str) -> str:
         "Promoted companion personality context:",
         "Treat these as established companion tendencies, not user facts.",
     ]
-    if stable:
-        lines.append("Stable Core:")
-        for key in sorted(stable):
-            statement = str(stable[key].get("statement") or "").strip()
-            if statement:
-                lines.append(f"- {statement}")
-    if relational:
-        lines.append("Relational Self:")
-        for key in sorted(relational):
-            statement = str(relational[key].get("statement") or "").strip()
-            if statement:
-                lines.append(f"- {statement}")
+    for label, records in (("Stable Core", stable), ("Relational Self", relational)):
+        candidates = sorted(
+            ((key, row) for key, row in records.items() if isinstance(row, dict)),
+            key=lambda item: (not item[1].get("user_edited"), item[0]),
+        )
+        for _, row in candidates:
+            statement = str(row.get("statement") or "").strip()[:280]
+            if not statement:
+                continue
+            line = f"- {label}: {statement}"
+            if sum(len(item) + 1 for item in lines) + len(line) > _AUTHORITY_PROMPT_LIMIT:
+                break
+            lines.append(line)
     return "\n".join(lines)

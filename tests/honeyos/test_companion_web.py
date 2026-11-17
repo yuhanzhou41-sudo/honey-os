@@ -1184,6 +1184,47 @@ async def test_companion_memory_action_updates_only_the_owner_lane(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_deleted_chat_marks_native_memory_without_removing_or_rewriting_it(monkeypatch, tmp_path):
+    from honeyos.companion.continuity import StructuredMemoryStore
+    from honeyos.core.state import SessionDB
+
+    monkeypatch.setenv("HONEYOS_RUNTIME_ID", "honeyos-companion-v0.3")
+    monkeypatch.setattr("honeyos.core.constants.get_honeyos_home", lambda: tmp_path)
+    lane = "agent:main:companion:dm:owner"
+    store = StructuredMemoryStore(tmp_path)
+    options = dict(lane_key=lane, kind="open_loop", content="核对项目备份", evidence="user_stated")
+    first = store.record(**options, source_session_id="one", source_message_ids=(1,))
+    second = store.record(**options, source_session_id="two", source_message_ids=(2,))
+    assert first and second and first.id == second.id
+    adapter = _api_adapter()
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session("one", "api_server")
+        db.create_session("two", "api_server")
+        adapter._ensure_session_db_async = AsyncMock(return_value=db)
+        request = SimpleNamespace(
+            cookies={"honeyos_local": adapter._local_web_token}, remote="127.0.0.1", headers={},
+            match_info={"memory_id": second.id},
+        )
+        assert db.delete_session("one")
+        response = await adapter._handle_companion_memories(request)
+        card = json.loads(response.text)["memories"][0]
+        assert card["unavailable_source_count"] == 1
+        assert card["content"] == "核对项目备份" and card["status"] == "active"
+        assert "核对项目备份" in store.context_for_lane(lane_key=lane)
+        assert card["can_edit"]
+
+        adapter._read_json_body = AsyncMock(return_value=({"action": "edit", "content": "改为核对共享备份"}, None))
+        assert (await adapter._handle_companion_memory_action(request)).status == 200
+        assert not store.update_content(lane_key=lane, item_id=second.id, content="自动覆盖")
+        response = await adapter._handle_companion_memories(request)
+        card = json.loads(response.text)["memories"][0]
+        assert card["content"] == "改为核对共享备份" and card["unavailable_source_count"] == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_companion_memory_action_forgets_the_real_persistent_entry(
     monkeypatch, tmp_path
 ):

@@ -626,9 +626,8 @@ class StudyService:
             "has_managed_attachment": bool(resource.attachment_id),
         }
 
-    def build_chat_resource_context(self, resource_ids: list[str]) -> str:
-        remaining = 12_000
-        excerpts = []
+    def chat_resource_texts(self, resource_ids: list[str]) -> list[tuple[str, str, str]]:
+        documents = []
         for resource_id in dict.fromkeys(resource_ids):
             resource = self.get_resource(resource_id)
             source = resource.metadata.get("local_source")
@@ -637,11 +636,13 @@ class StudyService:
             content = self.get_resource_content(resource_id)["extracted_text"].strip()
             if not content:
                 raise ValueError(f"资料没有可引用的正文：{resource.title}")
-            excerpt = content[:remaining]
-            remaining -= len(excerpt)
-            note = "（仅引用部分正文）" if len(excerpt) < len(content) else ""
-            excerpts.append(f"资料：{resource.title} [{resource.id}]{note}\n{excerpt}")
-        return "\n\n".join(excerpts)
+            documents.append((resource.id, resource.title, content))
+        return documents
+
+    def build_chat_resource_context(self, resource_ids: list[str], *, query: str = "") -> str:
+        from .chat_reading import prepare_chat_documents
+
+        return prepare_chat_documents(self.chat_resource_texts(resource_ids), query)
 
     def create_resource(self, payload: dict[str, Any]) -> StudyResource:
         allowed={"attachment_id","title","resource_type","course_or_subject","metadata"}

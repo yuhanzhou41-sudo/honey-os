@@ -133,6 +133,12 @@ def _score_from_momentary_state(home: Path | str, now: datetime) -> float:
         - 0.20 * axis("tension")
         - 0.18 * axis("negative_valence")
     )
+    from honeyos.companion.physiology_shadow import live_signals
+
+    signals = live_signals(home, now=now)
+    sustained_pressure = max(0.0, signals.get("cortisol", 0.15) - 0.15)
+    support = max(0.0, signals.get("oxytocin", 0.15) - 0.15)
+    score -= 0.15 * max(0.0, sustained_pressure - 0.5 * support)
     return max(0.0, min(1.0, score))
 
 

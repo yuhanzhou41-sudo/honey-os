@@ -7,6 +7,7 @@ import { Link } from "react-router-dom";
 
 import {
   answerApproval,
+  ChatRequestError,
   fetchChatRunStatus,
   naturalReplyInstructions,
   splitUserMessages,
@@ -32,6 +33,7 @@ import type { PermissionChoice } from "../../runtime/honey-events";
 import { assistantBubblesForDisplay } from "../../runtime/chat-bubble-segmenter";
 import { useHoneyStore } from "../../runtime/honey-store";
 import { HoneyRun } from "./HoneyRun";
+import { ReplyFeedback } from "./ReplyFeedback";
 
 type ChatAttachment = { id: string; name: string; dataUrl: string };
 type QueuedMessage = { id: string; display: string; input: ChatInput };
@@ -165,6 +167,7 @@ export function ChatPage() {
     documentReference.mutate({ path: documentPath, session: sessionId });
   }
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const [documentScopeRequired, setDocumentScopeRequired] = useState(false);
   const [submittedMessages, setSubmittedMessages] = useState<QueuedMessage[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [approvalPending, setApprovalPending] = useState(false);
@@ -474,9 +477,10 @@ export function ChatPage() {
     failTurn("连接中断，尚未取回原回复；重新连接不会重复发送你的消息");
   }
 
-  async function generateReply() {
-    if (!queuedMessages.length || sending || chatModelBusy || !sessionId || !sessionKey) return;
-    const submitted = [...queuedMessages];
+  async function generateReply(pending = queuedMessages) {
+    if (!pending.length || sending || chatModelBusy || !sessionId || !sessionKey) return;
+    const submitted = [...pending];
+    setDocumentScopeRequired(false);
     followRef.current = true;
     setStoppedReply(false);
     setStoppedUserMessageId(null);
@@ -490,7 +494,7 @@ export function ChatPage() {
       await streamChat({
         sessionId,
         sessionKey,
-        message: combineQueuedInputs(queuedMessages),
+        message: combineQueuedInputs(submitted),
         instructions: naturalReplyInstructions,
         signal: controller.signal,
         onEvent: (event) => {
@@ -529,6 +533,9 @@ export function ChatPage() {
           failTurn("已停止这次回复");
         }
       } else {
+        if (streamError instanceof ChatRequestError && streamError.code === "study_scope_required") {
+          setDocumentScopeRequired(true);
+        }
         const runId = useHoneyStore.getState().run.runId;
         if (runId) await recoverInterruptedRun(runId);
         else failTurn(streamError instanceof Error ? streamError.message : "connection_failed");
@@ -805,6 +812,7 @@ export function ChatPage() {
       content,
       displayKey: `${message.role}-${messageIndex}-${partIndex}`,
       partIndex,
+      lastPart: partIndex === parts.length - 1,
       sourceIndex,
     }));
   });
@@ -938,6 +946,10 @@ export function ChatPage() {
                   }}
                 >
                   <StudyAssistantContent content={message.content} messageId={message.displayKey} />
+                  {sessionId && sessionKey && message.id && message.lastPart ? (
+                    <ReplyFeedback key={`${sessionId}:${message.id}`} sessionId={sessionId} sessionKey={sessionKey}
+                      messageId={message.id} initial={message.feedback} />
+                  ) : null}
                   {message.timeline_editable && message.id ? (
                     <div
                       className={[
@@ -1100,6 +1112,15 @@ export function ChatPage() {
       </div>
 
       <form className="relative mx-auto w-full max-w-[56rem] shrink-0 pb-[calc(14px+env(safe-area-inset-bottom))] pt-2" onSubmit={send}>
+        {documentScopeRequired && queuedMessages.length > 0 && !replyBusy ? (
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="text-sm">可在下方输入范围，也可以让 Honey 帮你分批读取。</span>
+            <Button type="button" variant="secondary" onClick={() => {
+              const consent = "不清楚，自动分批读取";
+              void generateReply([...queuedMessages, { id: `reading-${Date.now()}`, input: consent, display: consent }]);
+            }}>不清楚，自动分批读取</Button>
+          </div>
+        ) : null}
         {stoppedReply && queuedMessages.length && !replyBusy ? (
           <div className="mb-2 flex justify-center">
             <Button type="button" variant="secondary" onClick={regenerateStoppedReply}>

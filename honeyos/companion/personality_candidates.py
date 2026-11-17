@@ -123,10 +123,11 @@ class PersonalityEvidence:
 class PersonalityCandidateStore:
     """SQLite repository for provisional companion-personality candidates."""
 
-    def __init__(self, home: Path | str):
+    def __init__(self, home: Path | str, *, liked_only: bool = False):
         self.home = Path(home).expanduser().resolve()
         self.root = self.home / "companion"
-        self.db_path = self.root / "personality_candidates.sqlite"
+        self.db_path = self.root / ("personality_liked_candidates.sqlite" if liked_only else "personality_candidates.sqlite")
+        self.liked_only = liked_only
         self.audit_path = self.root / "personality_candidate_audit.jsonl"
 
     def _connect(self) -> sqlite3.Connection:
@@ -666,6 +667,21 @@ class PersonalityCandidateStore:
         assistant_text = str(assistant_excerpt or "").strip()[:1200]
 
         with self._connect() as conn:
+            if self.liked_only:
+                conn.execute("BEGIN IMMEDIATE")
+                duplicate = conn.execute(
+                    "SELECT observation_id, reflection_batch_id FROM personality_pending_observations "
+                    "WHERE session_id=? AND assistant_reference=? LIMIT 1",
+                    (session_id, assistant_reference),
+                ).fetchone()
+                if duplicate is not None:
+                    if duplicate["reflection_batch_id"] == "feedback_unavailable":
+                        conn.execute(
+                            "UPDATE personality_pending_observations "
+                            "SET processed_at=NULL, reflection_batch_id='' WHERE observation_id=?",
+                            (duplicate["observation_id"],),
+                        )
+                    return str(duplicate["observation_id"])
             conn.execute(
                 """
                 INSERT INTO personality_pending_observations (

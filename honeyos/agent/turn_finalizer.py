@@ -583,7 +583,7 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
 
-    # G2.1B.2c: silent, model-free personality observation capture.
+    # Short-lived state and physiology are independent of liked personality evidence.
     _personality_persist_failed = any(
         str(_err).startswith("persist_session:")
         for _err in _cleanup_errors
@@ -616,38 +616,16 @@ def finalize_turn(
                 _momentary_state_err,
             )
 
-        try:
-            from honeyos.companion.personality_observation_hook import (
-                capture_completed_agent_turn_observation,
-            )
-            _personality_observation_result = capture_completed_agent_turn_observation(
-                agent,
-                turn_id=turn_id,
-                user_message=original_user_message,
-                assistant_response=final_response,
-            )
-            if _personality_observation_result.get("captured"):
-                try:
-                    from honeyos.companion.personality_reflection_execution import (
-                        maybe_start_background_personality_reflection,
-                    )
-                    from honeyos.companion.personality_observation_hook import (
-                        _resolve_companion_home,
-                    )
+        if getattr(agent, "_companion_input_budget", False) is True:
+            try:
+                from honeyos.companion.personality_observation_hook import _resolve_companion_home
+                from honeyos.companion.physiology_maintenance import enqueue_completed_reply
 
-                    maybe_start_background_personality_reflection(
-                        _resolve_companion_home(agent),
-                    )
-                except Exception as _personality_reflection_trigger_err:
-                    logger.debug(
-                        "personality reflection trigger skipped: %s",
-                        _personality_reflection_trigger_err,
-                    )
-        except Exception as _personality_observation_err:
-            logger.debug(
-                "personality observation capture skipped: %s",
-                _personality_observation_err,
-            )
+                db = getattr(agent, "_session_db", None)
+                if db is not None:
+                    enqueue_completed_reply(_resolve_companion_home(agent), db, agent.session_id, final_response)
+            except Exception:
+                logger.debug("Companion appraisal enqueue skipped", exc_info=True)
 
     # Context engine observation hook: notify the active engine that this
     # turn has finished, with the finalized transcript. Complements the

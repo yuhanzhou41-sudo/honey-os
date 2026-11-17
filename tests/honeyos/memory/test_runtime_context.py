@@ -43,6 +43,12 @@ def test_external_deepseek_defaults_to_historical():
     assert "Status: historical" in result.text
 
 
+def test_wider_recall_has_a_separate_budget():
+    candidates = [Candidate(f"m{index}", f"用户以前记录了项目事件 {index}。") for index in range(10)]
+    assert len(_build(candidates).included) == 3
+    assert len(_build(candidates, max_items=64, max_memory_chars=8000).included) == 10
+
+
 def test_model_visible_text_hides_provenance_and_ids():
     result = _build([
         Candidate(

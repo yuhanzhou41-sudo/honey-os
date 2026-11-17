@@ -2748,6 +2748,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._handle_companion_session_switch,
             ),
             ("POST", "/api/companion/profile", self._handle_companion_profile_update),
+            ("GET", "/api/companion/personality", self._handle_companion_personality),
+            ("PATCH", "/api/companion/personality", self._handle_companion_personality),
             (
                 "POST",
                 "/api/companion/memories/{memory_id}",
@@ -2818,6 +2820,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("PUT", "/api/sessions/{session_id}/messages/{message_id}/feedback", self._handle_message_feedback),
             ("GET", "/api/sessions/{session_id}/message-events", self._handle_session_message_events),
             ("POST", "/api/sessions/{session_id}/timeline/rollback", self._handle_session_timeline_rollback),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
@@ -3039,6 +3042,8 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug("Failed to load companion conversation history", exc_info=True)
 
+        unavailable_sources = await self._unavailable_memory_sources((*memory_items, *chapters, *recent_chapters))
+
         def _memory_payload(item: Any) -> Dict[str, Any]:
             return {
                 "id": item.id,
@@ -3050,9 +3055,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 "created_by": item.created_by,
                 "source_session_id": item.source_session_id,
                 "source_message_ids": list(item.source_message_ids),
+                "sources": [
+                    {"session_id": source, "message_id": row}
+                    for source, row in getattr(item, "source_refs", ())
+                ],
                 "created_at": item.created_at.isoformat(),
                 "updated_at": item.updated_at.isoformat(),
                 "expires_at": item.expires_at.isoformat() if item.expires_at else None,
+                "unavailable_source_count": self._unavailable_memory_source_count(item, unavailable_sources),
+                "can_edit": not item.id.startswith("persistent_"),
             }
 
         def _chapter_payload(item: Any) -> Dict[str, Any]:
@@ -3063,6 +3074,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "source_session_id": item.source_session_id,
                 "source_message_ids": list(item.source_message_ids),
                 "created_at": item.created_at.isoformat(),
+                "unavailable_source_count": self._unavailable_memory_source_count(item, unavailable_sources),
             }
 
         distillation_model = "auto"
@@ -3107,6 +3119,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "source_session_id": chapter.source_session_id,
                         "source_message_ids": list(chapter.source_message_ids),
                         "created_at": chapter.created_at.isoformat(),
+                        "unavailable_source_count": self._unavailable_memory_source_count(chapter, unavailable_sources),
                     }
                     for chapter in chapters
                 ],
@@ -3358,11 +3371,13 @@ class APIServerAdapter(BasePlatformAdapter):
         lane_key = build_session_key(source)
         store = StructuredMemoryStore(home)
         structured_items, persistent_items, chapters, distillation = await asyncio.gather(
-            asyncio.to_thread(store.list_active, lane_key=lane_key),
+            asyncio.to_thread(store.list_managed, lane_key=lane_key),
             asyncio.to_thread(list_persistent_memories, home),
             asyncio.to_thread(store.list_chapters, lane_key=lane_key),
             asyncio.to_thread(MemoryDistiller(home).latest_status, lane_key=lane_key),
         )
+
+        unavailable_sources = await self._unavailable_memory_sources((*persistent_items, *structured_items, *chapters))
 
         def memory_payload(item: Any) -> Dict[str, Any]:
             return {
@@ -3375,9 +3390,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 "created_by": item.created_by,
                 "source_session_id": item.source_session_id,
                 "source_message_ids": list(item.source_message_ids),
+                "sources": [
+                    {"session_id": source, "message_id": row}
+                    for source, row in getattr(item, "source_refs", ())
+                ],
                 "created_at": item.created_at.isoformat(),
                 "updated_at": item.updated_at.isoformat(),
                 "expires_at": item.expires_at.isoformat() if item.expires_at else None,
+                "unavailable_source_count": self._unavailable_memory_source_count(item, unavailable_sources),
+                "can_edit": not item.id.startswith("persistent_"),
             }
 
         return web.json_response(
@@ -3394,12 +3415,36 @@ class APIServerAdapter(BasePlatformAdapter):
                         "source_session_id": chapter.source_session_id,
                         "source_message_ids": list(chapter.source_message_ids),
                         "created_at": chapter.created_at.isoformat(),
+                        "unavailable_source_count": self._unavailable_memory_source_count(chapter, unavailable_sources),
                     }
                     for chapter in chapters
                 ],
                 "distillation": distillation,
             }
         )
+
+    @staticmethod
+    def _memory_source_ids(item: Any) -> set[str]:
+        sources = {session_id for session_id, _ in getattr(item, "source_refs", ())}
+        if item.source_session_id:
+            sources.add(item.source_session_id)
+        return sources
+
+    @classmethod
+    def _unavailable_memory_source_count(cls, item: Any, unavailable: set[str]) -> int:
+        return len(cls._memory_source_ids(item) & unavailable)
+
+    async def _unavailable_memory_sources(self, items) -> set[str]:
+        source_ids = {sid for item in items for sid in self._memory_source_ids(item)}
+        if not source_ids:
+            return set()
+        try:
+            db = await self._ensure_session_db_async()
+            existing = await asyncio.to_thread(db.existing_session_ids, source_ids)
+        except (AttributeError, OSError, RuntimeError, sqlite3.Error):
+            logger.debug("Could not check memory source availability", exc_info=True)
+            return set()
+        return source_ids - existing
 
     async def _handle_memory_library(
         self, request: "web.Request"
@@ -3955,7 +4000,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         action = str(body.get("action") or "").strip().lower()
-        if action not in {"resolve", "forget"}:
+        if action not in {"resolve", "forget", "edit"}:
             return web.json_response(
                 _openai_error("Unsupported memory action", code="invalid_memory_action"),
                 status=400,
@@ -3987,6 +4032,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 forget_persistent_memory,
                 home,
                 memory_id,
+            )
+        elif action == "edit":
+            content = body.get("content")
+            if not isinstance(content, str) or not 1 <= len(content.strip()) <= 500:
+                return web.json_response(_openai_error("记忆内容须为 1 到 500 字"), status=400)
+            changed = await asyncio.to_thread(
+                StructuredMemoryStore(home).update_content,
+                lane_key=build_session_key(source),
+                item_id=memory_id,
+                content=content,
+                user_edit=True,
             )
         else:
             changed = await asyncio.to_thread(
@@ -4061,6 +4117,29 @@ class APIServerAdapter(BasePlatformAdapter):
                 },
             }
         )
+
+    async def _handle_companion_personality(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from honeyos.companion.personality_promotion import edit_authoritative_trait, list_authoritative_traits
+        from honeyos.core.constants import get_honeyos_home
+
+        home = get_honeyos_home()
+        if request.method == "PATCH":
+            body, err = await self._read_json_body(request)
+            if err:
+                return err
+            layer, key = body.get("layer"), body.get("key")
+            if not isinstance(layer, str) or not isinstance(key, str) or "statement" not in body:
+                return web.json_response(_openai_error("缺少人格分区、特征或描述"), status=400)
+            try:
+                await asyncio.to_thread(edit_authoritative_trait, home, layer, key, body["statement"])
+            except ValueError as exc:
+                return web.json_response(_openai_error(str(exc)), status=400)
+            except KeyError:
+                return web.json_response(_openai_error("这项特征已不存在"), status=404)
+        return web.json_response({"traits": await asyncio.to_thread(list_authoritative_traits, home)})
 
     @staticmethod
     def _companion_avatar_media_type(body: bytes) -> Optional[str]:
@@ -6053,7 +6132,21 @@ class APIServerAdapter(BasePlatformAdapter):
         if row_id:
             payload["id"] = row_id
             payload["timeline_editable"] = row_id > cursor
+        if role == "assistant":
+            meta = message.get("display_metadata") or {}
+            feedback = APIServerAdapter._companion_feedback(meta.get("reactions"))
+            if feedback is not None:
+                payload["feedback"] = feedback
         return payload
+
+    @staticmethod
+    def _companion_feedback(reactions: Any) -> dict | None:
+        for reaction in reactions if isinstance(reactions, list) else []:
+            if isinstance(reaction, dict) and reaction.get("author") == "user":
+                rating = {"👍": "like", "👎": "dislike"}.get(reaction.get("emoji"))
+                if rating:
+                    return {"rating": rating, "note": reaction.get("note") or ""}
+        return None
 
     @staticmethod
     def _is_companion_visible_message(message: object) -> bool:
@@ -6418,6 +6511,53 @@ class APIServerAdapter(BasePlatformAdapter):
             "data": data if data is not None else [self._message_response(m) for m in messages],
         })
 
+    async def _handle_message_feedback(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        rating, note = body.get("rating"), body.get("note", "")
+        try:
+            row_id = int(request.match_info["message_id"])
+        except ValueError:
+            row_id = 0
+        if (
+            not 0 < row_id <= 2**63 - 1
+            or "rating" not in body
+            or rating not in (None, "like", "dislike")
+            or not isinstance(note, str)
+            or len(note) > 500
+        ):
+            return web.json_response({"error": "反馈格式不正确"}, status=400)
+        db = await self._ensure_session_db_async()
+        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+        reactions = await asyncio.to_thread(
+            db.set_message_reaction, resolved_id, row_id,
+            {"like": "👍", "dislike": "👎"}.get(rating),
+            note=note.strip(), toggle=False, active_assistant_only=True,
+        )
+        if reactions is None:
+            return web.json_response({"error": "找不到这条回复"}, status=404)
+        if rating == "like":
+            try:
+                from honeyos.companion.personality_observation_hook import capture_liked_reply
+                from honeyos.companion.personality_reflection_execution import maybe_start_background_personality_reflection
+                from honeyos.core.constants import get_honeyos_home
+
+                home = get_honeyos_home()
+                observed = await asyncio.to_thread(capture_liked_reply, home, db, resolved_id, row_id)
+                if observed:
+                    await asyncio.to_thread(maybe_start_background_personality_reflection, home, liked_only=True)
+            except Exception:
+                logger.debug("Liked personality observation could not be scheduled", exc_info=True)
+        return web.json_response({"feedback": self._companion_feedback(reactions)})
+
     async def _handle_session_message_events(
         self, request: "web.Request"
     ) -> "web.StreamResponse":
@@ -6608,7 +6748,7 @@ class APIServerAdapter(BasePlatformAdapter):
         fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "honeyos.session", "session": self._session_response(fork)}, status=201)
 
-    async def _study_chat_context(self, request: "web.Request", body: Dict[str, Any]) -> str:
+    async def _study_chat_context(self, request: "web.Request", body: Dict[str, Any], user_message: Any) -> str:
         resource_ids = body.get("study_resource_ids")
         if resource_ids is None:
             return ""
@@ -6620,9 +6760,13 @@ class APIServerAdapter(BasePlatformAdapter):
         ):
             raise ValueError("每轮最多引用四份有效的 Study 资料")
         from honeyos.study import StudyResourceNotFoundError, StudyService
+        from honeyos.agent.message_content import flatten_message_text
 
         try:
-            excerpts = await asyncio.to_thread(StudyService().build_chat_resource_context, resource_ids)
+            excerpts = await asyncio.to_thread(
+                StudyService().build_chat_resource_context, resource_ids,
+                query=flatten_message_text(user_message),
+            )
         except StudyResourceNotFoundError as exc:
             raise ValueError("此轮引用的 Study 资料已移除，请更新引用后重试") from exc
         if not excerpts:
@@ -6656,8 +6800,11 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        from honeyos.study.chat_reading import DocumentScopeRequired
         try:
-            study_context = await self._study_chat_context(request, body)
+            study_context = await self._study_chat_context(request, body, user_message)
+        except DocumentScopeRequired as exc:
+            return web.json_response(_openai_error(str(exc), code="study_scope_required"), status=400)
         except ValueError as exc:
             return web.json_response(_openai_error(str(exc), code="study_reference_unavailable"), status=400)
         if study_context:
@@ -6728,6 +6875,7 @@ class APIServerAdapter(BasePlatformAdapter):
             requested_runtime=runtime_request.get("requested") or {},
             route_source=runtime_request.get("route_source") or "global",
             confirmed_runtime_lock=lock_active,
+            companion_input_budget=companion_view and not internal_turn,
             **agent_overrides,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
@@ -6810,8 +6958,11 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        from honeyos.study.chat_reading import DocumentScopeRequired
         try:
-            study_context = await self._study_chat_context(request, body)
+            study_context = await self._study_chat_context(request, body, user_message)
+        except DocumentScopeRequired as exc:
+            return web.json_response(_openai_error(str(exc), code="study_scope_required"), status=400)
         except ValueError as exc:
             return web.json_response(_openai_error(str(exc), code="study_reference_unavailable"), status=400)
         if study_context:
@@ -7036,6 +7187,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     route_source=runtime_request.get("route_source") or "global",
                     confirmed_runtime_lock=lock_active,
                     approval_callback=_approval_notify if companion_view else None,
+                    companion_input_budget=companion_view and not internal_turn,
                     agent_ref=stream_control["agent_ref"],
                     **agent_overrides,
                 )
@@ -9561,6 +9713,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route_source: str = "global",
         confirmed_runtime_lock: bool = False,
         approval_callback=None,
+        companion_input_budget: bool = False,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -9638,6 +9791,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
+                    if (
+                        companion_input_budget
+                        and getattr(agent, "api_mode", None) != "codex_app_server"
+                        and getattr(agent, "provider", None) != "moa"
+                    ):
+                        agent._companion_input_budget = True
+                        lane = str(gateway_session_key or "")
+                        if lane.endswith(":api_server:dm:local-owner"):
+                            agent._companion_memory_lane = lane
+                        # The browser uses the bounded request window below.
+                        # Foreground summarization would send the full old history
+                        # before that window is applied.
+                        agent.compression_enabled = False
+                        agent.max_compression_attempts = 0
                     effective_task_id = session_id or str(uuid.uuid4())
                     # Baseline for selective background-process reaping on
                     # SSE client disconnect — mirrors gateway/run.py's
@@ -10823,6 +10990,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 return False
 
             self._mark_connected()
+            from honeyos.companion.physiology_maintenance import run_maintenance_clock
+            from honeyos.core.constants import get_honeyos_home
+
+            self._physiology_task = asyncio.create_task(run_maintenance_clock(get_honeyos_home()))
+            self._background_tasks.add(self._physiology_task)
+            self._physiology_task.add_done_callback(self._background_tasks.discard)
             diary_task = asyncio.create_task(self._run_companion_diary_clock())
             try:
                 self._background_tasks.add(diary_task)
@@ -10885,6 +11058,11 @@ class APIServerAdapter(BasePlatformAdapter):
         (OSError: [Errno 24] Too many open files, #37011).
         """
         self._mark_disconnected()
+        physiology_task = getattr(self, "_physiology_task", None)
+        if physiology_task is not None:
+            physiology_task.cancel()
+            await asyncio.gather(physiology_task, return_exceptions=True)
+            self._physiology_task = None
         if self._response_store is not None:
             try:
                 self._response_store.close()

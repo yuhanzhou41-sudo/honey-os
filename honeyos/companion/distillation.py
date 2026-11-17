@@ -225,7 +225,7 @@ async def extract_with_auxiliary_model(
             call_overrides["api_key"] = api_key
 
     active_payload = [
-        {"id": item.id, "kind": item.kind, "content": item.content}
+        {"id": item.id, "kind": item.kind, "content": item.content, "created_at": item.created_at.isoformat()}
         for item in active_items
     ]
     transcript = []
@@ -282,7 +282,19 @@ commitment as “I promised you…”, episode as “I remember we…”, open_l
 “I still want to continue…”, and temporary_state as “I know you are currently…”.
 Never use system-role labels in operation content either.
 Allowed kinds: open_loop, temporary_state, commitment, episode.
-Allowed actions: record, resolve, update. Never output forget.
+Allowed actions: record, resolve, update, compress_episode, reinforce_episode. Never output forget.
+If the transcript explicitly revisits the same dated event as an existing episode,
+use compress_episode with its item_id and a single concise account preserving
+both sets of supported details. Cite the transcript rows that identify the same
+event. Include existing_quote and revisit_quote as exact excerpts from the
+existing episode and the new user message that identify the shared event.
+Similar wording, recurring activities, or conflicting dates are insufficient.
+Use reinforce_episode only when an earlier assistant reply actually recalled
+an existing episode and the user then explicitly confirmed it, added factual
+detail to it, or confirmed completing a concrete task using that recollection.
+Include item_id, both evidence_message_ids, and exact excerpts recall_quote
+from the assistant reply and result_quote from the later user reply.
+Topic overlap, conversational acknowledgements and unverified success are insufficient.
 Every operation must cite one or more evidence_message_ids from the supplied transcript.
 Entries marked source=user_diary are user-authored diary evidence that the user
 explicitly allowed HoneyOS to remember. Treat them as user_stated evidence, but
@@ -402,7 +414,10 @@ class MemoryDistiller:
                 continue
             if not isinstance(row_id, int) or not content.strip():
                 continue
-            if message.get("display_kind") in {"hidden", "auto_continue"}:
+            if (
+                message.get("active") in (0, False) or message.get("tool_calls")
+                or message.get("display_kind") in {"hidden", "auto_continue", "model_switch"}
+            ):
                 continue
             selected.append(
                 {"_row_id": row_id, "role": role, "content": content.strip()[:6000]}
@@ -732,16 +747,16 @@ class MemoryDistiller:
             return {"cursor": 2**63 - 1, "busy_start": 0, "busy_end": 0}
 
     def _apply_operations(
-        self, job: DistillationJob, operations: tuple[dict[str, Any], ...]
+        self, job: DistillationJob, operations: tuple[dict[str, Any], ...],
+        active_items: tuple[StructuredMemoryItem, ...],
     ) -> tuple[int, int]:
         valid_source_ids = {message["_row_id"] for message in job.messages}
         source_roles = {
             message["_row_id"]: str(message.get("role") or "").strip().lower()
             for message in job.messages
         }
-        active = {item.id: item for item in self.memories.list_active(
-            lane_key=job.lane_key, now=job.now
-        )}
+        source_text = {message["_row_id"]: message["content"] for message in job.messages}
+        active = {item.id: item for item in active_items}
         applied = rejected = 0
         for operation in operations:
             action = str(operation.get("action") or "").strip().lower()
@@ -788,21 +803,65 @@ class MemoryDistiller:
             if item_id not in active:
                 rejected += 1
                 continue
-            if action == "resolve":
+            if action == "reinforce_episode":
+                from honeyos.memory.runtime_shadow import _query_terms, _score
+
+                recall_quote = str(operation.get("recall_quote") or "").strip()
+                result_quote = str(operation.get("result_quote") or "").strip()
+                recalls = [
+                    row for row in evidence_ids
+                    if source_roles[row] == "assistant" and recall_quote in source_text[row]
+                ]
+                outcomes = [
+                    row for row in evidence_ids
+                    if source_roles[row] == "user" and row > 0 and result_quote in source_text[row]
+                    and any(recall < row for recall in recalls)
+                ]
+                success = bool(
+                    len(recall_quote) >= 8 and len(result_quote) >= 4 and outcomes
+                    and _score(active[item_id].content, _query_terms(recall_quote))[0] >= 3
+                    and self.memories.reinforce_episode(
+                        lane_key=job.lane_key, item_id=item_id, session_id=job.session_id,
+                        message_id=min(outcomes), now=job.now,
+                    )
+                )
+            elif action == "resolve":
                 success = self.memories.change_status(
                     lane_key=job.lane_key,
                     item_id=item_id,
                     action="resolve",
                     now=job.now,
                 )
-            elif action == "update":
+            elif action in {"update", "compress_episode"}:
+                existing = active[item_id]
+                if action == "compress_episode":
+                    existing_quote = str(operation.get("existing_quote") or "").strip()
+                    revisit_quote = str(operation.get("revisit_quote") or "").strip()
+                    same_session = any(source == job.session_id for source, _ in existing.source_refs)
+                    if (
+                        existing.kind != "episode" or existing.created_by != "background"
+                        or existing.user_edited or not existing.source_refs or same_session
+                        or len(existing_quote) < 6 or existing_quote not in existing.content
+                        or len(revisit_quote) < 6
+                        or not any(
+                            row > 0 and source_roles[row] == "user" and revisit_quote in source_text[row]
+                            for row in evidence_ids
+                        )
+                    ):
+                        rejected += 1
+                        continue
+                elif existing.kind == "episode":
+                    rejected += 1
+                    continue
                 success = self.memories.update_content(
                     lane_key=job.lane_key,
                     item_id=item_id,
                     content=str(operation.get("content") or ""),
-                    expires_at=operation.get("expires_at"),
+                    expires_at=operation.get("expires_at") if action == "update" else None,
                     source_message_ids=evidence_ids,
+                    source_session_id=job.session_id,
                     distillation_run_id=job.run_id,
+                    expected_updated_at=existing.updated_at,
                     now=job.now,
                 )
             else:
@@ -811,7 +870,7 @@ class MemoryDistiller:
                 applied += 1
             else:
                 rejected += 1
-        self.memories.prune_background(lane_key=job.lane_key, max_items=50)
+        self.memories.archive_background(lane_key=job.lane_key, now=job.now)
         return applied, rejected
 
     async def distill_if_due(
@@ -823,6 +882,7 @@ class MemoryDistiller:
         reason: str,
         main_runtime: Mapping[str, Any] | None = None,
         now: datetime | None = None,
+        reload_messages: Callable[[], Awaitable[Iterable[Mapping[str, Any]]]] | None = None,
     ) -> DistillationResult | None:
         timestamp = _as_utc(now or _utc_now())
         try:
@@ -850,6 +910,17 @@ class MemoryDistiller:
         try:
             active_items = self.memories.list_active(lane_key=lane_key, now=timestamp)
             raw = await self.extractor(job, active_items, dict(main_runtime or {}))
+            if reload_messages is not None:
+                current = {
+                    row["_row_id"]: row["content"]
+                    for row in self._conversational_messages(await reload_messages())
+                }
+                if any(
+                    message["_row_id"] > 0
+                    and current.get(message["_row_id"]) != message["content"]
+                    for message in job.messages
+                ):
+                    raise ValueError("chat evidence changed during distillation")
             operations = self._parse_operations(raw, self.settings.max_operations)
             chapter = self._record_chapter(job, raw)
             if chapter is None:
@@ -864,7 +935,7 @@ class MemoryDistiller:
                     status="failed",
                     error=error,
                 )
-            applied, rejected = self._apply_operations(job, operations)
+            applied, rejected = self._apply_operations(job, operations, active_items)
             if operations and applied == 0 and rejected:
                 error = "validation rejected every proposed memory operation"
                 with self._connect() as connection:

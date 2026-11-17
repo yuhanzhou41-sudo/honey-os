@@ -5,7 +5,7 @@ import logging
 import re
 import threading
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,85 @@ _CJK_STOP = {
     "时候", "还是", "已经", "然后", "因为", "所以", "如果", "但是",
     "系统", "的系统", "关系", "家庭",
 }
+
+# A small set of precise equivalences. Broad labels such as “red” or “rain”
+# alone would overlap too many unrelated memories.
+_SENSORY_ALIASES = (
+    ("color:navy", "藏青色", "海军蓝", "navy blue"),
+    ("color:lavender", "淡紫色", "薰衣草紫", "lavender purple"),
+    ("smell:petrichor", "雨后泥土味", "雨后土腥味", "潮湿泥土的气味", "petrichor"),
+    ("smell:osmanthus", "桂花香", "桂花的香味", "osmanthus scent"),
+    ("sound:cicadas", "蝉鸣", "知了叫", "cicadas chirping"),
+    ("sound:wind-chimes", "风铃声", "风铃响", "wind chimes"),
+)
+
+_BROAD_RECALL = re.compile(
+    r"(?:回顾|回忆|找出|列出|整理|梳理|汇总|查找).{0,35}(?:往事|经历|记忆|聊天历史|聊天记录)"
+    r"|(?:所有|全部|完整).{0,20}(?:经历|记忆|聊天记录)"
+    r"|\b(?:recall|list|review|find)\b.{0,45}\b(?:memories|past conversations)\b",
+    re.IGNORECASE,
+)
+EXPANDED_RECALL_ITEMS = 64
+EXPANDED_RECALL_CHARS = 8_000
+_DATED_RECALL = re.compile(r"(?<![0-9])(\d{4})[-年](\d{1,2})[-月](\d{1,2})(?:日)?(?![0-9])")
+
+
+def requests_broad_recall(query: str) -> bool:
+    return bool(_BROAD_RECALL.search(query))
+
+
+def _recall_dates(query: str) -> tuple[date, date] | None:
+    matches = list(_DATED_RECALL.finditer(query))
+    if len(matches) not in (1, 2):
+        return None
+    if len(matches) == 2 and query[matches[0].end():matches[1].start()].strip() not in {"到", "至", "—", "~", "～", "to"}:
+        return None
+    try:
+        days = [date(*(int(part) for part in match.groups())) for match in matches]
+    except ValueError:
+        return None
+    return (days[0], days[-1]) if days[0] <= days[-1] else None
+
+
+def _recall_strength(row: Any, now: datetime) -> float:
+    try:
+        happened = datetime.fromisoformat(row["occurred_at"] or row["captured_at"] or "")
+    except ValueError:
+        return 1.0
+    if happened.tzinfo is None:
+        return 1.0
+    age_days = max(0.0, (now - happened).total_seconds() / 86400)
+    importance = max(float(row[key] or 0) for key in ("recall_affinity", "user_emphasis", "unresolvedness"))
+    half_life_days = 90 + 270 * max(0.0, min(1.0, importance))
+    return 2 ** (-age_days / half_life_days)
+
+
+def _sensory_cues(text: str) -> set[str]:
+    normalized = _normalize(text)
+    return {cue for cue, *aliases in _SENSORY_ALIASES
+            if any(alias in normalized for alias in aliases)}
+
+
+def _rank_adjustment(row: Any, now: datetime) -> float:
+    # Salience is optional for existing memories. Its values only rerank
+    # candidates already admitted by topic or a precise sensory cue.
+    def unit(field: str) -> float:
+        return max(0.0, min(1.0, float(row[field] or 0)))
+
+    recency = 0.0
+    if row["occurred_at"]:
+        try:
+            happened = datetime.fromisoformat(row["occurred_at"])
+            if happened.tzinfo is not None:
+                days = max(0.0, (now - happened).total_seconds() / 86400)
+                recency = 0.5 * (2 ** (-days / 30))
+        except ValueError:
+            pass
+    return (
+        recency + 0.4 * unit("personal_relevance") + 0.6 * unit("user_emphasis")
+        + 0.25 * unit("arousal") + 0.25 * unit("unresolvedness")
+        - unit("mention_sensitivity")
+    )
 
 _ROLEPLAY_HINTS = (
     "角色扮演", "扮演", "rp", "rpg", "跑团", "角色卡", "代入", "oc",
@@ -186,7 +265,7 @@ def _namespace_allows(query_namespace: str, partition: str) -> bool:
 
 
 class CognitiveMemoryShadowRetriever:
-    """Read-only lexical shadow retriever for Phase F1.
+    """Read-only lexical and sensory retriever.
 
     It never produces prompt text and never mutates Cognitive Memory.
     """
@@ -217,11 +296,29 @@ class CognitiveMemoryShadowRetriever:
         session_id: str = "",
         turn_id: str = "",
         write_audit: bool = True,
+        adaptive: bool = False,
+        now: datetime | None = None,
     ) -> ShadowRetrievalResult:
         clean_query = str(query or "").strip()
         namespace = _query_namespace(clean_query)
-        terms = _query_terms(clean_query)
-        if not clean_query or not terms:
+        explicit_recall = False
+        if adaptive:
+            from honeyos.routing.rules import route_by_rules
+
+            route = route_by_rules(clean_query)
+            explicit_recall = requests_broad_recall(clean_query) or (route is not None and route.intent == "recall")
+        date_scope = _recall_dates(clean_query) if explicit_recall else None
+        subject = clean_query
+        if date_scope:
+            subject = _DATED_RECALL.sub(" ", subject)
+            subject = re.sub(
+                r"回顾|回忆|找出|查找|聊天历史|聊天记录|记录|所有|全部|经历|记忆|"
+                r"\b(?:review|recall|list|find|all|memories|past conversations)\b",
+                " ", subject, flags=re.I,
+            )
+        terms = _query_terms(subject)
+        cues = _sensory_cues(clean_query)
+        if not terms and not cues and not date_scope:
             result = ShadowRetrievalResult(
                 query=clean_query,
                 namespace=namespace,
@@ -239,30 +336,58 @@ class CognitiveMemoryShadowRetriever:
                 """
                 SELECT
                     e.episode_id,e.summary,e.source_system,e.source_key,
-                    e.occurred_at,e.captured_at,e.metadata_json
+                    e.occurred_at,e.captured_at,
+                    s.personal_relevance,s.user_emphasis,s.arousal,
+                    s.unresolvedness,s.mention_sensitivity,s.recall_affinity
                 FROM memory_episodes e
+                LEFT JOIN memory_salience s
+                    ON s.memory_kind='episode' AND s.memory_id=e.episode_id
                 WHERE e.memory_origin='external'
-                  AND e.status='active'
+                  AND (e.status='active' OR (? AND e.status='dormant'))
                   AND NOT EXISTS (
                       SELECT 1
                       FROM memory_tombstones t
                       WHERE t.active=1
                         AND t.scope='source'
-                        AND t.source_system=e.source_system
-                        AND t.source_id=e.source_key
+                        AND (
+                            (t.source_system=e.source_system AND t.source_id=e.source_key)
+                            OR EXISTS (
+                                SELECT 1 FROM memory_provenance p
+                                WHERE p.memory_kind='episode' AND p.memory_id=e.episode_id
+                                  AND p.source_system=t.source_system AND p.source_id=t.source_id
+                            )
+                        )
                   )
                 ORDER BY COALESCE(e.occurred_at,e.captured_at) DESC, e.episode_id
-                """
+                """, (explicit_recall,)
             ).fetchall()
 
-        scored: list[tuple[float, Any, str, list[str]]] = []
+        scored: list[tuple[float, Any, str, str]] = []
         rejected: list[ShadowCandidate] = []
+        now = now or datetime.now(timezone.utc)
+        attention = 0.0
+        if adaptive:
+            from honeyos.companion.physiology_shadow import live_signals
+
+            signals = live_signals(self.repository.memory_dir.parent, now=now)
+            attention = max(0.0, signals.get("epinephrine", 0.05) - 0.05) * 0.20
 
         for row in rows:
+            if date_scope:
+                # Import date is not the date of the original conversation.
+                try:
+                    happened = datetime.fromisoformat(row["occurred_at"] or "").date()
+                except ValueError:
+                    continue
+                if not date_scope[0] <= happened <= date_scope[1]:
+                    continue
             summary = str(row["summary"] or "")
             partition, _partition_label = history_partition(summary)
             runtime_namespace = _runtime_memory_namespace(summary, partition)
             score, hits = _score(summary, terms)
+            shared_cues = sorted(cues & _sensory_cues(summary)) if cues else []
+            if shared_cues or (date_scope and not terms):
+                score = max(score, 3.0)
 
             # Phase F1 uses two thresholds:
             # - audit threshold (2.0): weak but meaningful lexical overlap can be
@@ -287,11 +412,18 @@ class CognitiveMemoryShadowRetriever:
                 )
                 continue
 
-            if score < 3.0:
+            strength = _recall_strength(row, now) if adaptive else 1.0
+            threshold = 3.0 + (0.0 if explicit_recall else 3.0 * max(0.0, 0.65 - strength))
+            if score < threshold:
                 continue
 
             reason = "lexical:" + ",".join(hits[:8])
-            scored.append((score, row, partition, hits))
+            if date_scope:
+                reason += "|date_scope"
+            if shared_cues:
+                reason += "|sensory:" + ",".join(shared_cues)
+            state_boost = attention * max(0.0, min(1.0, float(row["arousal"] or 0)))
+            scored.append((score + _rank_adjustment(row, now) + state_boost, row, partition, reason))
 
         scored.sort(
             key=lambda item: (
@@ -302,9 +434,13 @@ class CognitiveMemoryShadowRetriever:
         )
 
         selected: list[ShadowCandidate] = []
+        included_summaries: set[str] = set()
         total = 0
-        for score, row, partition, hits in scored:
+        for score, row, partition, reason in scored:
             summary = str(row["summary"] or "")
+            normalized_summary = _normalize(summary)
+            if normalized_summary in included_summaries:
+                continue
             if len(selected) >= self.max_results:
                 rejected.append(
                     ShadowCandidate(
@@ -347,13 +483,60 @@ class CognitiveMemoryShadowRetriever:
                     source_key=str(row["source_key"] or ""),
                     partition=partition,
                     score=round(score, 3),
-                    reason="lexical:" + ",".join(hits[:8]),
+                    reason=reason,
                     selected=True,
                     char_cost=cost,
                     summary_preview=preview,
                 )
             )
+            included_summaries.add(normalized_summary)
             total += cost
+
+        # Expand only from the strongest directly retrieved episode. Reusing
+        # the filtered rows also enforces source tombstones on the other end.
+        if adaptive and not explicit_recall and selected and len(selected) < self.max_results:
+            anchor = selected[0]
+            eligible_rows = {str(row["episode_id"]): row for row in rows}
+            with self.repository.connect() as db:
+                neighbors = db.execute(
+                    """
+                    SELECT q.memory_id, COUNT(DISTINCT p.message_id) AS shared
+                    FROM memory_provenance p JOIN memory_provenance q
+                      ON q.source_system=p.source_system AND q.source_id=p.source_id
+                     AND q.session_id IS p.session_id AND q.message_id=p.message_id
+                    WHERE p.memory_kind='episode' AND q.memory_kind='episode'
+                      AND p.memory_id=? AND q.memory_id<>p.memory_id
+                      AND p.message_id IS NOT NULL AND p.message_id<>''
+                    GROUP BY q.memory_id ORDER BY shared DESC, q.memory_id
+                    """,
+                    (anchor.id,),
+                ).fetchall()
+            used_ids = {item.id for item in selected}
+            anchor_namespace = _runtime_memory_namespace(
+                eligible_rows[anchor.id]["summary"], anchor.partition
+            )
+            for neighbor in neighbors:
+                item_id = neighbor["memory_id"]
+                row = eligible_rows.get(item_id)
+                if row is None or item_id in used_ids or _recall_strength(row, now) < 0.45:
+                    continue
+                summary = str(row["summary"] or "")
+                partition, _ = history_partition(summary)
+                if (
+                    _runtime_memory_namespace(summary, partition) != anchor_namespace
+                    or _normalize(summary) in included_summaries
+                ):
+                    continue
+                preview = summary[: min(self.max_preview_per_item, self.char_budget - total)]
+                if preview:
+                    selected.append(ShadowCandidate(
+                        id=item_id, source_system=str(row["source_system"] or ""),
+                        source_key=str(row["source_key"] or ""), partition=partition,
+                        score=0.0, reason="shared_source_message", selected=True,
+                        char_cost=len(preview), summary_preview=preview,
+                    ))
+                    total += len(preview)
+                break
 
         # Audit only the strongest rejected candidates to keep logs bounded.
         rejected.sort(key=lambda item: (-item.score, item.id))
@@ -397,11 +580,18 @@ def run_cognitive_memory_shadow(
     *,
     session_id: str = "",
     turn_id: str = "",
+    expanded: bool = False,
+    adaptive: bool = False,
 ) -> ShadowRetrievalResult:
     """Fail-open Phase F1 entry point used by the turn prologue."""
-    return CognitiveMemoryShadowRetriever().retrieve(
+    retriever = (
+        CognitiveMemoryShadowRetriever(max_results=EXPANDED_RECALL_ITEMS, char_budget=EXPANDED_RECALL_CHARS)
+        if expanded else CognitiveMemoryShadowRetriever()
+    )
+    return retriever.retrieve(
         query,
         session_id=session_id,
         turn_id=turn_id,
         write_audit=True,
+        adaptive=adaptive,
     )

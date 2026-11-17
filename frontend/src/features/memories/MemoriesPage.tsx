@@ -85,6 +85,13 @@ function companionMemoryCopy(memory: MemoryItem): string {
   return `${lead[memory.kind] || "我记得："}${content}`;
 }
 
+function SourceAvailability({ count = 0 }: { count?: number }) {
+  if (!count) return null;
+  return <span className="mt-2 w-fit rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100">
+    {count} 个原聊天已删除或不可用
+  </span>;
+}
+
 export function MemoriesPage() {
   const queryClient = useQueryClient();
   const {
@@ -108,6 +115,7 @@ export function MemoriesPage() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
+  const [memoryEdit, setMemoryEdit] = useState<{ id: string; content: string } | null>(null);
   const pageSize = 30;
 
   const memoryRefresh = useQuery({
@@ -165,6 +173,16 @@ export function MemoriesPage() {
       setNotice(data.action === "resolve" ? "已经标记为完成" : "这件事已经忘记了");
     },
     onError: () => setNotice("刚才没有改成功，请再试一次"),
+  });
+
+  const editNativeMemory = useMutation({
+    mutationFn: ({ id, content }: { id: string; content: string }) => updateCompanionMemory(id, "edit", content),
+    onSuccess: async () => {
+      setMemoryEdit(null);
+      setNotice("已保存记忆");
+      await queryClient.invalidateQueries({ queryKey: ["companion", "memories"] });
+    },
+    onError: () => setNotice("刚才没有保存，请再试一次"),
   });
 
   const editMutation = useMutation({
@@ -286,6 +304,7 @@ export function MemoriesPage() {
                   </span>
                 </header>
                 <h2 className="mt-5 font-semibold leading-6">{chapter.title}</h2>
+                <SourceAvailability count={chapter.unavailable_source_count} />
                 <p className="mt-2 break-words text-[15px] leading-7 text-[var(--foreground-muted)]">
                   {chapter.summary}
                 </p>
@@ -305,10 +324,27 @@ export function MemoriesPage() {
                     </span>
                     <span>{memoryDate(memory)}</span>
                   </header>
-                  <p className="mt-5 break-words text-[15px] leading-7">
-                    {companionMemoryCopy(memory)}
-                  </p>
+                  <SourceAvailability count={memory.unavailable_source_count} />
+                  {memoryEdit?.id === memory.id ? (
+                    <div className="mt-4 grid gap-2">
+                      <textarea aria-label="记忆内容" maxLength={500} value={memoryEdit.content}
+                        onChange={(event) => setMemoryEdit({ id: memory.id, content: event.target.value })}
+                        className="rounded border border-[var(--border)] bg-[var(--surface-raised)] p-2" />
+                      <div className="flex gap-2">
+                        <Button type="button" disabled={!memoryEdit.content.trim() || editNativeMemory.isPending}
+                          onClick={() => editNativeMemory.mutate(memoryEdit)}>保存</Button>
+                        <Button type="button" variant="ghost" disabled={editNativeMemory.isPending}
+                          onClick={() => setMemoryEdit(null)}>取消</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-5 break-words text-[15px] leading-7">{companionMemoryCopy(memory)}</p>
+                  )}
                   <div className="mt-auto flex flex-wrap gap-2 pt-5">
+                    {memory.can_edit && memoryEdit?.id !== memory.id ? (
+                      <Button type="button" variant="ghost" disabled={editNativeMemory.isPending}
+                        onClick={() => setMemoryEdit({ id: memory.id, content: memory.content })}>编辑</Button>
+                    ) : null}
                     {memory.kind === "open_loop" || memory.kind === "commitment" ? (
                       <Button
                         type="button"

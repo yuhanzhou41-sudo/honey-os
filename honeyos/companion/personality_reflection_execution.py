@@ -237,6 +237,7 @@ def run_personality_reflection_once(
     *,
     main_runtime: Mapping[str, Any] | None = None,
     force: bool = False,
+    liked_only: bool = False,
 ):
     """Run at most one real reflection batch.
 
@@ -245,7 +246,7 @@ def run_personality_reflection_once(
     """
     home = _home_path(home)
     adapter = AuxiliaryPersonalityReflectionAdapter(home, main_runtime=main_runtime)
-    runner = PersonalityReflectionRunner(home, adapter=adapter)
+    runner = PersonalityReflectionRunner(home, adapter=adapter, liked_only=liked_only)
 
     first = runner.should_reflect(force=force)
     if not first.should_reflect:
@@ -278,7 +279,7 @@ def run_personality_reflection_once(
         if result.status == "success":
             try:
                 from honeyos.companion.personality_promotion import promote_eligible_candidates
-                promotion_result = promote_eligible_candidates(home)
+                promotion_result = promote_eligible_candidates(home, liked_only=liked_only)
             except Exception:
                 logger.exception("personality candidate promotion scan failed")
         return {
@@ -295,6 +296,7 @@ def maybe_start_background_personality_reflection(
     home: Path | str,
     *,
     main_runtime: Mapping[str, Any] | None = None,
+    liked_only: bool = False,
 ) -> dict[str, Any]:
     """Cheap runtime trigger.
 
@@ -304,7 +306,7 @@ def maybe_start_background_personality_reflection(
 
     # A placeholder adapter is enough for the pure threshold check; it is never
     # called here.
-    runner = PersonalityReflectionRunner(home, adapter=lambda _: {"operations": []})
+    runner = PersonalityReflectionRunner(home, adapter=lambda _: {"operations": []}, liked_only=liked_only)
     decision = runner.should_reflect()
     if not decision.should_reflect:
         return {
@@ -319,6 +321,7 @@ def maybe_start_background_personality_reflection(
                 home,
                 main_runtime=main_runtime,
                 force=False,
+                liked_only=liked_only,
             )
         except Exception:
             logger.exception("background personality reflection failed")

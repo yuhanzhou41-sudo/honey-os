@@ -28,6 +28,14 @@ def generate_question_candidates(system: str, content: str) -> str:
     return _generate(system, content, task="模拟题", max_tokens=1800)
 
 
+def generate_shadow_appraisal(system: str, content: str) -> str:
+    return _generate(system, content, task="状态评估草稿", max_tokens=280)
+
+
+def summarize_document_batch(system: str, content: str) -> str:
+    return _generate(system, content, task="文档分批摘要", max_tokens=500)
+
+
 def _generate(system: str, content: str, *, task: str, max_tokens: int) -> str:
     from honeyos.gateway.run import _load_gateway_config
 
@@ -35,7 +43,7 @@ def _generate(system: str, content: str, *, task: str, max_tokens: int) -> str:
     if not endpoint:
         raise LocalStudyModelUnavailable(f"请先在模型设置里配置本机 Qwen，再生成{task}。")
     if not _SLOT.acquire(blocking=False):
-        raise LocalStudyModelUnavailable("本机 Qwen 正在处理 Study 请求，请稍后重试。")
+        raise LocalStudyModelUnavailable("本机 Qwen 正在处理请求，请稍后重试。")
     url, model = endpoint
     try:
         # Prevent environment proxies or HTTP redirects from sending Study material off device.
