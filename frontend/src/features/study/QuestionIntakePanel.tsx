@@ -43,6 +43,7 @@ export default function QuestionIntakePanel({ planId, tasks, onSaved }: {
   const [topic, setTopic] = useState("");
   const [searchResults, setSearchResults] = useState<ExamSource[]>();
   const [webSource, setWebSource] = useState<ExamSource>();
+  const [sourceUrl, setSourceUrl] = useState("");
   const [offer, setOffer] = useState(false);
   const [preview, setPreview] = useState<IntakeDraft>();
   const [segment, setSegment] = useState(1);
@@ -134,6 +135,14 @@ export default function QuestionIntakePanel({ planId, tasks, onSaved }: {
     });
   }
 
+  function openSource(source: ExamSource) {
+    setPreview(undefined);
+    setSegment(1);
+    setWebSource(source);
+    setOffer(false);
+    getDraft(1, source);
+  }
+
   function generate() {
     void run(async () => {
       const selectedPlan = usePlan ? planId : undefined;
@@ -214,13 +223,18 @@ export default function QuestionIntakePanel({ planId, tasks, onSaved }: {
             setSearchResults(result.sources);
             setOffer(result.sources.length === 0);
           })}>搜索真题</button>
+          <label className="block">原卷或题目网页网址（选填）
+            <input className={field} type="url" value={sourceUrl} maxLength={2048}
+              onChange={event => setSourceUrl(event.target.value)} />
+          </label>
+          <button className={button} type="button" disabled={!sourceUrl.trim()} onClick={() =>
+            openSource({ url: sourceUrl.trim(), title: sourceUrl.trim(), description: "" })
+          }>从网址提取题目</button>
           {searchResults && <ul className="space-y-2">
             {searchResults.map(source => <li className={panel} key={source.url}>
               <a className="underline" href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
               {source.description && <p className="text-sm">{source.description}</p>}
-              <button className={button} type="button" onClick={() => {
-                setPreview(undefined); setSegment(1); setWebSource(source); getDraft(1, source);
-              }}>提取这份来源的题目</button>
+              <button className={button} type="button" onClick={() => openSource(source)}>提取这份来源的题目</button>
             </li>)}
           </ul>}
           {!!searchResults?.length && <button className={button} type="button" onClick={() => setOffer(true)}>没有找到可用真题</button>}
@@ -249,6 +263,11 @@ export default function QuestionIntakePanel({ planId, tasks, onSaved }: {
       <legend>{preview.source.kind === "mock" ? "模拟题草稿" : "核对提取结果"}</legend>
       <p>{preview.source.title}</p>
       {preview.source.url && <a className="underline" href={preview.source.url} target="_blank" rel="noreferrer">打开原网页</a>}
+      {!!preview.documents?.length && <ul className="space-y-2">
+        {preview.documents.map(source => <li key={source.url}>
+          <button className={button} type="button" onClick={() => openSource(source)}>提取 PDF · {source.title}</button>
+        </li>)}
+      </ul>}
       {preview.warning && <p>{preview.warning} 可以从正文手动录题。</p>}
       {preview.partial && <p>只提取了前 12,000 字。可拆分文件后继续录入。</p>}
       <details open={preview.source.kind !== "mock"}>

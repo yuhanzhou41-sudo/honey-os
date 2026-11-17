@@ -3,11 +3,14 @@
 import asyncio
 import ipaddress
 import json
+from html.parser import HTMLParser
 from types import SimpleNamespace
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from .local_model import generate_question_candidates
 from .review import text
+
+MAX_WEB_BYTES = 6 * 1024 * 1024
 
 
 def _public_link(value):
@@ -43,7 +46,7 @@ def search_past_questions(body):
     return {"sources": list(sources.values())}
 
 
-def extract_web_source(body):
+def extract_web_source(body, *, documents=None):
     from honeyos.tools.web_tools import web_extract_tool
 
     url = body.get("url")
@@ -52,13 +55,113 @@ def extract_web_source(body):
     result = json.loads(asyncio.run(web_extract_tool([url], format="markdown", char_limit=12000)))
     page = next(iter(result.get("results") or []), {})
     if page.get("error") or not page.get("content"):
-        raise ValueError("无法提取此网页的题目。可打开原网页核对，或下载题目后上传。")
+        return _extract_public_document(url, documents=documents)
     content = str(page["content"])[:12000].strip()
     # The web tool appends a local cache path to truncated results.
     marker = content.find("──────── [TRUNCATED] ────────")
     if marker >= 0:
         content = content[:marker].rstrip()
     return str(page.get("title") or url)[:255], content, url
+
+
+class _PageText(HTMLParser):
+    excluded = {"script", "style", "noscript", "template", "nav", "footer", "svg"}
+    standalone = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self):
+        super().__init__()
+        self.title = []
+        self.parts = []
+        self.ignored = []
+        self.in_title = False
+        self.pdf_links = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.excluded:
+            self.ignored.append(tag)
+        if not self.ignored:
+            if tag == "title":
+                self.in_title = True
+            elif tag == "a":
+                href = dict(attrs).get("href") or ""
+                if href.lower().split("?", 1)[0].split("#", 1)[0].endswith(".pdf"):
+                    self.pdf_links.append(href)
+            elif tag in {"p", "li", "br", "td", "tr", "section", "article", "h1", "h2", "h3", "h4"}:
+                self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if self.ignored and tag == self.ignored[-1]:
+            self.ignored.pop()
+        if tag == "title":
+            self.in_title = False
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self.standalone:
+            self.handle_endtag(tag)
+
+    def handle_data(self, data):
+        if not self.ignored:
+            (self.title if self.in_title else self.parts).append(data)
+
+
+def _extract_public_document(url, *, documents=None):
+    import httpx
+
+    from honeyos.tools.url_safety import SSRFConnectionBlocked, ssrf_safe_http_transport
+    from .service import StudyService
+
+    failure = "无法提取此网页的题目。可打开原网页核对，或下载题目后上传。"
+    try:
+        with httpx.Client(transport=ssrf_safe_http_transport(public_only=True), trust_env=False,
+                          timeout=12, headers={"User-Agent": "HoneyOS Study"}) as client:
+            for _ in range(5):
+                if not _public_link(url):
+                    raise ValueError(failure)
+                with client.stream("GET", url) as response:
+                    if response.is_redirect and response.headers.get("location"):
+                        url = urljoin(url, response.headers["location"])
+                        continue
+                    response.raise_for_status()
+                    content_type = response.headers.get("content-type", "").partition(";")[0].lower()
+                    encoding = response.encoding or "utf-8"
+                    data = bytearray()
+                    for chunk in response.iter_bytes(chunk_size=65536):
+                        if len(data) + len(chunk) > MAX_WEB_BYTES:
+                            raise ValueError("网页文件超过 6 MB，请下载题目后分批上传。")
+                        data.extend(chunk)
+                    break
+            else:
+                raise ValueError(failure)
+    except (httpx.HTTPError, SSRFConnectionBlocked) as exc:
+        raise ValueError(failure) from exc
+    name = urlsplit(url).path.rsplit("/", 1)[-1]
+    if data.startswith(b"%PDF-"):
+        return (name or "PDF 试卷")[:255], StudyService._decode_study_attachment(
+            filename="source.pdf", mime_type="application/pdf", data=bytes(data),
+        )[:12000], url
+    if content_type not in ("text/html", "application/xhtml+xml", "text/plain"):
+        raise ValueError(failure)
+    raw = data.decode(encoding, errors="replace")
+    if content_type == "text/plain":
+        content = raw[:12000].strip()
+        title = name or url
+    else:
+        parser = _PageText()
+        parser.feed(raw)
+        if documents is not None:
+            linked = (urljoin(url, href) for href in parser.pdf_links)
+            for target in dict.fromkeys(linked):
+                if _public_link(target):
+                    filename = urlsplit(target).path.rsplit("/", 1)[-1]
+                    documents.append({"url": target, "title": filename, "description": ""})
+                if len(documents) >= 8:
+                    break
+        title = " ".join("".join(parser.title).split()) or name or url
+        content = "\n".join(" ".join(line.split()) for line in "".join(parser.parts).splitlines() if line.strip())[:12000]
+    if not content:
+        raise ValueError(failure)
+    return title[:255], content, url
 
 
 def _model_questions(system, payload):

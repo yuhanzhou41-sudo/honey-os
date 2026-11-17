@@ -161,8 +161,10 @@ def _upload_drafts(store, body):
 
 
 def _web_drafts(store, body):
-    title, content, url = extract_web_source(body)
-    return source_drafts(store, "web", title, content, body.get("segment", 1), url)
+    documents = []
+    title, content, url = extract_web_source(body, documents=documents)
+    return {**source_drafts(store, "web", title, content, body.get("segment", 1), url),
+            "documents": documents}
 
 
 def _answer(review, body):

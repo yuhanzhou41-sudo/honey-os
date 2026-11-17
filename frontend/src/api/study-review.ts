@@ -57,7 +57,7 @@ export type QuestionDraft = Omit<QuestionInput, "resource_id" | "correct"> & {
 export type ExamSource = { url: string; title: string; description: string };
 export type IntakeDraft = {
   source: { id: string; kind: "upload" | "web" | "mock"; title: string; url: string | null };
-  text: string; segments: number; questions: QuestionDraft[]; partial?: boolean; warning?: string;
+  text: string; segments: number; questions: QuestionDraft[]; partial?: boolean; warning?: string; documents?: ExamSource[];
 };
 const attempts = (id: string) => review + "/questions/" + encodeURIComponent(id) + "/attempts";
 function post<T>(path: string, body: object) {

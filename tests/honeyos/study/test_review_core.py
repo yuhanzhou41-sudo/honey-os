@@ -217,6 +217,59 @@ def test_web_import_preserves_url_and_checks_claimed_exam(monkeypatch, review):
     assert question["source_url"] == url and store.history(question["id"])["question"]["source_url"] == url
 
 
+def test_study_web_fetch_uses_local_extraction_when_provider_has_no_extract(monkeypatch):
+    from honeyos.tools import url_safety, web_tools
+    import httpx
+
+    async def unavailable(*args, **opts):
+        return json.dumps({"success": False, "error": "search only"})
+
+    def page(request):
+        if request.url.path == "/exam":
+            return httpx.Response(302, headers={"Location": "/paper"})
+        return httpx.Response(200, headers={"Content-Type": "text/html"}, text=(
+            "<title>Exam</title><script>hidden</script><nav>menu</nav><main>"
+            "<p>Carrier?</p><p>A. ATP</p><p>B. DNA</p></main>"
+        ))
+
+    def transport(*, public_only):
+        assert public_only
+        return httpx.MockTransport(page)
+
+    monkeypatch.setattr(web_tools, "web_extract_tool", unavailable)
+    monkeypatch.setattr(url_safety, "ssrf_safe_http_transport", transport)
+    url = "https://exams.example.org/exam"
+    assert question_intake.extract_web_source({"url": url}) == (
+        "Exam", "Carrier?\nA. ATP\nB. DNA", "https://exams.example.org/paper",
+    )
+
+
+@pytest.mark.parametrize(
+    "addresses, proxy_enabled, accepted",
+    [
+        (["2001:2::83", "198.18.0.122"], True, True),
+        (["2001:2::83", "8.8.8.8"], True, False),
+        (["2001:2::83", "198.18.0.122"], False, False),
+        (["2001:2::83", "198.18.0.122", "127.0.0.1"], True, False),
+        (["2001:2::83", "198.18.0.122", "169.254.169.254"], True, False),
+    ],
+)
+def test_study_web_transport_only_ignores_paired_proxy_ipv6(monkeypatch, addresses, proxy_enabled, accepted):
+    import socket
+    from honeyos.tools import url_safety
+
+    monkeypatch.setattr(url_safety, "_global_allow_proxy_fake_ips", lambda: proxy_enabled)
+    monkeypatch.setattr(url_safety, "_global_allow_private_urls", lambda: True)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args: [
+        (0, 0, 0, "", (address, 443)) for address in addresses
+    ])
+    if accepted:
+        assert url_safety._resolved_http_connect_ips("exams.example.org", 443, "https", public_only=True) == ["198.18.0.122"]
+    else:
+        with pytest.raises(url_safety.SSRFConnectionBlocked):
+            url_safety._resolved_http_connect_ips("exams.example.org", 443, "https", public_only=True)
+
+
 def test_practice_generation_requires_consent_and_reads_selected_plan(monkeypatch, review):
     store, _ = review
     plan = store.study.create_plan({
