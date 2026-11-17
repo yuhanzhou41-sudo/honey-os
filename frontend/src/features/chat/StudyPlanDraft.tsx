@@ -52,7 +52,7 @@ export default function StudyPlanDraft({ draft }: {
       {draft.revision && <p className="text-sm">调整后，原任务上已设置的提醒会同步更新。</p>}
     </div>}
     {error && <p role="alert">{error}</p>}
-    {done ? <p role="status">计划已保存。 <Link className="underline" to="/study">打开放在学习页面的计划</Link></p> :
+    {done ? <p role="status">计划已保存。 <Link className="underline" to="/study" reloadDocument>打开放在学习页面的计划</Link></p> :
       <Button type="button" variant="secondary" disabled={busy} onClick={() => void act()}>
         {busy ? "正在处理…" : preview ? (draft.revision ? "确认调整计划" : "确认保存到学习") : "预览学习计划"}
       </Button>}

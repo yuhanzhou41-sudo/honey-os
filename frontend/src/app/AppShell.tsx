@@ -31,6 +31,7 @@ function PortraitNavigation() {
         <NavLink
           key={to}
           to={to}
+          reloadDocument={to === "/study"}
           end={end}
           aria-label={label}
           title={label}
@@ -56,6 +57,7 @@ function MobileNavigation() {
         <NavLink
           key={to}
           to={to}
+          reloadDocument={to === "/study"}
           end={end}
           className={({ isActive }) => cn(
             "flex min-h-[4rem] flex-col items-center justify-center gap-1 text-[10px] font-medium text-[var(--foreground-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus)]",

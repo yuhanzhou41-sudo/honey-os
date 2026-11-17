@@ -33,6 +33,7 @@ from honeyos.gateway.platforms.api_server import (
     _run_completed_event_payload,
     _runtime_provider_identity,
     _security_headers_for_path,
+    security_headers_middleware,
 )
 from honeyos.gateway.session import SessionSource, build_session_key
 
@@ -966,6 +967,26 @@ async def test_companion_react_index_establishes_session_and_supports_spa_routes
     assert b'<div id="root"></div>' in response.body
     assert response.headers["Cache-Control"] == "no-store"
     assert response.cookies["honeyos_local"]["httponly"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path,remote,allowed", [
+    ("/study", "127.0.0.1", True),
+    ("/new-ui/study", "::1", True),
+    ("/p/local/study", "127.0.0.1", True),
+    ("/p/local/new-ui/study", "127.0.0.1", True),
+    ("/new-ui/study", "192.168.1.20", False),
+    ("/new-ui/", "127.0.0.1", False),
+])
+async def test_camera_permission_is_limited_to_local_study_documents(path, remote, allowed):
+    adapter = _api_adapter()
+    request = SimpleNamespace(path=path, remote=remote, match_info={})
+    response = await security_headers_middleware(request, adapter._handle_companion_react)
+    policy = response.headers["Permissions-Policy"]
+    assert policy == ("camera=(self), microphone=(), geolocation=()" if allowed else
+                      "camera=(), microphone=(), geolocation=()")
+    if allowed:
+        assert "script-src 'self'" in response.headers["Content-Security-Policy"]
 
 
 @pytest.mark.asyncio

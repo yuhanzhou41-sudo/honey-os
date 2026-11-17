@@ -1327,11 +1327,11 @@ def _security_headers_for_path(path: str) -> Dict[str, str]:
     """Return strict API headers or the bundled UI's same-origin CSP."""
 
     headers = dict(_SECURITY_HEADERS)
-    if path in {"/", "/memories", "/relationship", "/settings", "/onboarding"} or path.startswith(
+    if path in {"/", "/memories", "/study", "/relationship", "/settings", "/onboarding"} or path.startswith(
         "/assets/"
     ) or path.startswith("/new-ui") or bool(
         re.match(
-            r"^/p/[^/]+/(?:new-ui(?:/|$)|assets/|memories$|relationship$|settings$|onboarding$|$)",
+            r"^/p/[^/]+/(?:new-ui(?:/|$)|assets/|memories$|study$|relationship$|settings$|onboarding$|$)",
             path,
         )
     ):
@@ -2904,6 +2904,8 @@ class APIServerAdapter(BasePlatformAdapter):
         response = web.Response(body=body, content_type=content_type)
         if relative == "index.html":
             response.headers["Cache-Control"] = "no-store"
+            if re.fullmatch(r"(?:/p/[^/]+)?(?:/new-ui)?/study/?", getattr(request, "path", "")):
+                response.headers["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=()"
             response.set_cookie(
                 "honeyos_local",
                 self._local_web_token,
