@@ -10,6 +10,7 @@ import re
 from aiohttp import web
 
 from .local_model import generate_flashcard_candidates, generate_question_candidates
+from .question_intake import extract_web_source, practice_drafts, search_past_questions, source_drafts
 from .review import StudyReview, text
 from .service import StudyService
 
@@ -113,7 +114,7 @@ def _question_preview(store, body):
     return {"questions": drafts, "segments": (len(content) + 1799) // 1800}
 
 
-def _extract_question(body):
+def _extract_question(body, *, intake=False):
     filename = text(body.get("filename"), "文件名", 255)
     encoded = body.get("data")
     if not isinstance(encoded, str) or len(encoded) > ((MAX_UPLOAD + 2) // 3) * 4:
@@ -133,7 +134,8 @@ def _extract_question(body):
         image = "image/webp"
     if image:
         output = _study_reply(
-            "只转录图中的题目、选项、公式和解题所需的图表标签与数据，不解答。"
+            ("只转录图中的所有题干、选项、公式、图表标签及图片上已有的参考答案，不解答。"
+             if intake else "只转录图中的题目、选项、公式和解题所需的图表标签与数据，不解答。") +
             "将看不清或缺失的内容明确标成 [无法识别]，不要猜测。",
             [{"type": "text", "text": "请转录这道题。"},
              {"type": "image_url", "image_url": {"url": f"data:{image};base64,{encoded}"}}],
@@ -149,6 +151,18 @@ def _extract_question(body):
     if not output:
         raise ValueError("题目文件中没有可识别的文字。")
     return {"question": output[:12000], "partial": len(output) > 12000}
+
+
+def _upload_drafts(store, body):
+    extracted = _extract_question(body, intake=True)
+    result = source_drafts(store, "upload", body["filename"].strip(),
+                           extracted["question"], body.get("segment", 1))
+    return {**result, "partial": extracted["partial"]}
+
+
+def _web_drafts(store, body):
+    title, content, url = extract_web_source(body)
+    return source_drafts(store, "web", title, content, body.get("segment", 1), url)
 
 
 def _answer(review, body):
@@ -234,6 +248,11 @@ def review_routes(adapter):
          route(lambda b, r: review().import_questions(b), post=True, status=201)),
         ("POST", root + "/review/questions/preview",
          route(lambda b, r: _question_preview(review(), b), post=True, model=True)),
+        ("POST", root + "/review/intake/upload", route(lambda b, r: _upload_drafts(review(), b), post=True, model=True)),
+        ("POST", root + "/review/intake/search", route(lambda b, r: search_past_questions(b), post=True, model=True)),
+        ("POST", root + "/review/intake/web", route(lambda b, r: _web_drafts(review(), b), post=True, model=True)),
+        ("POST", root + "/review/intake/generate", route(lambda b, r: practice_drafts(review(), b), post=True, model=True)),
+        ("POST", root + "/review/intake/save", route(lambda b, r: review().save_intake(b), post=True, status=201)),
         ("GET", root + "/review/questions/{question_id}/attempts",
          route(lambda b, r: review().history(r.match_info["question_id"]))),
         ("POST", root + "/review/questions/{question_id}/attempts",

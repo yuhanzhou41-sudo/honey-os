@@ -4,6 +4,7 @@ from contextlib import closing
 from datetime import datetime, time, timedelta, timezone
 import json
 from uuid import uuid4
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .models import StudyPlanStatus, StudyTaskStatus
@@ -55,6 +56,10 @@ class StudyReview:
                     kind TEXT NOT NULL, exam TEXT, year INTEGER, location TEXT,
                     UNIQUE(kind, exam, year, location)
                 );
+                CREATE TABLE IF NOT EXISTS study_review_intake (
+                    id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL,
+                    url TEXT, content TEXT NOT NULL, created_at TEXT NOT NULL, saved INTEGER NOT NULL DEFAULT 0
+                );
             """)
 
     def _connect(self):
@@ -62,6 +67,12 @@ class StudyReview:
 
     def source(self, resource_id):
         resource_id = text(resource_id, "资料", 100)
+        if resource_id.startswith("intake_"):
+            with closing(self._connect()) as db:
+                row = db.execute("SELECT * FROM study_review_intake WHERE id=?", (resource_id,)).fetchone()
+            if row is None:
+                raise KeyError(resource_id)
+            return SimpleNamespace(id=row["id"], title=row["title"]), row["content"]
         resource = self.study.get_resource(resource_id)
         # Reuse online/source verification; prose and evidence come from the index.
         self.study.build_chat_resource_context([resource_id])
@@ -80,11 +91,12 @@ class StudyReview:
     def list_questions(self, *, wrong_only=False):
         with closing(self._connect()) as db:
             rows = db.execute("""
-                SELECT q.*, s.kind, s.exam, s.year, s.location,
+                SELECT q.*, s.kind, s.exam, s.year, s.location, i.url AS source_url,
                     (SELECT a.correct FROM study_review_attempts a
                     WHERE a.question_id=q.id ORDER BY a.rowid DESC LIMIT 1) AS latest_correct
                 FROM study_review_questions q
-                LEFT JOIN study_review_question_sources s ON s.question_id=q.id ORDER BY q.rowid DESC
+                LEFT JOIN study_review_question_sources s ON s.question_id=q.id
+                LEFT JOIN study_review_intake i ON i.id=q.resource_id ORDER BY q.rowid DESC
             """)
             return [self._question(row) for row in rows
                     if not wrong_only or row["latest_correct"] == 0]
@@ -154,10 +166,65 @@ class StudyReview:
                     raise ValueError("同一考试、年份和原题位置已入库。")
         return {"imported": len(questions)}
 
+    def stage_intake(self, kind, title, content, url=None):
+        source_id = "intake_" + uuid4().hex
+        now = datetime.now(timezone.utc)
+        with closing(self._connect()) as db, db:
+            db.execute("""
+                DELETE FROM study_review_intake WHERE saved=0 AND created_at<?
+                  AND NOT EXISTS (SELECT 1 FROM study_review_questions WHERE resource_id=study_review_intake.id)
+            """, ((now - timedelta(days=1)).isoformat(),))
+            db.execute("""
+                INSERT INTO study_review_intake (id, kind, title, url, content, created_at)
+                VALUES (?,?,?,?,?,?)
+            """, (source_id, kind, title, url, content, now.isoformat()))
+        return {"id": source_id, "kind": kind, "title": title, "url": url}
+
+    def save_intake(self, payload):
+        source_id = text(payload.get("source_id"), "来源编号", 100)
+        rows = payload.get("questions")
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 20:
+            raise ValueError("请选择 1 至 20 道题。")
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            source = db.execute("SELECT * FROM study_review_intake WHERE id=?", (source_id,)).fetchone()
+            if source is None:
+                raise KeyError(source_id)
+            if source["saved"]:
+                return {"imported": db.execute(
+                    "SELECT COUNT(*) FROM study_review_questions WHERE resource_id=?", (source_id,)
+                ).fetchone()[0]}
+            resource = SimpleNamespace(id=source_id, title=source["title"])
+            for entry in rows:
+                row = self.validate_question(entry, resource, source["content"])
+                kind = source["kind"]
+                exam = year = location = None
+                if kind == "web" and entry.get("verified_past") is True:
+                    exam = text(entry.get("exam"), "考试", 200)
+                    year = entry.get("year")
+                    location = text(entry.get("location"), "原题位置", 200)
+                    if type(year) is not int or not 1900 <= year <= datetime.now(timezone.utc).year:
+                        raise ValueError("请填写有效的考试年份。")
+                    if exam not in source["title"] + source["content"] or str(year) not in source["title"] + source["content"]:
+                        raise ValueError("网络来源须含所填考试名称和年份。")
+                    if row[1] not in row[7] or any(option not in row[7] for option in json.loads(row[2])):
+                        raise ValueError("核验真题的出处须包含原题题干和全部选项。")
+                    kind = "past"
+                db.execute("INSERT INTO study_review_questions VALUES (?,?,?,?,?,?,?,?)", row)
+                inserted = db.execute("""
+                    INSERT INTO study_review_question_sources VALUES (?,?,?,?,?)
+                    ON CONFLICT(kind, exam, year, location) DO NOTHING
+                """, (row[0], kind, exam, year, location))
+                if not inserted.rowcount:
+                    raise ValueError("同一考试、年份和原题位置已入库。")
+            db.execute("UPDATE study_review_intake SET saved=1 WHERE id=?", (source_id,))
+        return {"imported": len(rows)}
+
     def _get(self, db, question_id):
         row = db.execute("""
-            SELECT q.*, s.kind, s.exam, s.year, s.location FROM study_review_questions q
-            LEFT JOIN study_review_question_sources s ON s.question_id=q.id WHERE q.id=?
+            SELECT q.*, s.kind, s.exam, s.year, s.location, i.url AS source_url FROM study_review_questions q
+            LEFT JOIN study_review_question_sources s ON s.question_id=q.id
+            LEFT JOIN study_review_intake i ON i.id=q.resource_id WHERE q.id=?
         """, (question_id,)).fetchone()
         if row is None:
             raise KeyError(question_id)
@@ -378,7 +445,7 @@ class StudyReview:
             db.execute("INSERT INTO study_review_quizzes (id, question_ids) VALUES (?,?)",
                        (quiz_id, json.dumps([question["id"] for question in questions])))
         return {"id": quiz_id, "available": len(matches), "questions": [
-            {key: question[key] for key in ("id", "prompt", "options", "kind", "exam", "year", "location")}
+            {key: question[key] for key in ("id", "prompt", "options", "kind", "exam", "year", "location", "source_url")}
             for question in questions
         ]}
 

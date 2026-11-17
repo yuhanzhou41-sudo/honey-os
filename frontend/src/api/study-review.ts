@@ -4,7 +4,10 @@ export type QuestionInput = {
   prompt: string; options: string[]; correct: number; explanation: string;
   resource_id: string; excerpt: string;
 };
-type Provenance = { kind: "past" | "mock" | null; exam: string | null; year: number | null; location: string | null };
+type Provenance = {
+  kind: "past" | "mock" | "upload" | "web" | null;
+  exam: string | null; year: number | null; location: string | null; source_url?: string | null;
+};
 export type Question = Omit<QuestionInput, "correct" | "explanation"> & Provenance & {
   id: string; source_title: string; latest_correct: number | null;
 };
@@ -23,6 +26,15 @@ export type StudyAnswer = {
 };
 
 const review = "/api/study/review";
+export function fileData(file: File): Promise<string> {
+  if (!file.size || file.size > 6 * 1024 * 1024) throw new Error("请选择 6 MB 以内的非空题目文件。");
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("无法读取题目文件，请重选。"));
+    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] || "");
+    reader.readAsDataURL(file);
+  });
+}
 const daily = review + "/daily";
 export type DailyScope = { keyword: string; resource_id: string; wrong: boolean; kind?: string };
 export type Recall = {
@@ -39,6 +51,14 @@ export type DailySummary = {
   recalls: number; mastered: number; suggestions: string[];
   pending: { id: string; plan: string; title: string }[];
 };
+export type QuestionDraft = Omit<QuestionInput, "resource_id" | "correct"> & {
+  correct: number | null; verified_past?: boolean; exam?: string; year?: number; location?: string;
+};
+export type ExamSource = { url: string; title: string; description: string };
+export type IntakeDraft = {
+  source: { id: string; kind: "upload" | "web" | "mock"; title: string; url: string | null };
+  text: string; segments: number; questions: QuestionDraft[]; partial?: boolean; warning?: string;
+};
 const attempts = (id: string) => review + "/questions/" + encodeURIComponent(id) + "/attempts";
 function post<T>(path: string, body: object) {
   return requestJson<T>(path, {
@@ -46,6 +66,14 @@ function post<T>(path: string, body: object) {
   });
 }
 export const studyReview = {
+  uploadDrafts: (filename: string, data: string, segment: number) =>
+    post<IntakeDraft>(review + "/intake/upload", { filename, data, segment }),
+  searchExams: (topic: string) => post<{ sources: ExamSource[] }>(review + "/intake/search", { topic }),
+  webDrafts: (url: string, segment: number) => post<IntakeDraft>(review + "/intake/web", { url, segment }),
+  practiceDrafts: (topic: string, plan_id: string | undefined, task_ids: string[]) =>
+    post<IntakeDraft>(review + "/intake/generate", { topic, plan_id, task_ids, consent: true }),
+  saveIntake: (source_id: string, questions: QuestionDraft[]) =>
+    post<{ imported: number }>(review + "/intake/save", { source_id, questions }),
   draw: (scope: DailyScope) =>
     post<{ card: Pick<SavedCard, "id" | "front"> | null; matched: number }>(daily + "/card", scope),
   recall: (cardId: string, id: string, response: string) =>

@@ -4,8 +4,9 @@ import json
 import pytest
 
 from honeyos.study.repository import StudyRepository
+from honeyos.study import question_intake
 from honeyos.study.review import StudyReview
-from honeyos.study.review_http import _answer, _card_preview, _extract_question, _question_preview
+from honeyos.study.review_http import _answer, _card_preview, _extract_question, _question_preview, _upload_drafts, _web_drafts
 from honeyos.study.service import StudyService
 
 QUOTE = "ATP is a common cellular energy carrier."
@@ -165,3 +166,75 @@ def test_image_extraction_uses_vision_and_preserves_uncertainty(monkeypatch):
     monkeypatch.setattr("honeyos.study.review_http._study_reply", vision)
     encoded = base64.b64encode(b"\x89PNG\r\n\x1a\nfixture").decode()
     assert "[无法识别]" in _extract_question({"filename": "photo.png", "data": encoded})["question"]
+
+
+def test_uploaded_drafts_require_review_and_do_not_store_generated_answers(monkeypatch, review):
+    store, _ = review
+    original = "Which is the carrier? A. ATP B. DNA"
+    item = {"prompt": "Which is the carrier?", "options": ["ATP", "DNA"], "correct": None, "excerpt": original}
+    monkeypatch.setattr(question_intake, "generate_question_candidates", lambda *args: json.dumps({"questions": [item]}))
+    draft = _upload_drafts(store, {"filename": "quiz.txt", "data": base64.b64encode(original.encode()).decode()})
+    assert draft["questions"] == [{**item, "explanation": ""}]
+    assert not store.list_questions()
+    payload = {"source_id": draft["source"]["id"], "questions": draft["questions"]}
+    with pytest.raises(ValueError):
+        store.save_intake(payload)
+    payload["questions"][0]["correct"] = 0
+    assert store.save_intake(payload) == store.save_intake(payload) == {"imported": 1}
+    row = store.list_questions()[0]
+    assert row["kind"] == "upload"
+    assert store.attempt(row["id"], 0, "upload-attempt")["attempt"]["correct"]
+
+
+def test_web_import_preserves_url_and_checks_claimed_exam(monkeypatch, review):
+    from honeyos.tools import web_tools
+
+    store, _ = review
+    url = "https://exams.example.org/science/2025"
+    original = "2025 Science Exam. Carrier? A. ATP B. DNA"
+    monkeypatch.setattr(web_tools, "web_search_tool", lambda query, limit: json.dumps({"success": True, "data": {"web": [
+        {"url": url, "title": "2025 Science Exam"}, {"url": "javascript:alert(1)"}, {"url": "http://127.0.0.1/admin"},
+    ]}}))
+
+    async def extract(urls, **options):
+        assert urls == [url]
+        return json.dumps({"results": [{"title": "2025 Science Exam", "content": original}]})
+
+    monkeypatch.setattr(web_tools, "web_extract_tool", extract)
+    item = {"prompt": "Carrier?", "options": ["ATP", "DNA"], "correct": 0, "excerpt": original}
+    monkeypatch.setattr(question_intake, "generate_question_candidates", lambda *args: json.dumps({"questions": [item]}))
+    assert [source["url"] for source in question_intake.search_past_questions({"topic": "Science"})["sources"]] == [url]
+    draft = _web_drafts(store, {"url": url})
+    source_id = draft["source"]["id"]
+    claimed = {**draft["questions"][0], "verified_past": True, "exam": "Science Exam", "year": 2024, "location": "Q1"}
+    with pytest.raises(ValueError):
+        store.save_intake({"source_id": source_id, "questions": [claimed]})
+    assert not store.list_questions()
+    claimed["year"] = 2025
+    store.save_intake({"source_id": source_id, "questions": [claimed]})
+    question = store.list_questions()[0]
+    assert question["kind"] == "past"
+    assert question["source_url"] == url and store.history(question["id"])["question"]["source_url"] == url
+
+
+def test_practice_generation_requires_consent_and_reads_selected_plan(monkeypatch, review):
+    store, _ = review
+    plan = store.study.create_plan({
+        "title": "Cell biology", "start_date": "2026-11-17", "end_date": "2026-11-17",
+    })
+    plan = store.study.create_task(plan.id, {"title": "ATP and energy", "scheduled_date": "2026-11-17"})
+    requested = {"topic": "Biology", "plan_id": plan.id, "task_ids": [plan.tasks[0].id]}
+    calls = []
+
+    def model(system, payload):
+        calls.append(json.loads(payload)["review_scope"])
+        return json.dumps({"questions": [{"prompt": "What is the carrier?", "options": ["ATP", "DNA"], "correct": 0}]})
+
+    monkeypatch.setattr(question_intake, "generate_question_candidates", model)
+    with pytest.raises(ValueError):
+        question_intake.practice_drafts(store, requested)
+    assert not calls
+    draft = question_intake.practice_drafts(store, {**requested, "consent": True})
+    assert len(calls) == 1 and "ATP and energy" in calls[0]
+    store.save_intake({"source_id": draft["source"]["id"], "questions": draft["questions"]})
+    assert store.list_questions()[0]["kind"] == "mock"

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import QuestionIntakePanel from "./QuestionIntakePanel";
 import { getStudyResourceContent, listStudyResources, type StudyResource, type StudyTask } from "../../api/study";
 import {
-  studyReview, type AnsweredQuestion, type Attempt, type CardPreview,
+  fileData, studyReview, type AnsweredQuestion, type Attempt, type CardPreview,
   type CardSource, type DailyScope, type DailySummary, type Question, type Quiz, type QuizResult, type Recall,
   type SavedCard, type StudyAnswer,
 } from "../../api/study-review";
@@ -49,10 +50,12 @@ function Evidence({ title, excerpt }: { title: string; excerpt: string }) {
 function provenance(question: Pick<Question, "kind" | "exam" | "year" | "location">) {
   if (question.kind === "past") return `${question.year} 年 ${question.exam} · ${question.location}`;
   if (question.kind === "mock") return "模拟题";
+  if (question.kind === "web") return "网络题目 · 真题待核验";
+  if (question.kind === "upload") return "上传题目";
   return "";
 }
 
-export default function StudyReviewPanel({ todayTasks = [] }: { todayTasks?: StudyTask[] }) {
+export default function StudyReviewPanel({ todayTasks = [], planId }: { todayTasks?: StudyTask[]; planId?: string }) {
   const { resources, sourceError } = useResources();
   const [questions, setQuestions] = useState<Question[]>([]);
   const [cards, setCards] = useState<SavedCard[]>([]);
@@ -158,6 +161,8 @@ export default function StudyReviewPanel({ todayTasks = [] }: { todayTasks?: Stu
     {notice && <p role="status">{notice}</p>}
     {busy && <p role="status">正在处理…</p>}
 
+    {mode === "practice" && <QuestionIntakePanel planId={planId} tasks={todayTasks}
+      onSaved={() => studyReview.questions().then(value => setQuestions(value.questions))} />}
     {mode === "practice" && <details className={panel}>
       <summary>新增单选题</summary>
       <form className="space-y-2" onSubmit={create}>
@@ -190,6 +195,7 @@ export default function StudyReviewPanel({ todayTasks = [] }: { todayTasks?: Stu
         <p>{mode === "wrong" ? "暂无待复习的错题。" : "题库暂无练习题。"}</p>}
       {active && <section className={panel}>
         <h3 className="font-semibold">{active.prompt}</h3>
+        {active.source_url && <a className="underline" href={active.source_url} target="_blank" rel="noreferrer">打开题目来源</a>}
         <fieldset disabled={busy || Boolean(feedback)}>
           <legend>选择答案</legend>
           {active.options.map((option, index) => <label className="block" key={index}>
@@ -296,7 +302,7 @@ function QuestionImport({ resources, onSaved }: { resources: StudyResource[]; on
   }
 
   return <details className={panel}>
-    <summary>导入历年真题或生成模拟题</summary>
+    <summary>从资料库批量导入</summary>
     <fieldset className="space-y-2" disabled={busy}>
       <ResourcePicker resources={resources} value={resource} onChange={value => {
         setResource(value);
@@ -489,6 +495,8 @@ function DailyReview({ resources, tasks }: { resources: StudyResource[]; tasks: 
             <p>{graded.correct ? "回答正确" : "回答错误"}。正确答案：{question.options[graded.question.correct ?? -1]}</p>
             {graded.question.explanation && <p>{graded.question.explanation}</p>}
             <Evidence title={graded.question.source_title} excerpt={graded.question.excerpt} />
+            {graded.question.source_url && <a className="underline" href={graded.question.source_url}
+              target="_blank" rel="noreferrer">打开题目来源</a>}
           </>}
         </fieldset>;
       })}
@@ -498,16 +506,6 @@ function DailyReview({ resources, tasks }: { resources: StudyResource[]; tasks: 
         })}>提交整套练习</button>}
     </section>}
   </section>;
-}
-
-async function fileData(file: File): Promise<string> {
-  if (!file.size || file.size > 6 * 1024 * 1024) throw new Error("请选择 6 MB 以内的非空题目文件。");
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("无法读取题目文件，请重选。"));
-    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] || "");
-    reader.readAsDataURL(file);
-  });
 }
 
 export function StudyQuestionDialog({ onClose }: { onClose: () => void }) {
