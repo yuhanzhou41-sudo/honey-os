@@ -616,17 +616,6 @@ def finalize_turn(
                 _momentary_state_err,
             )
 
-        if getattr(agent, "_companion_input_budget", False) is True:
-            try:
-                from honeyos.companion.personality_observation_hook import _resolve_companion_home
-                from honeyos.companion.physiology_maintenance import enqueue_completed_reply
-
-                db = getattr(agent, "_session_db", None)
-                if db is not None:
-                    enqueue_completed_reply(_resolve_companion_home(agent), db, agent.session_id, final_response)
-            except Exception:
-                logger.debug("Companion appraisal enqueue skipped", exc_info=True)
-
     # Context engine observation hook: notify the active engine that this
     # turn has finished, with the finalized transcript. Complements the
     # per-request select_context() hook (selection before the request;

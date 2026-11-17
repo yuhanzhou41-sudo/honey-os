@@ -155,6 +155,12 @@ class PhysiologyShadow:
                 strength REAL,
                 PRIMARY KEY(session_id, message_id)
             );
+            CREATE TABLE IF NOT EXISTS physiology_turn_events (
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                event TEXT NOT NULL,
+                PRIMARY KEY(session_id, turn_id)
+            );
         """)
         return db
 
@@ -170,6 +176,46 @@ class PhysiologyShadow:
     def snapshot(self, *, now: datetime | None = None) -> dict[str, float]:
         with closing(self._open()) as db:
             return _snapshot(db.execute("SELECT * FROM physiology_state").fetchone(), _instant(now))
+
+    @staticmethod
+    def _apply_event(
+        db: sqlite3.Connection, event: str, strength: float, current: datetime,
+        source_time: float | None,
+    ) -> dict[str, float]:
+        prior = db.execute("SELECT * FROM physiology_state").fetchone()
+        if prior and current.timestamp() < prior["updated_at"]:
+            current = datetime.fromtimestamp(prior["updated_at"], timezone.utc)
+        values = _snapshot(prior, current)
+        if event == "none":
+            return values
+        elapsed = max(0.0, (current.timestamp() - source_time) / 3600) if source_time is not None else 0.0
+        for name, delta in EFFECTS[event].items():
+            if name == "cortisol" and delta > 0:
+                delta *= 1 - 0.30 * values["oxytocin"]
+            retained = 0.5 ** (elapsed / SIGNALS[name].half_life_hours)
+            values[name] = max(0.0, min(1.0, values[name] + delta * strength * retained))
+        db.execute(
+            "INSERT INTO physiology_state VALUES (1,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at,signals=excluded.signals",
+            (current.timestamp(), json.dumps(values)),
+        )
+        return values
+
+    def apply_turn_appraisal(
+        self, session_id: str, turn_id: str, event: str, strength: float, *, now: datetime | None = None,
+    ) -> dict[str, float]:
+        """Apply one validated pre-reply event, including across request retries."""
+        if not session_id or not turn_id or event not in QWEN_EVENTS | {"none"} or not 0 <= strength <= 1:
+            raise ValueError("invalid pre-reply appraisal")
+        timestamp = _instant(now)
+        with closing(self._open()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            inserted = db.execute(
+                "INSERT OR IGNORE INTO physiology_turn_events VALUES (?,?,?)",
+                (session_id, turn_id, event),
+            ).rowcount
+            effective_event = event if inserted else "none"
+            return self._apply_event(db, effective_event, strength, timestamp, source_time=None)
 
     def next_pending(self) -> tuple[str, int] | None:
         with closing(self._open()) as db:
@@ -216,20 +262,6 @@ class PhysiologyShadow:
             if not updated.rowcount:
                 return "already_processed"
             if event != "none":
-                prior = db.execute("SELECT * FROM physiology_state").fetchone()
-                if prior and current.timestamp() < prior["updated_at"]:
-                    current = datetime.fromtimestamp(prior["updated_at"], timezone.utc)
-                values = _snapshot(prior, current)
                 source_time = evidence.timestamp if evidence is not None else None
-                stale_hours = max(0.0, (current.timestamp() - source_time) / 3600) if source_time is not None else 0.0
-                for name, delta in EFFECTS[event].items():
-                    if name == "cortisol" and delta > 0:
-                        delta *= 1 - 0.30 * values["oxytocin"]
-                    retained = 0.5 ** (stale_hours / SIGNALS[name].half_life_hours)
-                    values[name] = max(0.0, min(1.0, values[name] + delta * strength * retained))
-                db.execute(
-                    "INSERT INTO physiology_state VALUES (1,?,?) "
-                    "ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at,signals=excluded.signals",
-                    (current.timestamp(), json.dumps(values)),
-                )
+                self._apply_event(db, event, strength, current, source_time)
         return status

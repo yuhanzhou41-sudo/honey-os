@@ -1371,6 +1371,7 @@ def run_conversation(
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
     _companion_turn_context = ""
     if getattr(agent, "_companion_input_budget", False) is True and isinstance(original_user_message, str):
+        _companion_turn_context = getattr(agent, "_companion_turn_appraisal", "") or ""
         try:
             from honeyos.companion.reply_style import reply_style_context
             from honeyos.companion.turn_intention import pending_intention_context
@@ -1378,6 +1379,7 @@ def run_conversation(
             db = getattr(agent, "_session_db", None)
             if db is not None:
                 _companion_turn_context = "\n\n".join(filter(None, (
+                    _companion_turn_context,
                     reply_style_context(db, agent.session_id, original_user_message),
                     pending_intention_context(db, agent.session_id, original_user_message),
                 )))

@@ -1263,6 +1263,28 @@ def build_turn_context(
     except Exception:
         logger.debug("Cognitive Memory F1 shadow retrieval failed (non-fatal)", exc_info=True)
 
+    if getattr(agent, "_companion_input_budget", False) is True:
+        from honeyos.companion.personality_observation_hook import _resolve_companion_home
+        from honeyos.companion.physiology_shadow import live_signals
+        from honeyos.companion.pre_reply_appraisal import appraise_before_reply, current_state_note
+
+        agent._companion_turn_appraisal = ""
+        home = _resolve_companion_home(agent)
+        if _shadow_query and not is_trivial_prompt(_shadow_query):
+            recalled = ext_prefetch_cache if isinstance(ext_prefetch_cache, str) else ""
+            if _cognitive_context is not None and _cognitive_context.would_inject:
+                recalled = "\n".join(filter(None, (recalled, _cognitive_context.text or "")))
+            agent._companion_turn_appraisal = appraise_before_reply(
+                home, agent.session_id, turn_id, _shadow_query,
+                recent=messages[:current_turn_user_idx],
+                recalled=recalled,
+                cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+            )
+        else:
+            values = live_signals(home)
+            if values:
+                agent._companion_turn_appraisal = current_state_note(values)
+
     # ── api_content sidecar: persist what you send ──
     # The prefetch/plugin context above is injected into the API copy of this
     # turn's user message, never into the stored content — so on the next
