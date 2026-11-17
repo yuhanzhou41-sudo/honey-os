@@ -515,7 +515,8 @@ export function StudyPage() {
       <ToolRail drawer={drawer} onDrawer={setDrawer} />
 
       {drawer ? (
-        <UtilityDrawer kind={drawer} onClose={() => setDrawer(null)} />
+        <UtilityDrawer kind={drawer} onClose={() => setDrawer(null)}
+          todayTasks={selectedPlan?.tasks.filter(task => task.scheduled_date === localDate()) ?? []} />
       ) : null}
 
       {selectedPlan ? (
@@ -1199,9 +1200,11 @@ function ToolRail({
 function UtilityDrawer({
   kind,
   onClose,
+  todayTasks,
 }: {
   kind: Exclude<DrawerKind, null>;
   onClose: () => void;
+  todayTasks: StudyTask[];
 }) {
   if (kind === "qa") return <StudyQuestionDialog onClose={onClose} />;
 
@@ -1230,7 +1233,7 @@ function UtilityDrawer({
         {kind === "library" ? (
           <StudyLibraryPanel />
         ) : (
-          <StudyReviewPanel />
+          <StudyReviewPanel todayTasks={todayTasks} />
         )}
       </aside>
     </div>

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { getStudyResourceContent, listStudyResources, type StudyResource } from "../../api/study";
+import { getStudyResourceContent, listStudyResources, type StudyResource, type StudyTask } from "../../api/study";
 import {
   studyReview, type AnsweredQuestion, type Attempt, type CardPreview,
-  type CardSource, type Question, type SavedCard, type StudyAnswer,
+  type CardSource, type DailyScope, type DailySummary, type Question, type Quiz, type QuizResult, type Recall,
+  type SavedCard, type StudyAnswer,
 } from "../../api/study-review";
 
 const field = "block w-full rounded border border-[var(--border)] bg-[var(--background)] p-2";
@@ -45,11 +46,17 @@ function Evidence({ title, excerpt }: { title: string; excerpt: string }) {
   </blockquote>;
 }
 
-export default function StudyReviewPanel() {
+function provenance(question: Pick<Question, "kind" | "exam" | "year" | "location">) {
+  if (question.kind === "past") return `${question.year} 年 ${question.exam} · ${question.location}`;
+  if (question.kind === "mock") return "模拟题";
+  return "";
+}
+
+export default function StudyReviewPanel({ todayTasks = [] }: { todayTasks?: StudyTask[] }) {
   const { resources, sourceError } = useResources();
   const [questions, setQuestions] = useState<Question[]>([]);
   const [cards, setCards] = useState<SavedCard[]>([]);
-  const [mode, setMode] = useState<"practice" | "wrong" | "cards">("practice");
+  const [mode, setMode] = useState<"practice" | "wrong" | "cards" | "daily">("practice");
   const [active, setActive] = useState<Question>();
   const [choice, setChoice] = useState<number>();
   const [feedback, setFeedback] = useState<{ attempt: Attempt; question: AnsweredQuestion }>();
@@ -58,6 +65,7 @@ export default function StudyReviewPanel() {
   const [resourceId, setResourceId] = useState("");
   const [sourceText, setSourceText] = useState("");
   const [cardResource, setCardResource] = useState("");
+  const [cardSegment, setCardSegment] = useState(1);
   const [preview, setPreview] = useState<CardPreview>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -138,9 +146,13 @@ export default function StudyReviewPanel() {
 
   return <div className="space-y-4">
     <nav aria-label="复习类型" className="flex flex-wrap gap-2">
-      {([["practice", "题库"], ["wrong", "错题"], ["cards", "知识点闪卡"]] as const).map(([key, label]) =>
+      {([["practice", "题库"], ["wrong", "错题"], ["cards", "知识点闪卡"], ["daily", "今日复习"]] as const).map(([key, label]) =>
         <button key={key} className={action} type="button" disabled={busy} aria-pressed={key === mode}
-          onClick={() => { setMode(key); setActive(undefined); }}>{label}</button>)}
+          onClick={() => {
+            setMode(key);
+            setActive(undefined);
+            if (mode === "daily") void work(async () => setQuestions((await studyReview.questions()).questions));
+          }}>{label}</button>)}
     </nav>
     {(error || sourceError) && <p role="alert">{error || sourceError}</p>}
     {notice && <p role="status">{notice}</p>}
@@ -162,11 +174,17 @@ export default function StudyReviewPanel() {
         <button className={action} disabled={busy || !resourceId}>保存题目</button>
       </form>
     </details>}
+    {mode === "practice" && <QuestionImport resources={resources} onSaved={() =>
+      studyReview.questions().then(value => setQuestions(value.questions))} />}
 
-    {mode !== "cards" && <>
+    {mode === "daily" && <DailyReview resources={resources} tasks={todayTasks} />}
+
+    {(mode === "practice" || mode === "wrong") && <>
       <ul className="space-y-2">{questions.filter(item => mode !== "wrong" || item.latest_correct === 0)
         .map(item => <li key={item.id}>
-          <button className={action} disabled={busy} onClick={() => openQuestion(item)}>{item.prompt}</button>
+          <button className={action} disabled={busy} onClick={() => openQuestion(item)}>
+            {provenance(item) && <small className="block">{provenance(item)}</small>}{item.prompt}
+          </button>
         </li>)}</ul>
       {!questions.some(item => mode !== "wrong" || item.latest_correct === 0) &&
         <p>{mode === "wrong" ? "暂无待复习的错题。" : "题库暂无练习题。"}</p>}
@@ -204,13 +222,17 @@ export default function StudyReviewPanel() {
         </p>
       </header>
       <section className={panel}>
-        <ResourcePicker resources={resources} value={cardResource} onChange={setCardResource} />
+        <ResourcePicker resources={resources} value={cardResource} onChange={value => {
+          setCardResource(value);
+          setCardSegment(1);
+        }} />
+        <SegmentInput value={cardSegment} onChange={setCardSegment} />
         <button className={action} disabled={busy || !cardResource}
-          onClick={() => void generate({ resource_id: cardResource })}>整理成闪卡</button>
+          onClick={() => void generate({ resource_id: cardResource, segment: cardSegment })}>整理成闪卡</button>
       </section>
       {preview && <section className={panel}>
         <h3>闪卡预览 · {preview.source_title}</h3>
-        {preview.partial && <p>这批卡片基于资料开头的片段（最多 1,800 字）。</p>}
+        {preview.partial && <p>资料第 {preview.segment} / {preview.segments} 段，每段最多 1,800 字。</p>}
         {preview.cards.map((card, index) => <div className={panel} key={index}>
           <label className="block">正面<textarea className={field} value={card.front} disabled={busy}
             onChange={event => editCard(index, "front", event.target.value)} /></label>
@@ -245,6 +267,237 @@ export default function StudyReviewPanel() {
       {!cards.length && <p>暂无已保存闪卡。</p>}
     </>}
   </div>;
+}
+
+const mastery = ["未掌握", "部分掌握", "已掌握"];
+
+function SegmentInput({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  return <label className="block">资料片段（每 1,800 字一段）
+    <input className={field} type="number" min="1" step="1" value={value}
+      onChange={event => onChange(Number(event.target.value))} />
+  </label>;
+}
+
+function QuestionImport({ resources, onSaved }: { resources: StudyResource[]; onSaved: () => Promise<void> }) {
+  const [resource, setResource] = useState("");
+  const [kind, setKind] = useState<"past" | "mock">("past");
+  const [segment, setSegment] = useState(1);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function run(action: () => Promise<void>) {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try { await action(); } catch (failure) { setError(message(failure)); }
+    finally { setBusy(false); }
+  }
+
+  return <details className={panel}>
+    <summary>导入历年真题或生成模拟题</summary>
+    <fieldset className="space-y-2" disabled={busy}>
+      <ResourcePicker resources={resources} value={resource} onChange={value => {
+        setResource(value);
+        setDraft("");
+        setSegment(1);
+      }} />
+      <label className="block">题型
+        <select className={field} value={kind} onChange={event => {
+          setKind(event.target.value === "mock" ? "mock" : "past");
+          setDraft("");
+        }}><option value="past">历年真题</option><option value="mock">模拟题</option></select>
+      </label>
+      {kind === "mock" && <>
+        <SegmentInput value={segment} onChange={setSegment} />
+        <button className={action} disabled={!resource} onClick={() => void run(async () => {
+          const generated = await studyReview.previewQuestions(resource, segment);
+          setDraft(JSON.stringify(generated.questions, null, 2));
+          setNotice(`片段 ${segment} / ${generated.segments}。请核对题目、答案和引用。`);
+        })}>用本机 Qwen 生成草稿</button>
+      </>}
+      <label className="block">题目 JSON
+        <textarea className={field} rows={8} value={draft} onChange={event => setDraft(event.target.value)} />
+      </label>
+      <p className="text-sm">使用 JSON 数组。题目填写 prompt、options、从 0 开始的 correct、explanation 和 excerpt。
+        {kind === "past" && "真题另填 exam、year 和 location，并让 excerpt 包含原题题干和选项。"}
+      </p>
+      <button className={action} disabled={!resource || !draft.trim()} onClick={() => void run(async () => {
+        let questions: unknown;
+        try { questions = JSON.parse(draft); } catch { throw new Error("题目 JSON 格式有误。"); }
+        const saved = await studyReview.importQuestions(resource, kind, questions);
+        setDraft("");
+        setNotice(`已入库 ${saved.imported} 道题。`);
+        await onSaved();
+      })}>确认入库</button>
+    </fieldset>
+    {busy && <p role="status">正在处理…</p>}
+    {notice && <p role="status">{notice}</p>}
+    {error && <p role="alert">{error}</p>}
+  </details>;
+}
+
+function DailyReview({ resources, tasks }: { resources: StudyResource[]; tasks: StudyTask[] }) {
+  const [scope, setScope] = useState<DailyScope>({ keyword: "", resource_id: "", wrong: false });
+  const [count, setCount] = useState(10);
+  const [card, setCard] = useState<Pick<SavedCard, "id" | "front">>();
+  const [response, setResponse] = useState("");
+  const [recallId, setRecallId] = useState("");
+  const [revealed, setRevealed] = useState<{ card: SavedCard; recall: Recall }>();
+  const [history, setHistory] = useState<(Recall & { front: string })[]>();
+  const [summary, setSummary] = useState<DailySummary>();
+  const [quiz, setQuiz] = useState<Quiz>();
+  const [choices, setChoices] = useState<Record<string, number>>({});
+  const [result, setResult] = useState<QuizResult>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const ready = Boolean(scope.keyword.trim() || scope.resource_id || scope.wrong);
+
+  async function run(action: () => Promise<void>) {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try { await action(); } catch (failure) { setError(message(failure)); }
+    finally { setBusy(false); }
+  }
+
+  function draw() {
+    void run(async () => {
+      const next = await studyReview.draw(scope);
+      setCard(next.card ?? undefined);
+      setRevealed(undefined);
+      setResponse("");
+      setRecallId(crypto.randomUUID());
+      if (!next.card) setNotice(next.matched ? "该范围的闪卡均未到复习时间。" : "该范围没有闪卡。");
+    });
+  }
+
+  return <section className={panel}>
+    <button className={action} disabled={busy} onClick={() => void run(async () =>
+      setSummary(await studyReview.summary()))}>查看今日复盘</button>
+    {summary && <section className={panel} aria-label="今日复盘">
+      <h3 className="font-semibold">{summary.date} 学习复盘</h3>
+      <p>任务完成 {summary.completed} / {summary.tasks} · 答对 {summary.correct} / {summary.attempts}
+        {" · "}抽背掌握 {summary.mastered} / {summary.recalls}</p>
+      {summary.suggestions.map(item => <p key={item}>{item}</p>)}
+      {summary.pending.length > 0 && <ul className="list-disc pl-5">
+        {summary.pending.map(task => <li key={task.id}>{task.plan} · {task.title}</li>)}
+      </ul>}
+    </section>}
+    <fieldset disabled={busy} className="space-y-2">
+      <legend>今日学习范围</legend>
+      {tasks.length > 0 && <label className="block">从今日任务填写知识点
+        <select className={field} value="" onChange={event => {
+          const task = tasks.find(item => item.id === event.target.value);
+          if (task) setScope({ ...scope, keyword: task.title });
+        }}>
+          <option value="">选择今日任务</option>
+          {tasks.map(task => <option key={task.id} value={task.id}>{task.title}</option>)}
+        </select>
+      </label>}
+      <label className="block">知识点
+        <input className={field} value={scope.keyword} maxLength={500}
+          onChange={event => setScope({ ...scope, keyword: event.target.value })} />
+      </label>
+      <label className="block">复习资料
+        <select className={field} value={scope.resource_id}
+          onChange={event => setScope({ ...scope, resource_id: event.target.value })}>
+          <option value="">所有资料</option>
+          {resources.map(resource => <option key={resource.id} value={resource.id}>{resource.title}</option>)}
+        </select>
+      </label>
+      <label className="block">
+        <input type="checkbox" checked={scope.wrong}
+          onChange={event => setScope({ ...scope, wrong: event.target.checked })} /> 只复习当前错题
+      </label>
+      <button className={action} disabled={!ready || Boolean(revealed && revealed.recall.rating === null)}
+        onClick={draw}>{revealed ? "抽下一张" : "抽背到期闪卡"}</button>
+      <label className="block">练习题量
+        <select className={field} value={count} onChange={event => setCount(Number(event.target.value))}>
+          {Array.from({ length: 11 }, (_, index) => index + 10).map(size => <option key={size}>{size}</option>)}
+        </select>
+      </label>
+      <label className="block">练习题型
+        <select className={field} value={scope.kind ?? ""} onChange={event => setScope({ ...scope, kind: event.target.value })}>
+          <option value="">全部</option><option value="past">历年真题</option><option value="mock">模拟题</option>
+        </select>
+      </label>
+      <button className={action} disabled={!ready && !scope.kind} onClick={() => void run(async () => {
+        const next = await studyReview.quiz(scope, count);
+        setQuiz(next.id ? next : undefined);
+        setChoices({});
+        setResult(undefined);
+        if (!next.id) setNotice(`该范围有 ${next.available} 道题，所选题量为 ${count}。`);
+      })}>组卷</button>
+    </fieldset>
+    {error && <p role="alert">{error}</p>}
+    {(busy || notice) && <p role="status">{busy ? "正在处理…" : notice}</p>}
+    {card && <section className={panel}>
+      <h3 className="font-semibold whitespace-pre-wrap">{card.front}</h3>
+      {!revealed && <>
+        <label className="block">先复述你的答案
+          <textarea className={field} value={response} maxLength={5000} disabled={busy}
+            onChange={event => { setResponse(event.target.value); setRecallId(crypto.randomUUID()); }} />
+        </label>
+        <button className={action} disabled={busy || !response.trim()} onClick={() => void run(async () => {
+          setRevealed(await studyReview.recall(card.id, recallId, response));
+          setHistory(undefined);
+        })}>提交复述并核对</button>
+      </>}
+      {revealed && <>
+        <p className="whitespace-pre-wrap">你的复述：{revealed.recall.response}</p>
+        <p className="whitespace-pre-wrap">标准知识点：{revealed.card.back}</p>
+        <Evidence title={revealed.card.source_title} excerpt={revealed.card.excerpt} />
+        {revealed.recall.rating === null ? <fieldset disabled={busy} className="flex flex-wrap gap-2">
+          <legend>记录掌握程度</legend>
+          {mastery.map((label, rating) => <button key={label} className={action} onClick={() => void run(async () => {
+            setRevealed({ ...revealed, recall: await studyReview.rate(revealed.recall.id, rating) });
+            setHistory(undefined);
+          })}>{label}</button>)}
+        </fieldset> : <p role="status">{mastery[revealed.recall.rating]} · 下次复习 {new Date(revealed.recall.due_at!).toLocaleString()}</p>}
+      </>}
+    </section>}
+    <button className={action} disabled={busy} onClick={() => void run(async () =>
+      setHistory((await studyReview.recalls()).recalls))}>查看抽背记录</button>
+    {history && (history.length ? <ol className="space-y-2">{history.map(entry => <li key={entry.id} className={panel}>
+      <strong>{entry.front}</strong>
+      <p className="whitespace-pre-wrap">{entry.response}</p>
+      <p>{new Date(entry.created_at).toLocaleString()} · {entry.rating === null ? "待自评" : mastery[entry.rating]}</p>
+      {entry.rating === null && <button className={action} disabled={busy}
+        onClick={() => void run(async () => {
+          const saved = await studyReview.recall(entry.card_id, entry.id, entry.response);
+          setCard(saved.card);
+          setRevealed(saved);
+          setHistory(undefined);
+        })}>继续核对并自评</button>}
+    </li>)}</ol> : <p>还没有抽背记录。</p>)}
+    {quiz?.id && <section className={panel}>
+      <h3 className="font-semibold">整套练习 · {quiz.questions.length} 题</h3>
+      {result && <p role="status">得分 {result.score} / {result.results.length}</p>}
+      {quiz.questions.map((question, index) => {
+        const graded = result?.results[index];
+        return <fieldset className={panel} key={question.id} disabled={busy || Boolean(result)}>
+          <legend>{index + 1}. {question.prompt}</legend>
+          {provenance(question) && <p className="text-sm">{provenance(question)}</p>}
+          {question.options.map((option, choice) => <label className="block" key={choice}>
+            <input type="radio" name={question.id} checked={choices[question.id] === choice}
+              onChange={() => setChoices({ ...choices, [question.id]: choice })} /> {option}
+          </label>)}
+          {graded && <>
+            <p>{graded.correct ? "回答正确" : "回答错误"}。正确答案：{question.options[graded.question.correct ?? -1]}</p>
+            {graded.question.explanation && <p>{graded.question.explanation}</p>}
+            <Evidence title={graded.question.source_title} excerpt={graded.question.excerpt} />
+          </>}
+        </fieldset>;
+      })}
+      {!result && <button className={action} disabled={busy || Object.keys(choices).length !== quiz.questions.length}
+        onClick={() => void run(async () => {
+          setResult(await studyReview.submitQuiz(quiz.id!, quiz.questions.map(question => choices[question.id])));
+        })}>提交整套练习</button>}
+    </section>}
+  </section>;
 }
 
 async function fileData(file: File): Promise<string> {

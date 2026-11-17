@@ -21,19 +21,27 @@ _SLOT = BoundedSemaphore(1)
 
 
 def generate_flashcard_candidates(system: str, content: str) -> str:
+    return _generate(system, content, task="闪卡", max_tokens=500)
+
+
+def generate_question_candidates(system: str, content: str) -> str:
+    return _generate(system, content, task="模拟题", max_tokens=1800)
+
+
+def _generate(system: str, content: str, *, task: str, max_tokens: int) -> str:
     from honeyos.gateway.run import _load_gateway_config
 
     endpoint = configured_qwen_endpoint(_load_gateway_config())
     if not endpoint:
-        raise LocalStudyModelUnavailable("请先在模型设置里配置本机 Qwen，再生成闪卡。")
+        raise LocalStudyModelUnavailable(f"请先在模型设置里配置本机 Qwen，再生成{task}。")
     if not _SLOT.acquire(blocking=False):
-        raise LocalStudyModelUnavailable("本机 Qwen 正在生成闪卡，请稍后重试。")
+        raise LocalStudyModelUnavailable("本机 Qwen 正在处理 Study 请求，请稍后重试。")
     url, model = endpoint
     try:
         # Prevent environment proxies or HTTP redirects from sending Study material off device.
         opener = build_opener(ProxyHandler({}), _NoRedirects())
         request = Request(url, headers={"Content-Type": "application/json"}, data=json.dumps({
-            "model": model, "temperature": 0, "max_tokens": 500, "stream": False,
+            "model": model, "temperature": 0, "max_tokens": max_tokens, "stream": False,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
         }, ensure_ascii=False).encode())
@@ -44,6 +52,6 @@ def generate_flashcard_candidates(system: str, content: str) -> str:
             raise ValueError("empty Qwen output")
         return result
     except (HTTPError, URLError, TimeoutError, OSError, ValueError, IndexError, KeyError, TypeError) as exc:
-        raise LocalStudyModelUnavailable("本机 Qwen 暂时无法生成闪卡，请确认 Launcher 中本地模型已就绪后重试。") from exc
+        raise LocalStudyModelUnavailable(f"本机 Qwen 暂时无法生成{task}，请确认 Launcher 中本地模型已就绪后重试。") from exc
     finally:
         _SLOT.release()
