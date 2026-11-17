@@ -588,7 +588,15 @@ def finalize_turn(
         str(_err).startswith("persist_session:")
         for _err in _cleanup_errors
     )
-    if final_response and not interrupted and not _personality_persist_failed:
+    # Failure notices and recovered partial replies can contain apparent
+    # personality signals. Only learn from a successful, persisted reply.
+    if (
+        final_response
+        and completed
+        and normal_text_response
+        and not interrupted
+        and not _personality_persist_failed
+    ):
         try:
             from honeyos.companion.personality_observation_hook import (
                 _resolve_companion_home,

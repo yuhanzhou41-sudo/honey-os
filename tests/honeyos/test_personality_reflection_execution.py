@@ -4,6 +4,10 @@ import json
 from types import SimpleNamespace
 
 from honeyos.companion.personality_candidates import PersonalityCandidateStore
+from honeyos.companion.personality_promotion import (
+    personality_authority_note,
+    rollback_authoritative_trait,
+)
 from honeyos.companion.personality_reflection_execution import (
     AuxiliaryPersonalityReflectionAdapter,
     maybe_start_background_personality_reflection,
@@ -111,7 +115,54 @@ def test_real_adapter_uses_auxiliary_client_and_creates_candidate(monkeypatch, t
     user_payload = json.loads(captured["messages"][1]["content"])
     assert "Prefer no operation over a weak personality conclusion." in system_prompt
     assert "observations" in user_payload
-    assert "candidates" not in user_payload
+    assert user_payload["candidates"] == []
+
+
+def test_later_reflection_can_support_and_promote_an_existing_trait(monkeypatch, tmp_path):
+    store = PersonalityCandidateStore(tmp_path)
+    trait = {
+        "target_layer": "relational_self",
+        "trait_key": "independent_preference",
+        "statement": "Expresses a preference when there is a reason for it.",
+    }
+    expected_actions = iter(("create", "support"))
+
+    def respond(**kwargs):
+        payload = json.loads(kwargs["messages"][1]["content"])
+        action = next(expected_actions)
+        assert payload["candidates"] == ([] if action == "create" else [trait])
+        operation = {
+            **trait,
+            "action": action,
+            "confidence": 0.8,
+            "evidence_observation_ids": [
+                row["observation_id"] for row in payload["observations"]
+            ],
+        }
+        content = json.dumps({"operations": [operation]})
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+    monkeypatch.setattr("honeyos.agent.auxiliary_client.call_llm", respond)
+    _capture(store, 2)
+    first = run_personality_reflection_once(tmp_path, force=True)
+    assert first["status"] == "success"
+    assert first["promotion"]["promoted_count"] == 0
+    assert personality_authority_note(tmp_path) == ""
+
+    store.capture_observation(
+        session_id="second-session",
+        signal_flags=["preference"],
+        assistant_excerpt="I prefer the shorter answer because the example is clear.",
+    )
+    second = run_personality_reflection_once(tmp_path, force=True)
+    assert second["status"] == "success"
+    assert second["promotion"]["promoted_count"] == 1
+    assert trait["statement"] in personality_authority_note(tmp_path)
+    assert rollback_authoritative_trait(
+        tmp_path, target_layer=trait["target_layer"], trait_key=trait["trait_key"],
+        reason="test rollback",
+    )["status"] == "rolled_back"
+    assert personality_authority_note(tmp_path) == ""
 
 
 def test_model_usage_is_audited(monkeypatch, tmp_path):

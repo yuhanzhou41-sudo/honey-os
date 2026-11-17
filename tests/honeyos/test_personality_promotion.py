@@ -9,6 +9,7 @@ from honeyos.companion.personality_promotion import (
     load_personality_authority,
     personality_authority_note,
     promote_candidate,
+    promote_eligible_candidates,
     rollback_authoritative_trait,
 )
 
@@ -63,6 +64,18 @@ def test_mature_relational_candidate_promotes(tmp_path):
     assert promote_candidate(tmp_path, c)["status"] == "promoted"
     assert "independent_opinion" in load_personality_authority(tmp_path)["relational_self"]
     assert "independent view" in personality_authority_note(tmp_path)
+    authority = load_personality_authority(tmp_path)
+    assert promote_eligible_candidates(tmp_path)["promoted_count"] == 0
+    assert load_personality_authority(tmp_path) == authority
+
+    _make_evidence(
+        store, candidate=c, count=1, batches=["b3"], sessions=["s3"],
+        start=datetime(2026, 9, 5, tzinfo=timezone.utc),
+    )
+    assert promote_eligible_candidates(tmp_path)["promoted_count"] == 1
+    assert load_personality_authority(tmp_path)["relational_self"]["independent_opinion"][
+        "support_count"
+    ] == 4
 
 
 def test_user_feedback_only_cannot_promote(tmp_path):

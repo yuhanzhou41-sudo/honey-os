@@ -191,6 +191,14 @@ class PersonalityReflectionRunner:
         batch_id = uuid.uuid4().hex
         payload = {
             "batch_id": batch_id,
+            "candidates": [
+                {
+                    "target_layer": candidate.target_layer,
+                    "trait_key": candidate.trait_key,
+                    "statement": candidate.statement,
+                }
+                for candidate in self.store.list_candidates(status="candidate")[:20]
+            ],
             "observations": [
                 {
                     "observation_id": row["observation_id"],

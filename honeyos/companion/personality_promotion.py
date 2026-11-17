@@ -304,6 +304,12 @@ def promote_candidate(home: Path | str, candidate: Any) -> dict[str, Any]:
     authority = load_personality_authority(home)
     previous = (authority.get(layer) or {}).get(trait_key)
     record = _record(candidate, decision)
+    if previous is not None and all(
+        previous.get(key) == value
+        for key, value in record.items()
+        if key != "promoted_at"
+    ):
+        return {"status": "unchanged", "layer": layer, "trait_key": trait_key}
     authority[layer][trait_key] = record
     _atomic_write_json(_authority_path(home), authority)
     _audit(

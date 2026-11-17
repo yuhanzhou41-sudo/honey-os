@@ -18,5 +18,6 @@ def test_personality_observation_hook_runs_after_persist_and_before_context_engi
 def test_runtime_hook_is_guarded_by_completed_persisted_turn_conditions():
     source = Path(turn_finalizer.__file__).read_text(encoding="utf-8")
 
-    assert "if final_response and not interrupted and not _personality_persist_failed:" in source
+    assert "and completed\n        and normal_text_response" in source
+    assert "and not interrupted\n        and not _personality_persist_failed" in source
     assert 'str(_err).startswith("persist_session:")' in source

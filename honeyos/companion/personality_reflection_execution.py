@@ -5,9 +5,7 @@ G2.1B.3:
 - checks the frozen ReflectionPolicy before any model call,
 - launches reflection outside the visible response path,
 - prevents duplicate concurrent reflection,
-- records provider/model/token metadata when available.
-
-This phase still does not promote candidates into authoritative personality.
+- records provider/model/token metadata when available and checks promotion after reflection.
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ _THREAD_LOCK = threading.Lock()
 
 _REFLECTION_INSTRUCTIONS = """You are performing a private periodic self-reflection for a conversational companion.
 
-Review the supplied bounded observations across multiple turns and identify only recurring or meaningfully supported patterns in the companion's own tendencies.
+Review the supplied bounded observations across multiple turns and identify only recurring or meaningfully supported patterns in the companion's own tendencies. Compare them with the supplied active candidates before proposing a new trait.
 
 Important distinctions:
 - Describe the companion, not the user.
@@ -160,6 +158,7 @@ class AuxiliaryPersonalityReflectionAdapter:
                     {
                         "batch_id": batch.get("batch_id", ""),
                         "observations": batch.get("observations", []),
+                        "candidates": batch.get("candidates", []),
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
