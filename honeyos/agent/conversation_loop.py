@@ -1421,13 +1421,18 @@ def run_conversation(
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
+        result = agent._run_codex_app_server_turn(
             user_message=user_message,
             original_user_message=original_user_message,
             messages=messages,
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
+        if _ctx.post_reply_appraisal:
+            from honeyos.companion.pre_reply_appraisal import schedule_reply_appraisal
+
+            schedule_reply_appraisal(_ctx.post_reply_appraisal, result)
+        return result
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         _redirect_text = agent._drain_pending_redirect()
@@ -7375,7 +7380,7 @@ def run_conversation(
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
     from honeyos.agent.turn_finalizer import finalize_turn
-    return finalize_turn(
+    result = finalize_turn(
         agent,
         final_response=final_response,
         api_call_count=api_call_count,
@@ -7392,6 +7397,11 @@ def run_conversation(
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
+    if _ctx.post_reply_appraisal:
+        from honeyos.companion.pre_reply_appraisal import schedule_reply_appraisal
+
+        schedule_reply_appraisal(_ctx.post_reply_appraisal, result)
+    return result
 
 
 

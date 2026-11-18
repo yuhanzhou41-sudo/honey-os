@@ -1,10 +1,13 @@
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 import unittest
 from unittest.mock import patch
 
-from honeyos.companion.pre_reply_appraisal import appraise_before_reply
+from honeyos.companion.physiology_shadow import PhysiologyShadow, live_signals
+from honeyos.companion.pre_reply_appraisal import appraise_before_reply, schedule_reply_appraisal
 from honeyos.study import local_model
 
 
@@ -46,6 +49,47 @@ class AppraisalFallbackTest(unittest.TestCase):
             self.assertEqual(generate.call_args.kwargs["timeout"], 20)
             local_model.generate_flashcard_candidates("system", "input")
             self.assertNotIn("timeout", generate.call_args.kwargs)
+
+    def test_completed_reply_schedules_state_update_without_waiting(self):
+        started, release, finished = Event(), Event(), Event()
+        profile = ContextVar("test_appraisal_profile", default=None)
+        observed_profiles = []
+        with TemporaryDirectory() as home:
+            root = Path(home)
+
+            def appraise():
+                observed_profiles.append(profile.get())
+                started.set()
+                try:
+                    if release.wait(timeout=5):
+                        PhysiologyShadow(root).apply_turn_appraisal("s", "t", "surprise", 1)
+                finally:
+                    finished.set()
+
+            token = profile.set("isolated")
+            try:
+                schedule_reply_appraisal(appraise, {"final_response": "Reply"})
+            finally:
+                profile.reset(token)
+            try:
+                self.assertTrue(started.wait(timeout=5))
+                self.assertFalse(finished.is_set())
+                self.assertEqual(live_signals(root), {})
+            finally:
+                release.set()
+                self.assertTrue(finished.wait(timeout=5))
+            self.assertGreater(live_signals(root)["epinephrine"], 0.05)
+            self.assertEqual(observed_profiles, ["isolated"])
+
+    def test_failed_or_interrupted_replies_do_not_queue_appraisal(self):
+        with patch("honeyos.companion.pre_reply_appraisal._APPRAISAL_WORKER.submit") as submit:
+            for result in [
+                {"final_response": "", "failed": False},
+                {"final_response": "Error", "failed": True},
+                {"final_response": "Partial", "interrupted": True},
+            ]:
+                schedule_reply_appraisal(lambda: "", result)
+            submit.assert_not_called()
 
 
 if __name__ == "__main__":

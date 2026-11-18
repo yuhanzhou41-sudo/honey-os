@@ -2,15 +2,46 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import BoundedSemaphore
 
 from honeyos.companion.affect_evidence import assistant_self_clauses
 from honeyos.companion.physiology_shadow import (
     AppraisalRejected, PhysiologyShadow, QWEN_EVENTS, SIGNALS, _proposal,
 )
+
+logger = logging.getLogger(__name__)
+_APPRAISAL_WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="honeyos-appraisal")
+_APPRAISAL_SLOTS = BoundedSemaphore(2)
+
+
+def schedule_reply_appraisal(appraise: Callable[[], str] | None, result: Mapping) -> None:
+    """Submit lightweight state maintenance after a successful reply."""
+    if appraise is None or result.get("failed") or result.get("interrupted") or not result.get("final_response"):
+        return
+    if not _APPRAISAL_SLOTS.acquire(blocking=False):
+        logger.debug("Background companion appraisal queue is full")
+        return
+    try:
+        future = _APPRAISAL_WORKER.submit(copy_context().run, appraise)
+    except RuntimeError:
+        _APPRAISAL_SLOTS.release()
+        return
+    future.add_done_callback(_finish_reply_appraisal)
+
+
+def _finish_reply_appraisal(future) -> None:
+    try:
+        if not future.cancelled() and future.exception() is not None:
+            logger.warning("Background companion appraisal failed")
+    finally:
+        _APPRAISAL_SLOTS.release()
 
 
 _SYSTEM = (
