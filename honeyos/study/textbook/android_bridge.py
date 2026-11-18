@@ -68,7 +68,7 @@ class AndroidBridge:
         self.timeout = float(timeout)
         self._runner = runner
 
-    def _run(self, args: Sequence[str], *, timeout: float | None = None) -> str:
+    def _run(self, args: Sequence[str], *, timeout: float | None = None, retry: bool = True) -> str:
         command = [self.adb_path]
         if self.serial:
             command.extend(["-s", self.serial])
@@ -87,6 +87,10 @@ class AndroidBridge:
         output = (result.stdout or b"").decode("utf-8", "replace")
         error = (result.stderr or b"").decode("utf-8", "replace").strip()
         if result.returncode != 0:
+            dropped = "not found" in error or "offline" in error or "no devices" in error
+            if retry and dropped and ":" in self.serial:
+                self._run(["connect", self.serial], timeout=20, retry=False)
+                return self._run(args, timeout=timeout, retry=False)
             raise AdbError(error or f"adb 命令失败：{' '.join(command)}")
         return output
 

@@ -184,6 +184,30 @@ def test_collect_caches_once_and_indexes_resource(tmp_path):
     assert service.stats()["temp_bytes"] == 0
 
 
+def test_collect_opens_book_from_study_centre(tmp_path):
+    study = StudyService(repository=StudyRepository(tmp_path / "home"))
+    study_dump = (
+        "<hierarchy><node text=\"学习中心\" bounds=\"[0,40][1080,120]\" />"
+        "<node text=\"循环系统疾病（第2版）\" bounds=\"[100,900][900,980]\" /></hierarchy>"
+    )
+
+    class SequenceBridge(FakeBridge):
+        def __init__(self):
+            super().__init__()
+            self.dumps = [study_dump, UI_DUMP, UI_DUMP]
+
+        def dump_ui(self):
+            return self.dumps.pop(0) if len(self.dumps) > 1 else self.dumps[0]
+
+    service = TextbookService(study, root=tmp_path / "tb", bridge=SequenceBridge(), ocr=StaticOcr([]))
+    service.sync_outline_from_dump("neike", TOC_DUMP, title="循环系统疾病（第2版）")
+    section = service.get_outline("neike").sections[0]
+    payload = service.collect_section("neike", section.section_id)
+
+    assert payload["mode"] == "ui_text" and payload["anchored"] is True
+    assert "间歇性跛行是典型症状。" in payload["text"]
+
+
 def test_collect_by_title_registers_section_without_toc(tmp_path):
     study = StudyService(repository=StudyRepository(tmp_path / "home"))
 

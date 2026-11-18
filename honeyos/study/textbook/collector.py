@@ -167,6 +167,15 @@ class SectionCollector:
             except Exception as exc:  # pragma: no cover - device specific
                 raise TextbookNavigationError(f"无法读取当前界面：{exc}") from exc
             tap = find_text_center(dump, section.title)
+            if tap is None:
+                # On the study centre the section is not visible; open the book first.
+                book_spot = find_text_center(dump, book.title)
+                if book_spot is not None:
+                    self.bridge.tap(int(book_spot[0]), int(book_spot[1]))
+                    if self.settle_seconds > 0:
+                        time.sleep(self.settle_seconds)
+                    dump = self.bridge.dump_ui()
+                    tap = find_text_center(dump, section.title)
         if tap is None:
             raise TextbookNavigationError(
                 f"当前界面没有找到“{section.title}”，请先回到目录页后再采集。"
@@ -221,18 +230,27 @@ class SectionCollector:
         if heading is None:
             spot = find_text_center(dump, section.title)
             if spot is None:
-                return None
-            self.bridge.tap(int(spot[0]), int(spot[1]))
-            if self.settle_seconds > 0:
-                time.sleep(self.settle_seconds)
-            dump = self.bridge.dump_ui()
-            lines = extract_dump_lines(dump)
-            heading = self._heading_index(lines, section)
-        if heading is None and len("\n".join(lines)) < 400:
+                book_spot = find_text_center(dump, book.title)
+                if book_spot is not None:
+                    self.bridge.tap(int(book_spot[0]), int(book_spot[1]))
+                    if self.settle_seconds > 0:
+                        time.sleep(self.settle_seconds)
+                    dump = self.bridge.dump_ui()
+                    lines = extract_dump_lines(dump)
+                    heading = self._heading_index(lines, section)
+                    if heading is None:
+                        spot = find_text_center(dump, section.title)
+            if spot is not None:
+                self.bridge.tap(int(spot[0]), int(spot[1]))
+                if self.settle_seconds > 0:
+                    time.sleep(self.settle_seconds)
+                dump = self.bridge.dump_ui()
+                lines = extract_dump_lines(dump)
+                heading = self._heading_index(lines, section)
+        if heading is None:
             return None
-        anchored = heading is not None
-        if anchored:
-            lines = lines[heading + 1:]
+        anchored = True
+        lines = lines[heading + 1:]
 
         collected: list[str] = []
         stop_titles = book.next_titles(section.section_id)
