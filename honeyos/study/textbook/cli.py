@@ -93,6 +93,15 @@ def cmd_collect(args) -> int:
     return 0
 
 
+def cmd_reindex(args) -> int:
+    from honeyos.study.library import StudyLibraryIndex
+    from honeyos.study.repository import StudyRepository
+
+    count = StudyLibraryIndex(StudyRepository().db_path).reindex_all()
+    _print({"reindexed": count})
+    return 0
+
+
 def cmd_stats(args) -> int:
     _print(_service(args).stats())
     return 0
@@ -161,6 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
     collect.set_defaults(func=cmd_collect)
 
     sub.add_parser("stats", help="查看缓存占用").set_defaults(func=cmd_stats)
+
+    sub.add_parser("reindex", help="重建 Study 资料的全文索引（中文分段）").set_defaults(func=cmd_reindex)
 
     cleanup = sub.add_parser("cleanup", help="清理临时截图与超限缓存")
     cleanup.add_argument("--purge-temp", action="store_true")

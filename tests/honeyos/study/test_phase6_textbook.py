@@ -186,6 +186,9 @@ def test_collect_caches_once_and_indexes_resource(tmp_path):
 
     content = study.get_resource_content(first["resource_id"])["extracted_text"]
     assert "间歇性跛行是典型症状。" in content
+    hits = study.search_resources(query="跛行")
+    assert any(hit["resource_id"] == first["resource_id"] for hit in hits)
+    assert "跛行" in hits[0]["snippet"]
     assert study.repository.list_resources(resource_type="textbook")
     assert service.stats()["temp_bytes"] == 0
 

@@ -281,6 +281,7 @@ describe("StudyPage Phase 5.3B adaptive workspace", () => {
     expect(screen.getByText("阳光点")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "资料" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "教材" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "校园" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "复习" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "答疑" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "番茄钟" })).toBeInTheDocument();
