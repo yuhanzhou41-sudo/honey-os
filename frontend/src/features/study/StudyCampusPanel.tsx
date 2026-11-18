@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
+import { companionAccess, SOURCE_LABELS } from "../../api/companion-access";
 import { profilePrefix } from "../../api/client";
 
 type CampusLink = {
@@ -55,6 +57,8 @@ function loadLinks(): CampusLink[] {
 export function StudyCampusPanel() {
   const [links, setLinks] = useState<CampusLink[]>(loadLinks);
   const [message, setMessage] = useState("");
+  const work = useQuery({ queryKey: ["companion", "work"], queryFn: companionAccess.work, retry: false });
+  const access = useQuery({ queryKey: ["companion", "events"], queryFn: companionAccess.events, retry: false });
 
   function update(id: string, url: string) {
     setLinks((rows) => rows.map((item) => (item.id === id ? { ...item, url } : item)));
@@ -115,21 +119,88 @@ export function StudyCampusPanel() {
         </button>
       </section>
 
-      <section className="space-y-2 border-t border-[var(--border)] pt-3">
-        <h3 className="font-medium">工作与权限</h3>
+      <section className="space-y-3 border-t border-[var(--border)] pt-3">
+        <h3 className="font-medium">工作模式</h3>
         <p className="text-xs text-[var(--foreground-muted)]">
-          工作模式负责需要连续操作的任务；事件权限决定 Honey 能读取哪些来源。
+          工作模式负责需要连续操作的任务；在聊天里说“进入工作模式”开始，这里只显示状态。
         </p>
+        <div className="rounded-xl border border-[var(--border)] p-3">
+          {work.isPending ? (
+            <p className="text-xs text-[var(--foreground-muted)]">正在读取状态…</p>
+          ) : work.isError ? (
+            <p className="text-xs text-[var(--foreground-muted)]">当前版本没有提供工作模式接口。</p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between">
+                <span>当前状态</span>
+                <span className={work.data?.enabled ? "text-[var(--accent)]" : "text-[var(--foreground-muted)]"}>
+                  {work.data?.enabled ? "进行中" : "未开启"}
+                </span>
+              </div>
+              {work.data?.enabled && (
+                <p className="mt-1 truncate text-xs text-[var(--foreground-muted)]">
+                  会话 {work.data.session_id || "未知"} · 任务 {work.data.work_id || "未知"}
+                </p>
+              )}
+            </>
+          )}
+        </div>
         <div className="flex flex-wrap gap-2">
           <a className="rounded-full border border-[var(--border)] px-3 py-1.5 text-sm"
             href={`${prefix}/`}>
-            去聊天里开始工作模式
+            去聊天开始工作模式
           </a>
           <a className="rounded-full border border-[var(--border)] px-3 py-1.5 text-sm"
             href={`${prefix}/settings`}>
-            查看事件权限与访问记录
+            管理事件权限
           </a>
         </div>
+      </section>
+
+      <section className="space-y-2 border-t border-[var(--border)] pt-3">
+        <h3 className="font-medium">事件权限与访问记录</h3>
+        {access.isPending ? (
+          <p className="text-xs text-[var(--foreground-muted)]">正在读取…</p>
+        ) : access.isError ? (
+          <p className="text-xs text-[var(--foreground-muted)]">当前版本没有提供事件记录接口。</p>
+        ) : (
+          <>
+            <div>
+              <p className="text-xs text-[var(--foreground-muted)]">生效中的读取授权</p>
+              {access.data?.grants?.length ? (
+                <ul className="mt-1 space-y-1">
+                  {access.data.grants.map((grant) => (
+                    <li key={`${grant.source}-${grant.expires_at}`} className="flex justify-between gap-3 text-xs">
+                      <span>{SOURCE_LABELS[grant.source] || grant.source}</span>
+                      <span className="text-[var(--foreground-muted)]">
+                        到期 {new Date(grant.expires_at).toLocaleString()}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 text-xs text-[var(--foreground-muted)]">当前没有生效的读取授权。</p>
+              )}
+            </div>
+            <div>
+              <p className="text-xs text-[var(--foreground-muted)]">最近访问</p>
+              {access.data?.audit?.length ? (
+                <ul className="mt-1 space-y-1">
+                  {access.data.audit.slice(0, 8).map((row, index) => (
+                    <li key={`${row.checked_at}-${index}`} className="flex justify-between gap-3 text-xs">
+                      <span>{SOURCE_LABELS[row.source] || row.source}</span>
+                      <span className="text-[var(--foreground-muted)]">
+                        {row.allowed ? "允许" : "拒绝"} · {new Date(row.checked_at).toLocaleString()}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 text-xs text-[var(--foreground-muted)]">还没有访问记录。</p>
+              )}
+            </div>
+          </>
+        )}
       </section>
 
       {message && <p className="text-xs text-[var(--foreground-muted)]">{message}</p>}
