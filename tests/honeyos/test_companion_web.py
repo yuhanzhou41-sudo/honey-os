@@ -1729,3 +1729,22 @@ def test_named_custom_reply_retains_provider_only_for_resolved_endpoint():
     agent.base_url = "http://127.0.0.1:8080/v1"
     agent.requested_provider = "custom:alternate"
     assert _actual_api_runtime_provider(agent) == "custom"
+
+
+def test_historical_user_images_leave_only_text_in_model_context():
+    from honeyos.agent.message_sanitization import historical_user_image_reference
+
+    text = {"type": "text", "text": "看看这张图"}
+    image = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+    content = [text, image]
+
+    result = historical_user_image_reference(content)
+
+    assert historical_user_image_reference([text]) == [text]
+    assert content == [text, image]
+    assert result[0] == text
+    assert len(result) == 2
+    assert result[1]["type"] == "text"
+    assert "1 image attachment" in result[1]["text"]
+    assert "base64" not in repr(result)
+    assert historical_user_image_reference([image]) == result[1:]

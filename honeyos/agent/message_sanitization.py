@@ -385,6 +385,30 @@ def _sanitize_tools_non_ascii(tools: list) -> bool:
     return _sanitize_structure_non_ascii(tools)
 
 
+_IMAGE_CONTENT_TYPES = {"image_url", "image", "input_image"}
+
+
+def historical_user_image_reference(content: Any) -> Any:
+    """Keep the user's text while replacing previously uploaded image parts."""
+    if not isinstance(content, list):
+        return content
+    remaining = [
+        part for part in content
+        if not (isinstance(part, dict) and part.get("type") in _IMAGE_CONTENT_TYPES)
+    ]
+    count = len(content) - len(remaining)
+    if not count:
+        return content
+    return [
+        *remaining,
+        {"type": "text", "text": (
+            f"[{count} image attachment(s) from an earlier turn. "
+            "If the user asks to inspect the pixels again, ask them to attach the image "
+            "from chat history to the current message.]"
+        )},
+    ]
+
+
 def _strip_images_from_messages(messages: list) -> bool:
     """Remove image_url content parts from all messages in-place.
 
@@ -413,7 +437,7 @@ def _strip_images_from_messages(messages: list) -> bool:
             continue
         new_parts = []
         for part in content:
-            if isinstance(part, dict) and part.get("type") in {"image_url", "image", "input_image"}:
+            if isinstance(part, dict) and part.get("type") in _IMAGE_CONTENT_TYPES:
                 found = True
             else:
                 new_parts.append(part)

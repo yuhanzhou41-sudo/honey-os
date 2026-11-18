@@ -44,6 +44,13 @@ type WorkQuestion = { id: string; runId: string; text: string; choices: string[]
 const draftKey = (sessionId: string) => `honeyos-chat-draft:${sessionId}`;
 const queueKey = (sessionId: string) => `honeyos-chat-pending:${sessionId}`;
 
+function historicalImageUrls(content: string): string[] {
+  return Array.from(
+    content.matchAll(/^!\[[^\r\n]*?\]\((data:image\/[\w.+-]+;base64,[A-Za-z0-9+/=]+)\)\r?$/gm),
+    (match) => match[1],
+  ).slice(0, 4);
+}
+
 function historyTime(item: HistoryItem, field: "last_active" | "started_at") {
   const value = Date.parse(String(item[field] || ""));
   return Number.isFinite(value) ? value : 0;
@@ -794,6 +801,14 @@ export function ChatPage() {
     }
   }
 
+  function reattachImage(id: string, dataUrl: string) {
+    setAttachmentError("");
+    setAttachments((current) => {
+      if (current.length >= 4 || current.some((item) => item.dataUrl === dataUrl)) return current;
+      return [...current, { id, dataUrl, name: "历史图片" }];
+    });
+  }
+
   function sendSticker(item: StickerItem) {
     if (sending) return;
     const message = stickerChatMessage(item);
@@ -1065,6 +1080,20 @@ export function ChatPage() {
                     role={message.role}
                     messageId={message.displayKey}
                   />
+                  {historicalImageUrls(message.content).map((url, index) => (
+                    <button
+                      key={index}
+                      type="button"
+                      disabled={attachments.length >= 4 || attachments.some((item) => item.dataUrl === url)}
+                      className="mr-2 text-xs text-[var(--foreground-muted)] underline disabled:opacity-50"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        reattachImage(["history", message.displayKey, index].join("-"), url);
+                      }}
+                    >
+                      重看图片 {index + 1}
+                    </button>
+                  ))}
                   {message.timeline_editable && message.id ? (
                     <div
                       className={[

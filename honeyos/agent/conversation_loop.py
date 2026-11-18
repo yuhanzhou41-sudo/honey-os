@@ -57,6 +57,7 @@ from honeyos.agent.message_sanitization import (
     _sanitize_tools_non_ascii,
     _strip_images_from_messages,
     _strip_non_ascii,
+    historical_user_image_reference,
 )
 # Must mirror _STALE_TOOL_CALL_MARKER_RE in honeyos.core.state.py — kept local
 # to avoid importing honeyos.core.state at module load time (its module-level
@@ -1685,6 +1686,11 @@ def run_conversation(
                 )
                 if not fresh_context_only:
                     api_msg["content"] = _api_content
+
+            if 0 <= idx < current_turn_user_idx and msg.get("role") == "user":
+                api_msg["content"] = historical_user_image_reference(
+                    api_msg.get("content")
+                )
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved
