@@ -19309,12 +19309,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         async def _poll_loop() -> None:
+            from honeyos.companion.web_initiative import run_hourly
+            from honeyos.core.time import local_timezone
+
             # Give adapters and session restore a chance to settle before the
             # first background check.
             await asyncio.sleep(10)
             while True:
                 await self._run_topic_collection_if_due()
                 await self._run_topic_pool_pulse()
+                await run_hourly(self, self._topic_pool_store_instance(), datetime.now(local_timezone()))
                 await asyncio.sleep(60)
 
         try:

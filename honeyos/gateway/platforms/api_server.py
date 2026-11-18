@@ -2640,6 +2640,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ),
             ("GET", "/api/companion/settings", self._handle_companion_settings),
             ("GET", "/api/companion/events", self._handle_companion_events),
+            ("GET", "/api/companion/web-initiative", self._handle_web_initiative),
+            ("POST", "/api/companion/web-initiative", self._handle_web_initiative),
             ("POST", "/api/companion/events/{source}/grant", self._handle_companion_event_grant),
             ("DELETE", "/api/companion/events/{source}/grant", self._handle_companion_event_grant),
             ("GET", "/api/companion/avatar", self._handle_companion_avatar),
@@ -3644,6 +3646,23 @@ class APIServerAdapter(BasePlatformAdapter):
         except PermissionError:
             return web.json_response({"error": "此来源的读取权限未开启或已到期。"}, status=403)
         return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    async def _handle_web_initiative(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.companion.web_initiative import preference, set_preference
+
+        if request.method == "GET":
+            enabled = await asyncio.to_thread(preference)
+        else:
+            body, error = await self._read_json_body(request)
+            if error is not None:
+                return error
+            enabled = body.get("enabled")
+            if type(enabled) is not bool:
+                return web.json_response({"error": "请选择开启或关闭主动联系。"}, status=400)
+            await asyncio.to_thread(set_preference, enabled)
+        return web.json_response({"enabled": enabled}, headers={"Cache-Control": "no-store"})
 
     async def _handle_companion_event_grant(self, request: "web.Request") -> "web.Response":
         if (error := self._event_control_auth(request)) is not None:

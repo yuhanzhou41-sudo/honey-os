@@ -38,3 +38,9 @@
 回滚服务可从该备份目录取 `gateway-original.conf`，恢复至 `~/.config/systemd/user/honeyos-gateway.service.d/20-verified-study-release.conf`，再执行 `systemctl --user daemon-reload` 和 `systemctl --user restart honeyos-gateway.service`。数据快照可独立用于恢复演练。
 
 本次上线范围覆盖 C1.3、H1.1–H1.2 底座及回复后状态评估。Qwen 的事件分类边界与此前记录一致，整盘恢复和 H1 用户授权界面属于后续工作。
+
+### H1 权限入口发布
+
+随后部署 `fc4258e`，设置页可按来源授予一小时只读权限、撤销权限和查看最近访问记录。聊天事件限定当前会话，事件列表展示类型、时间和来源编号。仅在有授权且用户点击查看时投影本地记录。
+
+WSL 验收通过 55 项前端和 82 项后端测试及生产构建。正式环境用新版资源测试，匿名请求返回 401，本机登录后首次打开各来源均未授权。配置回滚备份为 `/home/zyh20/.honeyos/release-backups/h1-control.mSK95A/gateway-original.conf`，目标为 `a10dadf`。该次发布新增独立事件台账，未迁移现有会话数据库。

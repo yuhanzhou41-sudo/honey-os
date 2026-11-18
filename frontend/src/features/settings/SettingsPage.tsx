@@ -16,6 +16,7 @@ import { Button } from "../../components/ui/Button";
 import { applyHoneyTheme, readHoneyTheme, type HoneyTheme } from "../../design-system/theme";
 import { useHoneyStore } from "../../runtime/honey-store";
 import { EventPermissions } from "./EventPermissions";
+import { WebInitiative } from "./WebInitiative";
 
 import { fetchModelOptions, setGlobalDefaultModel } from "../../api/models";
 const providers = [
@@ -287,6 +288,7 @@ export function SettingsPage() {
           <p className="mt-4 text-xs text-[var(--foreground-faint)]">对话模型：{summary.conversation_model || "跟随当前配置"}。记忆整理模型：{summary.distillation_model || "自动"}。</p>
         </section>
         <EventPermissions />
+        <WebInitiative />
       </div>
     </PageFrame>
   );
