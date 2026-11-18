@@ -136,6 +136,11 @@ async function main() {
     const address = new URL(target.url);
     if ([portalOrigin, currentPortalOrigin, casOrigin].includes(address.origin)
         || (address.origin === origin && /login/i.test(address.pathname))) {
+      if (argv[6] === "interactive") {
+        await fetch(endpoint + "/json/activate/" + encodeURIComponent(target.id), {
+          signal: AbortSignal.timeout(2000), redirect: "error",
+        }).catch(() => {});
+      }
       throw Error("LOGIN_REQUIRED");
     }
     if (address.origin === origin && [path, calendarPath, shellPath].includes(address.pathname)) {

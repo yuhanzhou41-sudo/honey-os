@@ -21,7 +21,7 @@ class CampusLoginRequired(ValueError):
     """The school requires interaction in the persistent Edge profile."""
 
 
-def _read_calendar(start: date, end: date, *, detailed: bool = False) -> dict:
+def _read_calendar(start: date, end: date, *, detailed: bool = False, interactive: bool = False) -> dict:
     node = os.environ.get("HONEYOS_CQMU_EDGE_NODE")
     if not node or not Path(node).is_file():
         raise ValueError("课表浏览器连接未配置。请先打开本机验收 Edge。")
@@ -30,7 +30,7 @@ def _read_calendar(start: date, end: date, *, detailed: bool = False) -> dict:
     profile = os.environ.get("HONEYOS_CQMU_EDGE_PROFILE", "")
     result = subprocess.run(
         [node, "-e", script, start.isoformat(), end.isoformat(), browser, profile,
-         "details" if detailed else "periods"],
+         "details" if detailed else "periods", "interactive" if interactive else ""],
         capture_output=True, timeout=32, check=False, encoding="utf-8",
     )
     if result.returncode:
@@ -43,8 +43,8 @@ def _read_calendar(start: date, end: date, *, detailed: bool = False) -> dict:
     return data
 
 
-def read_campus_calendar(start: date, end: date) -> dict:
-    data = _read_calendar(start, end, detailed=True)
+def read_campus_calendar(start: date, end: date, *, interactive: bool = False) -> dict:
+    data = _read_calendar(start, end, detailed=True, interactive=interactive)
     for day, entries in data.items():
         current, _ = cqmu_date_range(day, day)
         if (not start <= current <= end or not isinstance(entries, list) or len(entries) > 18

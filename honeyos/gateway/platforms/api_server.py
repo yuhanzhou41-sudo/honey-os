@@ -3716,7 +3716,7 @@ class APIServerAdapter(BasePlatformAdapter):
         headers = {"Cache-Control": "no-store"}
         try:
             start, end = cqmu_date_range(body.get("start"), body.get("end"))
-            result = await asyncio.to_thread(read_campus_calendar, start, end)
+            result = await asyncio.to_thread(read_campus_calendar, start, end, interactive=body.get("interactive") is True)
         except CampusLoginRequired as exc:
             return web.json_response({"error": str(exc), "status": "login_required"}, status=409, headers=headers)
         except (ValueError, OSError, TimeoutExpired) as exc:
