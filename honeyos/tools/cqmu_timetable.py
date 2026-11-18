@@ -22,12 +22,16 @@ def read_cqmu_timetable(start: date, end: date) -> dict:
     if not node or not Path(node).is_file():
         raise ValueError("课表浏览器连接未配置。请先打开本机验收 Edge。")
     script = Path(__file__).with_name("cqmu_timetable_reader.js").read_text(encoding="utf-8")
+    browser = os.environ.get("HONEYOS_CQMU_EDGE_EXE", "")
+    profile = os.environ.get("HONEYOS_CQMU_EDGE_PROFILE", "")
     result = subprocess.run(
-        [node, "-e", script, start.isoformat(), end.isoformat()],
-        capture_output=True, timeout=12, check=False, encoding="utf-8",
+        [node, "-e", script, start.isoformat(), end.isoformat(), browser, profile],
+        capture_output=True, timeout=32, check=False, encoding="utf-8",
     )
     if result.returncode:
-        raise ValueError("无法读取课表。请确认独立 Edge 已登录且只打开一张个人教学日历课表。")
+        if result.stderr.strip() == "LOGIN_REQUIRED":
+            raise ValueError("学校登录已失效或需要验证。请在独立 Edge 完成一次登录后重试。")
+        raise ValueError("无法自动读取课表。请确认独立 Edge 正在运行且学校教务可访问。")
     data = json.loads(result.stdout)
     if not isinstance(data, dict) or not data:
         raise ValueError("所选日期没有可确认的课表行。请核对学期和日期。")
