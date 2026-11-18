@@ -32,9 +32,9 @@ const DEFAULTS: CampusLink[] = [
   {
     id: "zongce",
     name: "综测",
-    description: "学年综合测评填报。校内系统地址请填写一次，之后从这里进入。",
-    url: "",
-    placeholder: "综测系统网址",
+    description: "学年综合测评填报。带 ticket 的链接会过期，这里只保留系统首页。",
+    url: "https://xgxt.cqmu.edu.cn/",
+    placeholder: "https://xgxt.cqmu.edu.cn/",
   },
   {
     id: "erke",
@@ -43,7 +43,25 @@ const DEFAULTS: CampusLink[] = [
     url: "",
     placeholder: "第二课堂系统网址",
   },
+  {
+    id: "portal",
+    name: "校园门户",
+    description: "统一身份认证入口，其他校内系统都能从门户进。需校园网或学校 VPN。",
+    url: "https://portal.paas.cqmu.edu.cn/",
+    placeholder: "https://portal.paas.cqmu.edu.cn/",
+  },
 ];
+
+function stripTicket(raw: string): { url: string; stripped: boolean } {
+  try {
+    const parsed = new URL(raw);
+    if (!parsed.searchParams.has("ticket")) return { url: raw, stripped: false };
+    parsed.searchParams.delete("ticket");
+    return { url: parsed.toString(), stripped: true };
+  } catch {
+    return { url: raw, stripped: false };
+  }
+}
 
 function loadLinks(): CampusLink[] {
   try {
@@ -66,18 +84,28 @@ export function StudyCampusPanel() {
 
   function save() {
     const payload: Record<string, string> = {};
-    for (const item of links) payload[item.id] = item.url.trim();
+    let stripped = false;
+    const next = links.map((item) => {
+      const clean = stripTicket(item.url.trim());
+      if (clean.stripped) stripped = true;
+      payload[item.id] = clean.url;
+      return { ...item, url: clean.url };
+    });
+    setLinks(next);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    setMessage("入口已保存在本机浏览器。");
+    setMessage(stripped ? "入口已保存；会过期的 ticket 已去掉，登录时系统会重新跳转。" : "入口已保存在本机浏览器。");
   }
 
   function open(link: CampusLink) {
-    const url = link.url.trim();
-    if (!url) {
+    const clean = stripTicket(link.url.trim());
+    if (!clean.url) {
       setMessage(`请先填写${link.name}的网址。`);
       return;
     }
-    window.open(url, "_blank", "noopener,noreferrer");
+    if (clean.stripped) {
+      setMessage(`已去掉会过期的 ticket，打开首页后按提示重新登录。`);
+    }
+    window.open(clean.url, "_blank", "noopener,noreferrer");
   }
 
   const prefix = profilePrefix();
@@ -86,6 +114,9 @@ export function StudyCampusPanel() {
     <div className="space-y-5 text-sm">
       <p className="text-[var(--foreground-muted)]">
         这里只保存入口链接，不保存账号密码；登录、签到现在网页里由你自己完成。
+      </p>
+      <p className="text-xs text-[var(--foreground-muted)]">
+        校内系统需要校园网或学校 VPN。如果浏览器打不开，请把 *.cqmu.edu.cn 设为直连，或暂时关闭代理再试。
       </p>
 
       <section className="space-y-3">
