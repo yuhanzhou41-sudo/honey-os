@@ -25,6 +25,7 @@ from .outline import (
     normalize,
     parse_outline_from_text,
     parse_outline_from_ui_dump,
+    parse_toc_from_ui_dump,
 )
 from .retention import TextbookRetention
 
@@ -96,6 +97,31 @@ class TextbookService:
         outline = parse_outline_from_text(
             text, book_id=book_id, title=title, source={"kind": source, "captured_at": _now()}
         )
+        return self.index.save(outline)
+
+    def sync_outline_from_device(
+        self, book_id: str, *, title: str = "", bridge=None
+    ) -> BookOutline:
+        """Open the app's TOC drawer, capture chapters (and sections if expanded)."""
+        active = bridge or self.bridge
+        if active is None:
+            active = AndroidBridge()
+        dump = active.open_toc() if hasattr(active, "open_toc") else active.dump_ui()
+        outline = parse_toc_from_ui_dump(
+            dump, book_id=book_id, title=title, source={"kind": "device_toc", "captured_at": _now()}
+        )
+        if not outline.sections:
+            try:
+                existing = self.index.load(book_id)
+            except TextbookBookNotFoundError:
+                existing = None
+            if existing is not None and existing.sections:
+                outline = BookOutline(
+                    book_id=outline.book_id,
+                    title=outline.title or existing.title,
+                    sections=existing.sections,
+                    source=outline.source,
+                )
         return self.index.save(outline)
 
     def list_books(self) -> list[dict[str, Any]]:

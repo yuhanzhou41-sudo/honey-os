@@ -12,6 +12,7 @@ from .outline import (
     locate_sections,
     parse_outline_from_text,
     parse_outline_from_ui_dump,
+    parse_toc_from_ui_dump,
     score_section,
 )
 from .retention import TextbookRetention
@@ -47,5 +48,6 @@ __all__ = [
     "make_default_ocr",
     "parse_outline_from_text",
     "parse_outline_from_ui_dump",
+    "parse_toc_from_ui_dump",
     "score_section",
 ]

@@ -179,6 +179,52 @@ class AndroidBridge:
     def shell(self, *args: str) -> str:
         return self._run(["shell", *args])
 
+    def find_text_center(self, text: str, *, dump: str | None = None) -> tuple[int, int] | None:
+        import re
+        import xml.etree.ElementTree as ET
+
+        source = dump if dump is not None else self.dump_ui()
+        try:
+            root = ET.fromstring(source)
+        except ET.ParseError:
+            return None
+        target = re.sub(r"\s+", "", text)
+        for node in root.iter():
+            label = re.sub(r"\s+", "", node.get("text") or node.get("content-desc") or "")
+            if target and target in label:
+                match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", (node.get("bounds") or "").strip())
+                if match:
+                    x1, y1, x2, y2 = (int(part) for part in match.groups())
+                    return (x1 + x2) // 2, (y1 + y2) // 2
+        return None
+
+    def tap_text(self, text: str, *, dump: str | None = None) -> bool:
+        spot = self.find_text_center(text, dump=dump)
+        if spot is None:
+            return False
+        self.tap(*spot)
+        return True
+
+    def open_toc(self) -> str:
+        """Open the reading app's table of contents drawer and return its dump.
+
+        The drawer is reached from the floating green dot on the left edge;
+        tapping the bottom toolbar's 目录 entry also opens it when visible.
+        """
+        dump = self.dump_ui()
+        if "书签" in dump and "笔记" in dump:
+            return dump
+        width, height = self.screen_size()
+        self.tap(int(width * 0.026), int(height * 0.5))
+        time.sleep(0.9)
+        dump = self.dump_ui()
+        if "书签" in dump and "笔记" in dump:
+            return dump
+        if self.tap_text("目录", dump=dump):
+            time.sleep(0.9)
+            return self.dump_ui()
+        return dump
+
 
 class MuMuManager:
     """Start the emulator instance through MuMuManager when it is not running."""

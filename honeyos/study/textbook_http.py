@@ -46,7 +46,9 @@ def textbook_routes(adapter):
         if not book_id:
             raise ValueError("请填写教材编号。")
         title = str(body.get("title") or "").strip()
-        if isinstance(dump, str) and dump.strip():
+        if body.get("from_device") is True:
+            outline = service().sync_outline_from_device(book_id, title=title)
+        elif isinstance(dump, str) and dump.strip():
             if len(dump) > MAX_DUMP:
                 raise ValueError("UI dump 过大。")
             outline = service().sync_outline_from_dump(

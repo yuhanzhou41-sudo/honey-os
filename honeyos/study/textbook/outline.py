@@ -184,6 +184,67 @@ def parse_outline_from_ui_dump(
     )
 
 
+def parse_toc_from_ui_dump(
+    dump: str, *, book_id: str, title: str = "", source: dict[str, Any] | None = None
+) -> BookOutline:
+    """Parse an open TOC drawer.
+
+    Chapters are always recorded in ``source.chapters``. Sections become real
+    index entries when the drawer has been expanded; otherwise the outline
+    keeps the chapter list so navigation can continue later.
+    """
+    if not str(dump or "").strip():
+        raise TextbookOutlineError("目录界面的 UI dump 为空。")
+    try:
+        root = ET.fromstring(dump)
+    except ET.ParseError as exc:
+        raise TextbookOutlineError("无法解析目录 UI dump XML") from exc
+
+    chapters: list[dict[str, Any]] = []
+    sections: list[SectionRef] = []
+    seen_sections: set[str] = set()
+    chapter = ""
+    for node in root.iter():
+        label = _clean_line(node.get("text") or node.get("content-desc") or "")
+        if not label:
+            continue
+        for line in re.split(r"[\n\r]+", label):
+            line = _clean_line(line)
+            if not line:
+                continue
+            if CHAPTER_HEADING.match(line):
+                chapter = line
+                bounds = node.get("bounds") or ""
+                if not any(item["title"] == line for item in chapters):
+                    chapters.append({"title": line, "bounds": bounds})
+                continue
+            if not SECTION_HEADING.match(line):
+                continue
+            key = normalize(line)
+            if key in seen_sections:
+                continue
+            seen_sections.add(key)
+            sections.append(
+                SectionRef(
+                    section_id=make_section_id(book_id, chapter, line),
+                    title=line,
+                    chapter=chapter,
+                    sequence=len(sections) + 1,
+                    tap=_center(node.get("bounds") or ""),
+                )
+            )
+    if not chapters and not sections:
+        raise TextbookOutlineError("目录界面里没有找到章节标题，请确认目录已展开。")
+    payload = dict(source or {})
+    payload["chapters"] = chapters
+    return BookOutline(
+        book_id=book_id,
+        title=title or book_id,
+        sections=tuple(sections),
+        source=payload,
+    )
+
+
 def parse_outline_from_text(
     text: str, *, book_id: str, title: str = "", source: dict[str, Any] | None = None
 ) -> BookOutline:

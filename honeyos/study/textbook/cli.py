@@ -64,6 +64,18 @@ def cmd_index_text(args) -> int:
     return 0
 
 
+def cmd_sync_toc(args) -> int:
+    service = _service(args)
+    outline = service.sync_outline_from_device(args.book, title=args.title)
+    _print({
+        "book_id": outline.book_id,
+        "title": outline.title,
+        "sections": len(outline.sections),
+        "chapters": [item.get("title") for item in outline.source.get("chapters", [])],
+    })
+    return 0
+
+
 def cmd_locate(args) -> int:
     service = _service(args)
     _print({"query": args.query, "hits": service.locate(args.query, book_id=args.book, limit=args.limit)})
@@ -130,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
     index_text.add_argument("--title", default="")
     index_text.add_argument("--text-file", required=True)
     index_text.set_defaults(func=cmd_index_text)
+
+    sync_toc = sub.add_parser("sync-toc", help="打开 APP 目录并抓取章节树")
+    sync_toc.add_argument("--book", required=True)
+    sync_toc.add_argument("--title", default="")
+    sync_toc.set_defaults(func=cmd_sync_toc)
 
     locate = sub.add_parser("locate", help="按学习需求定位章节")
     locate.add_argument("--book", default=None)

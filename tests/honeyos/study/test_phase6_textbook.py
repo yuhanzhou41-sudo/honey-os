@@ -10,6 +10,7 @@ from honeyos.study.textbook import (
     locate_sections,
     parse_outline_from_text,
     parse_outline_from_ui_dump,
+    parse_toc_from_ui_dump,
 )
 from honeyos.study.textbook.collector import SectionCollector, merge_screens
 from honeyos.study.textbook.ocr import StaticOcr
@@ -182,6 +183,42 @@ def test_collect_caches_once_and_indexes_resource(tmp_path):
     assert "间歇性跛行是典型症状。" in content
     assert study.repository.list_resources(resource_type="textbook")
     assert service.stats()["temp_bytes"] == 0
+
+
+TOC_DRAWER = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="目录" bounds="[60,60][160,120]" />
+  <node text="书签" bounds="[220,60][320,120]" />
+  <node text="笔记" bounds="[400,60][500,120]" />
+  <node text="第二部分 循环系统疾病" bounds="[63,300][480,352]" />
+  <node text="第四章 循环系统疾病的体格检查" bounds="[63,360][480,412]" />
+  <node text="第十七章 血管及淋巴系统疾病" bounds="[63,420][480,472]" />
+</hierarchy>
+"""
+
+
+def test_parse_toc_drawer_records_chapters_without_sections():
+    outline = parse_toc_from_ui_dump(TOC_DRAWER, book_id="renwei", title="循环系统疾病（第2版）")
+    chapters = [item["title"] for item in outline.source["chapters"]]
+    assert "第四章 循环系统疾病的体格检查" in chapters
+    assert outline.sections == ()
+
+
+def test_sync_outline_from_device_keeps_existing_sections(tmp_path):
+    study = StudyService(repository=StudyRepository(tmp_path / "home"))
+    service = TextbookService(study, root=tmp_path / "tb", bridge=FakeBridge(), ocr=StaticOcr([]))
+    service.sync_outline_from_dump("neike", TOC_DUMP, title="循环系统疾病（第2版）")
+    before = service.get_outline("neike")
+    assert len(before.sections) == 3
+
+    class TocBridge(FakeBridge):
+        def open_toc(self):
+            return TOC_DRAWER
+
+    outline = service.sync_outline_from_device("neike", title="循环系统疾病（第2版）", bridge=TocBridge())
+    assert len(outline.sections) == 3
+    assert outline.source["chapters"]
+    assert outline.sections[0].title == before.sections[0].title
 
 
 def test_collect_opens_book_from_study_centre(tmp_path):
