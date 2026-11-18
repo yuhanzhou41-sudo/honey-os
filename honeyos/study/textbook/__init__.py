@@ -13,6 +13,7 @@ from .outline import (
     parse_outline_from_text,
     parse_outline_from_ui_dump,
     parse_toc_from_ui_dump,
+    parse_toc_rows,
     score_section,
 )
 from .retention import TextbookRetention
@@ -49,5 +50,6 @@ __all__ = [
     "parse_outline_from_text",
     "parse_outline_from_ui_dump",
     "parse_toc_from_ui_dump",
+    "parse_toc_rows",
     "score_section",
 ]

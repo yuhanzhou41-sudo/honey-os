@@ -225,6 +225,33 @@ class AndroidBridge:
             return self.dump_ui()
         return dump
 
+    def expand_toc(self, *, max_rounds: int = 40, settle: float = 0.8) -> str:
+        """Tap each chapter's chevron so section rows appear, then return the dump."""
+        from .outline import parse_toc_rows
+
+        dump = self.open_toc()
+        attempted: set[str] = set()
+        for _ in range(max_rounds):
+            rows = parse_toc_rows(dump)
+            chapters = sorted(rows["chapters"], key=lambda item: item["bounds"][1])
+            pending = None
+            for index, chapter in enumerate(chapters):
+                if chapter["title"] in attempted:
+                    continue
+                start = chapter["bounds"][1]
+                end = chapters[index + 1]["bounds"][1] if index + 1 < len(chapters) else 10**9
+                has_sections = any(start < section["bounds"][1] < end for section in rows["sections"])
+                if not has_sections and chapter["chevron"]:
+                    pending = chapter
+                    break
+            if pending is None:
+                break
+            attempted.add(pending["title"])
+            self.tap(*pending["chevron"])
+            time.sleep(settle)
+            dump = self.dump_ui()
+        return dump
+
 
 class MuMuManager:
     """Start the emulator instance through MuMuManager when it is not running."""

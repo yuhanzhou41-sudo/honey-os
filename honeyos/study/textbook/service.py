@@ -106,7 +106,7 @@ class TextbookService:
         active = bridge or self.bridge
         if active is None:
             active = AndroidBridge()
-        dump = active.open_toc() if hasattr(active, "open_toc") else active.dump_ui()
+        dump = active.expand_toc() if hasattr(active, "expand_toc") else active.open_toc() if hasattr(active, "open_toc") else active.dump_ui()
         outline = parse_toc_from_ui_dump(
             dump, book_id=book_id, title=title, source={"kind": "device_toc", "captured_at": _now()}
         )

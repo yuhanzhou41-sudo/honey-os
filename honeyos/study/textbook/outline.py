@@ -184,6 +184,46 @@ def parse_outline_from_ui_dump(
     )
 
 
+def parse_toc_rows(dump: str) -> dict[str, Any]:
+    """Chapter rows plus their expand chevrons from an open TOC drawer."""
+    try:
+        root = ET.fromstring(dump)
+    except ET.ParseError:
+        return {"chapters": [], "sections": []}
+
+    chapters: list[dict[str, Any]] = []
+    sections: list[dict[str, Any]] = []
+    for node in root.iter():
+        label = _clean_line(node.get("text") or "")
+        if not label:
+            continue
+        match = _BOUNDS.fullmatch(str(node.get("bounds") or "").strip())
+        if match is None:
+            continue
+        x1, y1, x2, y2 = (int(part) for part in match.groups())
+        if CHAPTER_HEADING.match(label):
+            chapters.append({"title": label, "bounds": (x1, y1, x2, y2), "chevron": None})
+        elif SECTION_HEADING.match(label):
+            sections.append({"title": label, "bounds": (x1, y1, x2, y2)})
+
+    for arrow in root.iter():
+        if arrow.get("clickable") != "true" or arrow.get("class") != "android.widget.ImageView":
+            continue
+        match = _BOUNDS.fullmatch(str(arrow.get("bounds") or "").strip())
+        if match is None:
+            continue
+        ax1, ay1, ax2, ay2 = (int(part) for part in match.groups())
+        center = ((ax1 + ax2) // 2, (ay1 + ay2) // 2)
+        if center[0] < 400:
+            continue
+        for chapter in chapters:
+            _, cy1, _, cy2 = chapter["bounds"]
+            if cy1 <= center[1] <= cy2:
+                chapter["chevron"] = center
+                break
+    return {"chapters": chapters, "sections": sections}
+
+
 def parse_toc_from_ui_dump(
     dump: str, *, book_id: str, title: str = "", source: dict[str, Any] | None = None
 ) -> BookOutline:

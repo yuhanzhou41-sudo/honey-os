@@ -11,6 +11,7 @@ from honeyos.study.textbook import (
     parse_outline_from_text,
     parse_outline_from_ui_dump,
     parse_toc_from_ui_dump,
+    parse_toc_rows,
 )
 from honeyos.study.textbook.collector import SectionCollector, merge_screens
 from honeyos.study.textbook.ocr import StaticOcr
@@ -195,6 +196,22 @@ TOC_DRAWER = """<?xml version='1.0' encoding='UTF-8'?>
   <node text="第十七章 血管及淋巴系统疾病" bounds="[63,420][480,472]" />
 </hierarchy>
 """
+
+
+TOC_ROWS = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="第九章 心律失常" bounds="[77,1022][480,1075]" />
+  <node class="android.widget.ImageView" clickable="true" bounds="[498,1035][542,1079]" />
+  <node text="第一节 概述" bounds="[77,1080][480,1130]" />
+</hierarchy>
+"""
+
+
+def test_parse_toc_rows_finds_chevron_and_sections():
+    rows = parse_toc_rows(TOC_ROWS)
+    assert rows["chapters"][0]["title"] == "第九章 心律失常"
+    assert rows["chapters"][0]["chevron"] == (520, 1057)
+    assert rows["sections"][0]["title"] == "第一节 概述"
 
 
 def test_parse_toc_drawer_records_chapters_without_sections():
