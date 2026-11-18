@@ -24,3 +24,17 @@
 ## 验收边界
 
 本轮恢复演练覆盖六个 SQLite 数据库。附件实物、虚拟磁盘和完整应用级恢复另需演练。真实 Qwen 测量覆盖回复前评估阶段，9 项真实模型用例尚未全量执行。短句路由测试可得到 `model_tier=local`，当前这一路由信息用于工具和上下文选择，未确认 Gateway 会自动切换最终回复模型。浏览器真实断网后的重试仍待实机复现。H1 仍由受信任的本机代码显式调用，Gateway 的授权界面属于后续开发。
+
+## 发布收尾
+
+2026-11-18，Gateway 从 `fde3827` 切至 `a10dadfb2e441b3ee63bc0ece401486534db74c7`。发布目录为 `/home/zyh20/projects/honeyos-releases/h0-h1-a10dadfb`，从该 Git 提交导出并放入当次构建资源 `index-BXGhY9dh.js`。
+
+- 发布前回归通过 55 项前端测试和 250 项后端测试，另有 2 项子测试通过、18 项需显式启用本地模型的参数化测试跳过。TypeScript 与 Vite 生产构建通过。
+- 隔离 Gateway 的流式聊天确认第一轮先完成，后台评估随后写入，下一轮请求才携带更新后的状态。前后两轮使用模拟回复模型和受控评估结果。另用实际 Qwen 在独立临时库完成了丢失事件评估，提交后台队列低于 1 毫秒，模型评估 9.74 秒，状态写入成功。
+- 隔离客户端读到首个 SSE 文本片段后主动关闭 TCP 连接。通过运行 ID 查询到同一轮成功完成，模型端只收到一次请求。
+- 发布后 Gateway 服务为 `active`，Gateway 与 Qwen 健康检查均返回 `ok`。首页和 Study 引用新资产，实际 JS 响应 SHA-256 与发布文件一致。Companion 会话初始化、Study 摄像头策略、未确认模拟题生成请求返回 HTTP 400 均通过检查。
+- 切换前保存了六个通过 SQLite `quick_check` 的数据库，以及人格候选审计和原始服务配置。备份目录为 `/home/zyh20/.honeyos/release-backups/h0-h1.yrwY38`。
+
+回滚服务可从该备份目录取 `gateway-original.conf`，恢复至 `~/.config/systemd/user/honeyos-gateway.service.d/20-verified-study-release.conf`，再执行 `systemctl --user daemon-reload` 和 `systemctl --user restart honeyos-gateway.service`。数据快照可独立用于恢复演练。
+
+本次上线范围覆盖 C1.3、H1.1–H1.2 底座及回复后状态评估。Qwen 的事件分类边界与此前记录一致，整盘恢复和 H1 用户授权界面属于后续工作。
