@@ -2639,6 +2639,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._handle_companion_diary_delete,
             ),
             ("GET", "/api/companion/settings", self._handle_companion_settings),
+            ("GET", "/api/companion/events", self._handle_companion_events),
+            ("POST", "/api/companion/events/{source}/grant", self._handle_companion_event_grant),
+            ("DELETE", "/api/companion/events/{source}/grant", self._handle_companion_event_grant),
             ("GET", "/api/companion/avatar", self._handle_companion_avatar),
             ("GET", "/api/companion/avatar/status", self._handle_companion_avatar_status),
             ("POST", "/api/companion/avatar", self._handle_companion_avatar_update),
@@ -3611,6 +3614,49 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         return web.json_response(result)
+
+    def _event_control_auth(self, request: "web.Request"):
+        if not self._request_is_loopback(request) or not request.cookies.get("honeyos_local"):
+            return web.json_response({"error": "请从本机 HoneyOS 设置打开事件权限。"}, status=401)
+        origin = request.headers.get("Origin")
+        if origin and origin != f"{request.scheme}://{request.host}":
+            return web.json_response({"error": "请求来源不受信任。"}, status=403)
+        return self._check_auth(request)
+
+    async def _handle_companion_events(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.events.control import review_events
+        from honeyos.events.store import Source
+
+        raw_source = request.query.get("source")
+        try:
+            source = Source(raw_source) if raw_source else None
+        except ValueError:
+            return web.json_response({"error": "未知事件来源。"}, status=400)
+        session_id = request.query.get("session_id", "")
+        if source == Source.CHAT:
+            _, error = await self._get_existing_session_or_404(session_id)
+            if error is not None:
+                return error
+        try:
+            data = await asyncio.to_thread(review_events, source, session_id, self._ensure_session_db)
+        except PermissionError:
+            return web.json_response({"error": "此来源的读取权限未开启或已到期。"}, status=403)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    async def _handle_companion_event_grant(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.events.control import change_event_grant
+        from honeyos.events.store import Source
+
+        try:
+            source = Source(request.match_info["source"])
+        except ValueError:
+            return web.json_response({"error": "未知事件来源。"}, status=400)
+        data = await asyncio.to_thread(change_event_grant, source, request.method == "POST")
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
 
     async def _handle_companion_settings(
         self, request: "web.Request"

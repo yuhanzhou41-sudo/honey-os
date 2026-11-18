@@ -38,6 +38,41 @@ from honeyos.gateway.platforms.api_server import (
 from honeyos.gateway.session import SessionSource, build_session_key
 
 
+@pytest.mark.asyncio
+async def test_event_permissions_require_local_cookie_and_revoke_immediately(tmp_path, monkeypatch):
+    from contextlib import closing
+    from honeyos.core.state import SessionDB
+
+    monkeypatch.setenv("HONEYOS_HOME", str(tmp_path))
+    adapter = _api_adapter()
+    request = SimpleNamespace(
+        remote="127.0.0.1", cookies={}, headers={}, scheme="http", host="127.0.0.1:8642",
+        query={"source": "chat", "session_id": "session"}, match_info={"source": "chat"}, method="POST",
+    )
+    assert (await adapter._handle_companion_event_grant(request)).status == 401
+    request.cookies["honeyos_local"] = adapter._local_web_token
+    request.headers["Origin"] = "http://127.0.0.1:9999"
+    assert (await adapter._handle_companion_event_grant(request)).status == 403
+    request.headers["Origin"] = "http://127.0.0.1:8642"
+    with closing(SessionDB(tmp_path / "state.db")) as db:
+        db.create_session("session", "api_server")
+        db.append_message("session", "user", "private message")
+        adapter._ensure_session_db = MagicMock(return_value=db)
+        adapter._get_existing_session_or_404 = AsyncMock(return_value=({"id": "session"}, None))
+        assert (await adapter._handle_companion_events(request)).status == 403
+        adapter._ensure_session_db.assert_not_called()
+        assert (await adapter._handle_companion_event_grant(request)).status == 200
+        response = await adapter._handle_companion_events(request)
+        assert response.status == 200
+        rows = json.loads(response.text)["events"]
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "message.user"
+        assert "private message" not in response.text
+        request.method = "DELETE"
+        assert (await adapter._handle_companion_event_grant(request)).status == 200
+        assert (await adapter._handle_companion_events(request)).status == 403
+
+
 def test_companion_multimodal_message_is_visible_and_displayable():
     content = [
         {"type": "text", "text": "看看这张图"},

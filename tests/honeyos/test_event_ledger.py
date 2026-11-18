@@ -125,6 +125,32 @@ class EventLedgerTest(unittest.TestCase):
         self.grant()
         self.assertEqual(self.ledger.read("owner", "review", Source.CHAT), [])
 
+    def test_review_projects_only_with_grant_and_filters_chat_session(self):
+        from unittest.mock import Mock
+
+        def events():
+            return [
+                Event(Source.CHAT, ("s1", "1"), "message.user", self.now),
+                Event(Source.CHAT, ("s2", "2"), "message.assistant", self.now),
+            ]
+
+        refresh = Mock(side_effect=events)
+        with self.assertRaises(PermissionError):
+            self.ledger.read("owner", "review", Source.CHAT, refresh=refresh)
+        refresh.assert_not_called()
+        self.grant()
+        self.grant()
+        rows = self.ledger.read("owner", "review", Source.CHAT, reference_root="s1", refresh=refresh)
+        refresh.assert_called_once()
+        self.assertEqual([json.loads(row["source_ref"]) for row in rows], [["s1", "1"]])
+        self.ledger.revoke_source("owner", "review", Source.CHAT)
+        with self.assertRaises(PermissionError):
+            self.ledger.read("owner", "review", Source.CHAT, refresh=refresh)
+        refresh.assert_called_once()
+        review = self.ledger.review("owner", "review")
+        self.assertEqual(review["grants"], [])
+        self.assertEqual([item["allowed"] for item in review["audit"]], [0, 1, 0])
+
 
 if __name__ == "__main__":
     unittest.main()

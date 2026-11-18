@@ -15,6 +15,7 @@ import { RecoveryActions } from "../../components/honey/RecoveryActions";
 import { Button } from "../../components/ui/Button";
 import { applyHoneyTheme, readHoneyTheme, type HoneyTheme } from "../../design-system/theme";
 import { useHoneyStore } from "../../runtime/honey-store";
+import { EventPermissions } from "./EventPermissions";
 
 import { fetchModelOptions, setGlobalDefaultModel } from "../../api/models";
 const providers = [
@@ -285,6 +286,7 @@ export function SettingsPage() {
           </Link>
           <p className="mt-4 text-xs text-[var(--foreground-faint)]">对话模型：{summary.conversation_model || "跟随当前配置"}。记忆整理模型：{summary.distillation_model || "自动"}。</p>
         </section>
+        <EventPermissions />
       </div>
     </PageFrame>
   );

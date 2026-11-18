@@ -7298,6 +7298,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    def get_chat_event_rows(self, session_id: str, limit: int = 500) -> list[dict]:
+        """Load only active chat metadata for the event ledger."""
+        with self._read_ctx() as conn:
+            return [
+                dict(row) for row in conn.execute(
+                    """SELECT id, role, timestamp FROM messages
+                       WHERE session_id=? AND active=1 AND role IN ('user', 'assistant')
+                       ORDER BY id DESC LIMIT ?""",
+                    (session_id, limit),
+                )
+            ]
+
     def get_messages(
         self,
         session_id: str,

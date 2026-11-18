@@ -89,20 +89,23 @@ class EventLedger:
 
     def ingest(self, events) -> int:
         """Store trusted internal projections, deduplicating repeat snapshots."""
-        inserted = 0
         with self._transaction() as db:
-            observed_at = _utc(self.clock())
-            for event in events:
-                fields = event.fields()
-                result = db.execute(
-                    """INSERT INTO events
-                       SELECT ?, ?, ?, ?, ?, ?
-                       WHERE NOT EXISTS (SELECT 1 FROM withdrawn_sources
-                                         WHERE source=? AND source_ref=?)
-                       ON CONFLICT(id) DO NOTHING""",
-                    (event.id, *fields, observed_at, *fields[:2]),
-                )
-                inserted += result.rowcount
+            return self._ingest(db, events, _utc(self.clock()))
+
+    @staticmethod
+    def _ingest(db, events, observed_at):
+        inserted = 0
+        for event in events:
+            fields = event.fields()
+            result = db.execute(
+                """INSERT INTO events
+                   SELECT ?, ?, ?, ?, ?, ?
+                   WHERE NOT EXISTS (SELECT 1 FROM withdrawn_sources
+                                     WHERE source=? AND source_ref=?)
+                   ON CONFLICT(id) DO NOTHING""",
+                (event.id, *fields, observed_at, *fields[:2]),
+            )
+            inserted += result.rowcount
         return inserted
 
     def withdraw(self, source: Source, source_ref: tuple[str, ...]):
@@ -135,7 +138,34 @@ class EventLedger:
                 (_utc(self.clock()), grant_id),
             )
 
-    def read(self, subject: str, app_id: str, source: Source, *, limit: int = 100):
+    def revoke_source(self, subject: str, app_id: str, source: Source):
+        with self._transaction() as db:
+            db.execute(
+                """UPDATE grants SET revoked_at=? WHERE subject=? AND app_id=?
+                   AND source=? AND mode=? AND revoked_at IS NULL""",
+                (_utc(self.clock()), subject, app_id, source.value, Mode.READ.value),
+            )
+
+    def review(self, subject: str, app_id: str):
+        with self._transaction() as db:
+            now = _utc(self.clock())
+            grants = db.execute(
+                """SELECT source, max(expires_at) AS expires_at FROM grants
+                   WHERE subject=? AND app_id=? AND mode=? AND revoked_at IS NULL AND expires_at>?
+                   GROUP BY source""",
+                (subject, app_id, Mode.READ.value, now),
+            )
+            audit = db.execute(
+                """SELECT source, checked_at, grant_id IS NOT NULL AS allowed FROM access_audit
+                   WHERE subject=? AND app_id=? ORDER BY id DESC LIMIT 30""",
+                (subject, app_id),
+            )
+            return {"grants": [dict(row) for row in grants], "audit": [dict(row) for row in audit]}
+
+    def read(
+        self, subject: str, app_id: str, source: Source, *, limit: int = 100,
+        reference_root: str | None = None, refresh=None,
+    ):
         if not 1 <= limit <= 1000:
             raise ValueError("Event limit must be between 1 and 1000")
         with self._transaction() as db:
@@ -154,13 +184,16 @@ class EventLedger:
                 (now, *identity, grant["id"] if grant else None),
             )
             if grant:
+                if refresh is not None:
+                    self._ingest(db, refresh(), now)
                 return [
                     dict(row) for row in db.execute(
                         """SELECT e.* FROM events e WHERE e.source=?
+                           AND (? IS NULL OR json_extract(e.source_ref, '$[0]')=?)
                            AND NOT EXISTS (SELECT 1 FROM withdrawn_sources w
                                            WHERE w.source=e.source AND w.source_ref=e.source_ref)
                            ORDER BY e.occurred_at DESC, e.id LIMIT ?""",
-                        (source.value, limit),
+                        (source.value, reference_root, reference_root, limit),
                     )
                 ]
         raise PermissionError("No active event read grant")
