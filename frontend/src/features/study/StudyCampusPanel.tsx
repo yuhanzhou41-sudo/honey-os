@@ -46,9 +46,9 @@ const DEFAULTS: CampusLink[] = [
   {
     id: "portal",
     name: "校园门户",
-    description: "统一身份认证入口，其他校内系统都能从门户进。需校园网或学校 VPN。",
-    url: "https://portal.paas.cqmu.edu.cn/",
-    placeholder: "https://portal.paas.cqmu.edu.cn/",
+    description: "信息门户登录（统一身份认证）。旧地址 portal.paas 已停用，这里已换成新地址。",
+    url: "https://my.cqmu.edu.cn/",
+    placeholder: "https://my.cqmu.edu.cn/",
   },
 ];
 
@@ -66,10 +66,13 @@ function stripTicket(raw: string): { url: string; stripped: boolean } {
 function loadLinks(): CampusLink[] {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as Record<string, string>;
-    return DEFAULTS.map((item) => ({
-      ...item,
-      url: (raw[item.id] ?? "").trim() || item.url,
-    }));
+    return DEFAULTS.map((item) => {
+      const saved = (raw[item.id] ?? "").trim();
+      if (item.id === "portal" && saved.includes("portal.paas.cqmu.edu.cn")) {
+        return { ...item, url: item.url };
+      }
+      return { ...item, url: saved || item.url };
+    });
   } catch {
     return DEFAULTS;
   }
@@ -119,7 +122,7 @@ export function StudyCampusPanel() {
         这里只保存入口链接，不保存账号密码；登录、签到现在网页里由你自己完成。
       </p>
       <p className="text-xs text-[var(--foreground-muted)]">
-        校内系统需要校园网或学校 VPN。如果浏览器打不开，请把 *.cqmu.edu.cn 设为直连，或暂时关闭代理再试。
+        这些站点在公网就能访问，不需要校园网或 VPN。若打不开，可先尝试关闭代理，或把 *.cqmu.edu.cn 设为直连。
       </p>
 
       <section className="space-y-3">
