@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -118,10 +117,10 @@ def appraise_before_reply(
     home: Path, session_id: str, turn_id: str, incoming: str, *, recent: Sequence[Mapping],
     recalled: str, now: datetime | None = None, cancelled: Callable[[], bool] = lambda: False,
 ) -> str:
-    from honeyos.study.local_model import (
-        LocalStudyModelNotConfigured, LocalStudyModelUnavailable, generate_shadow_appraisal,
-    )
+    from honeyos.study.local_model import LocalStudyModelUnavailable, generate_shadow_appraisal
 
+    if cancelled():
+        return ""
     store = PhysiologyShadow(home)
     current = now or datetime.now(timezone.utc)
     before = store.snapshot(now=current)
@@ -131,24 +130,15 @@ def appraise_before_reply(
         for row in recent[-10:] if row.get("role") == "assistant" and isinstance(row.get("content"), str)
         and not row.get("tool_calls") and (clauses := assistant_self_clauses(row["content"][:220]))
     ][-3:]
-    source_time = current
-    while not cancelled():
-        data = json.dumps({
-            "time": current.isoformat(), "seconds_since_event": round((current - source_time).total_seconds()),
-            "incoming": incoming, "own_history": own_history, "recalled": recalled[:900],
-            "decayed_state": {key: round(value, 2) for key, value in before.items()},
-        }, ensure_ascii=False)
-        try:
-            draft = generate_shadow_appraisal(_SYSTEM, data, schema=_SCHEMA)
-            break
-        except LocalStudyModelNotConfigured:
-            raise
-        except LocalStudyModelUnavailable:
-            time.sleep(1)
-            current = now or datetime.now(timezone.utc)
-            before = store.snapshot(now=current)
-    else:
-        return ""
+    data = json.dumps({
+        "time": current.isoformat(), "seconds_since_event": 0,
+        "incoming": incoming, "own_history": own_history, "recalled": recalled[:900],
+        "decayed_state": {key: round(value, 2) for key, value in before.items()},
+    }, ensure_ascii=False)
+    try:
+        draft = generate_shadow_appraisal(_SYSTEM, data, schema=_SCHEMA)
+    except LocalStudyModelUnavailable:
+        return "" if cancelled() else current_state_note(before)
     if cancelled():
         return ""
     try:

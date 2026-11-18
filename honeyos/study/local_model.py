@@ -33,14 +33,17 @@ def generate_question_candidates(system: str, content: str) -> str:
 
 
 def generate_shadow_appraisal(system: str, content: str, *, schema: dict | None = None) -> str:
-    return _generate(system, content, task="状态评估草稿", max_tokens=280, schema=schema)
+    return _generate(system, content, task="状态评估草稿", max_tokens=280, schema=schema, timeout=20)
 
 
 def summarize_document_batch(system: str, content: str) -> str:
     return _generate(system, content, task="文档分批摘要", max_tokens=500)
 
 
-def _generate(system: str, content: str, *, task: str, max_tokens: int, schema: dict | None = None) -> str:
+def _generate(
+    system: str, content: str, *, task: str, max_tokens: int,
+    schema: dict | None = None, timeout: float = 100,
+) -> str:
     from honeyos.gateway.run import _load_gateway_config
 
     endpoint = configured_qwen_endpoint(_load_gateway_config())
@@ -62,7 +65,7 @@ def _generate(system: str, content: str, *, task: str, max_tokens: int, schema: 
             "response_format": response_format,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
         }, ensure_ascii=False).encode())
-        with opener.open(request, timeout=100) as response:
+        with opener.open(request, timeout=timeout) as response:
             payload = json.loads(response.read(200000))
         result = payload["choices"][0]["message"]["content"]
         if not isinstance(result, str) or not result.strip():
