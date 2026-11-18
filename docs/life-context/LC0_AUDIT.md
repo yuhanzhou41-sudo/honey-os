@@ -5,7 +5,7 @@
 - Windows 开发副本为 `HoneyOS-development`。正式网关位于 WSL，现场检查时由 `honeyos-gateway.service` 加载 `~/projects/honeyos-releases/study-textbook-faa7ea9`，发布标识为 `5cb527c`，健康接口返回 200。该发布目录是快照。历史 `~/projects/honey-os` 含未提交改动，继续保留。
 - WSL 对 `127.0.0.1:8080/health` 的请求返回健康。该检查只确认服务可达，尚未实测活动摘要的模型版本、上下文容量或准确度。
 - 现有事件权限用网关受保护路由管理来源授权及读取记录。Life Context 拟使用独立存储，任何聊天注入须单独核查网页、微信及后台提取路径。抓到的页面文字按外部数据处理。自动记忆写入隔离须通过集成测试后再开放。
-- 用户确认手机已装官方 ActivityWatch 且能记录应用使用。当前未取得 P60 Pro 的真实导出、无障碍节点或同步样本。WSL 中默认路径没有 ADB。MuMu 中教材阅读页的历史结果只作为定位候选字段的参考。
+- 用户确认手机已装官方 ActivityWatch 且能记录应用使用。当前未取得 P60 Pro 的真实导出、无障碍节点或同步样本。Windows 上使用现有 MuMu ADB 列出设备，列表为空。MuMu 中教材阅读页的历史结果只作为定位候选字段的参考。
 
 ## 真机验证
 
