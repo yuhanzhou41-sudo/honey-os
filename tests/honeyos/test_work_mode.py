@@ -107,3 +107,26 @@ def test_work_mode_exposes_work_actions_planning_and_questions():
     names = {tool["function"]["name"] for tool in tools}
     assert {"work_action", "todo", "clarify"} <= names
     assert not names.intersection({"terminal", "execute_code", "write_file", "skill_manage"})
+
+
+def test_cqmu_read_requires_active_work_and_exact_date_approval(tmp_path, monkeypatch):
+    monkeypatch.setenv("HONEYOS_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("HONEYOS_PROJECTS_HOME", str(tmp_path / "projects"))
+    request = {"action": "read_cqmu_timetable", "start_date": "2026-11-18", "end_date": "2026-12-05"}
+    assert "error" in json.loads(work_action(request))
+    identity = start_work("session-cqmu")
+    token = work_turn.set(identity)
+    try:
+        with patch("honeyos.tools.work_tool.read_cqmu_timetable") as read:
+            with patch("honeyos.tools.work_tool.request_single_gateway_approval", return_value=False) as gate:
+                assert "error" in json.loads(work_action({**request, "end_date": "2027-03-01"}))
+                gate.assert_not_called()
+                assert "error" in json.loads(work_action(request))
+                assert "2026-11-18 至 2026-12-05" in gate.call_args.args[1]
+                read.assert_not_called()
+            with patch("honeyos.tools.work_tool.request_single_gateway_approval", return_value=True):
+                read.return_value = {"occupied_periods": {"2026-11-18": [15, 16, 17]}}
+                assert json.loads(work_action(request)) == read.return_value
+                read.assert_called_once()
+    finally:
+        work_turn.reset(token)

@@ -362,6 +362,7 @@ exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = 
 include = ["honeyos", "honeyos.*"]
 
 [tool.setuptools.package-data]
+"honeyos.tools" = ["cqmu_timetable_reader.js"]
 "honeyos.runtime" = ["observability/schemas/*.json"]
 "honeyos.companion" = ["templates/*.md", "companion_skills/**/*.md", "companion_skills/**/*.yaml", "react_dist/*", "react_dist/assets/*"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
