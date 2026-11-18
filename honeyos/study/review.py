@@ -475,7 +475,48 @@ class StudyReview:
                 results.append({"question": question, "choice": choice, "correct": correct})
             result = {"score": sum(item["correct"] for item in results), "results": results}
             db.execute("UPDATE study_review_quizzes SET answers=? WHERE id=?", (json.dumps(result), quiz_id))
-            return result
+        self.release_finished_textbook(results)
+        return result
+
+    def release_finished_textbook(self, results):
+        """Auto-release a textbook section once its full quiz is answered correctly."""
+        groups = {}
+        for item in results or []:
+            question = item.get("question") or {}
+            resource_id = question.get("resource_id")
+            if resource_id:
+                groups.setdefault(resource_id, []).append(bool(item.get("correct")))
+        if not groups:
+            return {}
+        from .textbook.service import TextbookService
+
+        service = None
+        released = {}
+        with closing(self._connect()) as db:
+            for resource_id, flags in groups.items():
+                if not all(flags):
+                    continue
+                row = db.execute(
+                    "SELECT resource_type, metadata_json FROM study_resources WHERE id=?",
+                    (resource_id,),
+                ).fetchone()
+                if row is None or row["resource_type"] != "textbook":
+                    continue
+                total = db.execute(
+                    "SELECT COUNT(*) FROM study_review_questions WHERE resource_id=?",
+                    (resource_id,),
+                ).fetchone()[0]
+                if total != len(flags):
+                    continue
+                metadata = json.loads(row["metadata_json"] or "{}").get("textbook") or {}
+                book_id = metadata.get("book_id")
+                section_id = metadata.get("section_id")
+                if not book_id or not section_id:
+                    continue
+                root = metadata.get("cache_root") or None
+                service = service or TextbookService(self.study, root=root)
+                released[resource_id] = service.release_after_review(book_id, [section_id])
+        return released
 
     def prune_derivatives(self, resource_ids):
         """Delete cards/questions/attempts that belong to finished study material."""

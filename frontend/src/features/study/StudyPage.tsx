@@ -32,6 +32,7 @@ import {
 import { PageHeader } from "../../components/honey/PageHeader";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
 import { StudyLibraryPanel } from "./StudyLibraryPanel";
+import { StudyTextbookPanel } from "./StudyTextbookPanel";
 
 const plansKey = ["study", "plans"] as const;
 
@@ -57,7 +58,7 @@ type TaskDraft = {
   status: StudyTaskStatus;
 };
 
-type DrawerKind = "library" | "review" | "qa" | null;
+type DrawerKind = "library" | "review" | "qa" | "textbook" | null;
 
 function planDraftOf(plan: StudyPlan): PlanDraft {
   return {
@@ -349,7 +350,7 @@ export function StudyPage() {
     <Frame>
       <PageHeader
         title="学习"
-        description="今天只看今天要完成的内容；资料、复习、答疑和番茄钟需要时再展开。"
+        description="今天只看今天要完成的内容；资料、教材、复习、答疑和番茄钟需要时再展开。"
       />
 
       <GrowthStrip />
@@ -1166,6 +1167,7 @@ function ToolRail({
     label: string;
   }> = [
     { key: "library", icon: "📚", label: "资料" },
+    { key: "textbook", icon: "📖", label: "教材" },
     { key: "review", icon: "🧠", label: "复习" },
     { key: "qa", icon: "❓", label: "答疑" },
   ];
@@ -1221,7 +1223,7 @@ function UtilityDrawer({
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">
-            {kind === "library" ? "学习资料" : "复习"}
+            {kind === "library" ? "学习资料" : kind === "textbook" ? "教材采集" : "复习"}
           </h2>
           <button
             type="button"
@@ -1234,6 +1236,8 @@ function UtilityDrawer({
 
         {kind === "library" ? (
           <StudyLibraryPanel />
+        ) : kind === "textbook" ? (
+          <StudyTextbookPanel />
         ) : (
           <StudyReviewPanel todayTasks={todayTasks} planId={planId} />
         )}

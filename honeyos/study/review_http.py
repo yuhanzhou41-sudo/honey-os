@@ -57,8 +57,29 @@ def _json_result(raw):
     return result
 
 
+def _textbook_resource_id(review, topic: str) -> str | None:
+    """Resolve a topic to a cached textbook section; never block normal QA."""
+    value = str(topic or "").strip()
+    if not value:
+        return None
+    try:
+        from honeyos.study.textbook.resolver import resolve_topic
+        from honeyos.study.textbook.service import TextbookService
+
+        resolved = resolve_topic(TextbookService(review.study), value[:160])
+    except Exception:
+        logger.warning("Textbook topic resolution failed", exc_info=True)
+        return None
+    return resolved.resource_id if resolved is not None else None
+
+
 def _card_preview(review, body):
-    resource, content, question = review.card_context(body.get("resource_id"), body.get("question_id"))
+    resource_id = body.get("resource_id")
+    if not resource_id and body.get("topic"):
+        resource_id = _textbook_resource_id(review, body.get("topic"))
+        if not resource_id:
+            raise ValueError("没有找到匹配的教材章节，请先采集该章节或换个关键词。")
+    resource, content, question = review.card_context(resource_id, body.get("question_id"))
     segment = body.get("segment", 1)
     excerpt = question["excerpt"] if question else _segment(content, segment)
     incorrect = None if question is None else {
@@ -86,7 +107,12 @@ def _segment(content, segment):
 
 
 def _question_preview(store, body):
-    resource, content = store.source(body.get("resource_id"))
+    resource_id = body.get("resource_id")
+    if not resource_id and body.get("topic"):
+        resource_id = _textbook_resource_id(store, body.get("topic"))
+        if not resource_id:
+            raise ValueError("没有找到匹配的教材章节，请先采集该章节或换个关键词。")
+    resource, content = store.source(resource_id)
     excerpt = _segment(content, body.get("segment", 1))
     evidence = [part.strip() for part in re.findall(r"[^。！？!?\n]{1,900}[。！？!?]?", excerpt) if part.strip()]
     if not evidence:
@@ -172,6 +198,8 @@ def _answer(review, body):
     if "[无法识别]" in question:
         raise ValueError("请先补齐题目中标为 [无法识别] 的内容。")
     resource_id = body.get("resource_id")
+    if not resource_id:
+        resource_id = _textbook_resource_id(review, question[:160])
     resource = None
     excerpt = ""
     if resource_id:

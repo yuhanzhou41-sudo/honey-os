@@ -6,13 +6,16 @@ from honeyos.study.review import StudyReview
 from honeyos.study.service import StudyService
 from honeyos.study.textbook import (
     SectionCache,
+    TextbookQualityError,
     TextbookService,
+    assess,
     locate_sections,
     merge_toc_dumps,
     parse_outline_from_text,
     parse_outline_from_ui_dump,
     parse_toc_from_ui_dump,
     parse_toc_rows,
+    resolve_topic,
 )
 from honeyos.study.textbook.collector import SectionCollector, merge_screens
 from honeyos.study.textbook.ocr import StaticOcr
@@ -224,6 +227,62 @@ def test_merge_toc_dumps_carries_chapter_across_scroll_pages():
     outline = merge_toc_dumps([page_a, page_b], book_id="renwei")
     assert [item.title for item in outline.sections] == ["第一节 概述", "第二节 室性心律失常"]
     assert all(item.chapter == "第九章 心律失常" for item in outline.sections)
+
+
+def test_quality_gate_rejects_short_and_duplicated_text():
+    try:
+        assess("只有一句")
+    except Exception:
+        raise AssertionError("assess should not raise")
+    assert assess("只有一句")["ok"] is False
+    assert assess("\n".join(["重复行"] * 20))["reasons"] == ["duplicated"]
+    assert assess("正常正文" * 20)["ok"] is True
+    from honeyos.study.textbook.quality import ensure_quality
+
+    try:
+        ensure_quality("太短")
+    except TextbookQualityError:
+        pass
+    else:
+        raise AssertionError("short text should be rejected")
+
+
+def test_resolve_topic_uses_cache_after_first_collection(tmp_path):
+    study, service = _book_service(tmp_path, [PAGE_ONE, PAGE_TWO, PAGE_BOUNDARY])
+    first = resolve_topic(service, "周围血管")
+    assert first is not None and first.resource_id
+    assert first.cached is False
+    assert "间歇性跛行是典型症状。" in first.text
+    second = resolve_topic(service, "周围血管")
+    assert second is not None and second.cached is True
+    assert second.resource_id == first.resource_id
+
+
+def test_release_finished_textbook_after_full_correct_quiz(tmp_path):
+    study, service = _book_service(tmp_path, [PAGE_ONE, PAGE_TWO, PAGE_BOUNDARY])
+    outline = service.get_outline("neike")
+    section = outline.sections[0]
+    payload = service.collect_section("neike", section.section_id)
+    resource_id = payload["resource_id"]
+
+    review = StudyReview(study)
+    review.create_question({
+        "resource_id": resource_id,
+        "prompt": "典型症状是？",
+        "options": ["间歇性跛行", "发热"],
+        "correct": 0,
+        "explanation": "动脉供血不足。",
+        "excerpt": "间歇性跛行是典型症状。",
+    })
+    released = review.release_finished_textbook([{"question": {"resource_id": resource_id}, "correct": True}])
+    assert resource_id in released
+    assert not service.cache.has("neike", section.section_id)
+    try:
+        study.get_resource(resource_id)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("textbook resource should be released")
 
 
 def test_parse_toc_drawer_records_chapters_without_sections():

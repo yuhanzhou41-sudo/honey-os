@@ -16,6 +16,7 @@ from .cache import DEFAULT_MAX_BYTES, SectionCache, SectionRecord
 from .collector import SectionCollector
 from .index_store import TextbookBookNotFoundError, TextbookIndexStore
 from .ocr import make_default_ocr
+from .quality import ensure_quality
 from .outline import (
     BookOutline,
     SectionRef,
@@ -224,6 +225,7 @@ class TextbookService:
 
         collector = self._collector()
         result = collector.collect(outline, section, progress=progress)
+        quality = ensure_quality(result.text)
         record = self.cache.write(
             book_id=book_id,
             section_id=section_id,
@@ -242,6 +244,7 @@ class TextbookService:
         payload["anchored"] = result.anchored
         payload["stop_reason"] = result.stop_reason
         payload["duration_s"] = result.duration_s
+        payload["quality"] = quality
         return payload
 
     def read_section(self, book_id: str, section_id: str) -> dict[str, Any]:
@@ -273,6 +276,7 @@ class TextbookService:
                 "book_title": outline.title,
                 "section_id": section.section_id,
                 "chapter": section.chapter,
+                "cache_root": str(self.root),
                 "cached_at": _now(),
             }
         }

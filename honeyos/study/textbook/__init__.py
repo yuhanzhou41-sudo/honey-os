@@ -5,6 +5,8 @@ from .cache import SectionCache, SectionRecord, TextbookCacheError
 from .collector import CollectResult, SectionCollector, TextbookCollectionError, TextbookNavigationError
 from .index_store import TextbookBookNotFoundError, TextbookIndexError, TextbookIndexStore
 from .ocr import OcrUnavailable, TesseractOcr, VisionOcr, make_default_ocr
+from .quality import TextbookQualityError, assess, ensure_quality
+from .resolver import ResolvedSection, resolve_resource_text, resolve_topic
 from .outline import (
     BookOutline,
     SectionRef,
@@ -35,6 +37,7 @@ __all__ = [
     "TextbookBookNotFoundError",
     "TextbookCacheError",
     "TextbookCollectionError",
+    "TextbookQualityError",
     "TextbookIndexError",
     "TextbookIndexStore",
     "TextbookNavigationError",
@@ -43,6 +46,8 @@ __all__ = [
     "TextbookService",
     "TextbookServiceError",
     "VisionOcr",
+    "ResolvedSection",
+    "assess",
     "default_adb_path",
     "default_serial",
     "default_textbook_root",
@@ -53,5 +58,7 @@ __all__ = [
     "parse_outline_from_ui_dump",
     "parse_toc_from_ui_dump",
     "parse_toc_rows",
+    "resolve_resource_text",
+    "resolve_topic",
     "score_section",
 ]
