@@ -8,7 +8,6 @@ export type ChatInput = string | Array<
 >;
 
 export const userMessageBreak = "<honeyos-user-message-break/>";
-export const assistantMessageBreak = "<honeyos-message-break/>";
 
 export const naturalReplyInstructions = `
 You are replying on HoneyOS's private instant-message surface.
@@ -33,23 +32,6 @@ export function splitUserMessages(content: string): string[] {
   return messages.length
     ? messages
     : [String(content || "").trim()].filter(Boolean);
-}
-
-export function splitAssistantReply(content: string, maximum = 5): string[] {
-  const source = String(content || "").trim();
-  if (!source) return [];
-
-  const messages = source
-    .split(assistantMessageBreak)
-    .map((message) => message.trim())
-    .filter(Boolean);
-
-  if (!messages.length) return [source];
-  if (messages.length <= maximum) return messages;
-  return [
-    ...messages.slice(0, maximum - 1),
-    messages.slice(maximum - 1).join("\n\n"),
-  ];
 }
 
 export function parseEventBlock(block: string): HoneyEvent | null {
@@ -140,6 +122,7 @@ export async function answerApproval(options: {
   sessionId: string;
   sessionKey: string;
   choice: PermissionChoice;
+  approvalId?: string;
 }): Promise<void> {
   const response = await fetchWithLocalSessionRecovery(
     apiPath(`/api/sessions/${encodeURIComponent(options.sessionId)}/approval`),
@@ -147,7 +130,7 @@ export async function answerApproval(options: {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-HoneyOS-Session-Key": options.sessionKey },
-      body: JSON.stringify({ choice: options.choice }),
+      body: JSON.stringify({ choice: options.choice, approval_id: options.approvalId }),
     },
   );
   if (!response.ok) throw await responseError(response);

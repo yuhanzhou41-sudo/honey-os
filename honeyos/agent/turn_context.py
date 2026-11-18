@@ -29,7 +29,8 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from functools import partial
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from honeyos.agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
@@ -342,6 +343,7 @@ class TurnContext:
     ext_prefetch_cache: str = ""
     # Turn-start preflight already proved an immediate retry ineffective.
     preflight_compression_blocked: bool = False
+    post_reply_appraisal: Callable[[], str] | None = None
 
 
 def build_turn_context(
@@ -1223,10 +1225,13 @@ def build_turn_context(
     # ext_prefetch_cache, api_content, system prompt, or TurnContext.
     _cognitive_context = None
     _cognitive_shadow_result = None
+    from honeyos.companion.work_mode import work_turn
+
     try:
         _shadow_query = original_user_message if isinstance(original_user_message, str) else ""
-        if _shadow_query and not is_trivial_prompt(_shadow_query):
+        if _shadow_query and work_turn.get() is None and not is_trivial_prompt(_shadow_query):
             lane = getattr(agent, "_companion_memory_lane", "")
+            native_note = ""
             if lane:
                 from honeyos.companion.continuity import StructuredMemoryStore
                 from honeyos.core.constants import get_honeyos_home
@@ -1258,32 +1263,33 @@ def build_turn_context(
                 _cognitive_shadow_result,
                 session_id=str(getattr(agent, "session_id", "") or ""),
                 turn_id=str(turn_id or ""),
+                structured_context=native_note or "",
                 **recall_options,
             )
     except Exception:
         logger.debug("Cognitive Memory F1 shadow retrieval failed (non-fatal)", exc_info=True)
 
+    post_reply_appraisal = None
     if getattr(agent, "_companion_input_budget", False) is True:
         from honeyos.companion.personality_observation_hook import _resolve_companion_home
         from honeyos.companion.physiology_shadow import live_signals
         from honeyos.companion.pre_reply_appraisal import appraise_before_reply, current_state_note
+        from honeyos.companion.work_mode import active_work
 
-        agent._companion_turn_appraisal = ""
         home = _resolve_companion_home(agent)
+        values = live_signals(home)
+        agent._companion_turn_appraisal = current_state_note(values) if values else ""
         if _shadow_query and not is_trivial_prompt(_shadow_query):
             recalled = ext_prefetch_cache if isinstance(ext_prefetch_cache, str) else ""
             if _cognitive_context is not None and _cognitive_context.would_inject:
                 recalled = "\n".join(filter(None, (recalled, _cognitive_context.text or "")))
-            agent._companion_turn_appraisal = appraise_before_reply(
-                home, agent.session_id, turn_id, _shadow_query,
-                recent=messages[:current_turn_user_idx],
-                recalled=recalled,
-                cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+            recent = tuple(
+                dict(row) for row in messages[max(0, current_turn_user_idx - 10):current_turn_user_idx]
             )
-        else:
-            values = live_signals(home)
-            if values:
-                agent._companion_turn_appraisal = current_state_note(values)
+            post_reply_appraisal = partial(
+                appraise_before_reply, home, agent.session_id, turn_id, _shadow_query[:900],
+                recent=recent, recalled=recalled[:900], cancelled=lambda: bool(active_work()),
+            )
 
     # ── api_content sidecar: persist what you send ──
     # The prefetch/plugin context above is injected into the API copy of this
@@ -1429,4 +1435,5 @@ def build_turn_context(
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=_preflight_compression_blocked,
+        post_reply_appraisal=post_reply_appraisal,
     )

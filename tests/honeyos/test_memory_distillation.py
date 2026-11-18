@@ -949,3 +949,28 @@ async def test_background_correction_updates_expiry_and_keeps_new_evidence(tmp_p
     assert updated.content == "上线延期到下周三"
     assert updated.expires_at == datetime(2026, 8, 19, 16, 0, tzinfo=timezone.utc)
     assert updated.source_message_ids == (1, 5)
+
+
+@pytest.mark.asyncio
+async def test_reviewed_history_omits_only_completed_old_text_exchanges(tmp_path):
+    from honeyos.companion.distillation import reviewed_history_rows
+
+    async def extractor(*_):
+        return '{"operations":[]}'
+
+    rows = _messages(20)
+    distiller = MemoryDistiller(tmp_path, extractor=extractor)
+    assert not reviewed_history_rows(tmp_path, LANE, "session-a", rows)
+    result = await distiller.distill_if_due(
+        lane_key=LANE, session_id="session-a", messages=rows, reason="periodic", now=NOW,
+    )
+    assert result and result.status == "completed"
+    assert set(reviewed_history_rows(tmp_path, LANE, "session-a", rows)) == set(range(1, 15))
+    assert not reviewed_history_rows(tmp_path, LANE, "session-b", rows)
+    altered = [dict(row) for row in rows]
+    altered[0]["content"] = [{"type": "image_url", "image_url": {"url": "fixture"}}]
+    altered[2]["content"] = "a" * 6001
+    assert set(reviewed_history_rows(tmp_path, LANE, "session-a", altered)) == set(range(5, 15))
+    with distiller._connect() as connection:
+        connection.execute("UPDATE distillation_runs SET status='running'")
+    assert not reviewed_history_rows(tmp_path, LANE, "session-a", rows)

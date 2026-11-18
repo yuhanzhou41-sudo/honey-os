@@ -2640,6 +2640,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._handle_companion_diary_delete,
             ),
             ("GET", "/api/companion/settings", self._handle_companion_settings),
+            ("GET", "/api/companion/events", self._handle_companion_events),
+            ("GET", "/api/companion/work", self._handle_companion_work),
+            ("POST", "/api/companion/work", self._handle_companion_work),
+            ("POST", "/api/companion/work/answer", self._handle_work_answer),
+            ("GET", "/api/companion/web-initiative", self._handle_web_initiative),
+            ("POST", "/api/companion/web-initiative", self._handle_web_initiative),
+            ("POST", "/api/companion/events/{source}/grant", self._handle_companion_event_grant),
+            ("DELETE", "/api/companion/events/{source}/grant", self._handle_companion_event_grant),
             ("GET", "/api/companion/avatar", self._handle_companion_avatar),
             ("GET", "/api/companion/avatar/status", self._handle_companion_avatar_status),
             ("POST", "/api/companion/avatar", self._handle_companion_avatar_update),
@@ -3612,6 +3620,115 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         return web.json_response(result)
+
+    def _event_control_auth(self, request: "web.Request"):
+        if not self._request_is_loopback(request) or not request.cookies.get("honeyos_local"):
+            return web.json_response({"error": "请从本机 HoneyOS 设置打开事件权限。"}, status=401)
+        origin = request.headers.get("Origin")
+        if origin and origin != f"{request.scheme}://{request.host}":
+            return web.json_response({"error": "请求来源不受信任。"}, status=403)
+        return self._check_auth(request)
+
+    async def _handle_companion_events(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.events.control import review_events
+        from honeyos.events.store import Source
+
+        raw_source = request.query.get("source")
+        try:
+            source = Source(raw_source) if raw_source else None
+        except ValueError:
+            return web.json_response({"error": "未知事件来源。"}, status=400)
+        session_id = request.query.get("session_id", "")
+        if source == Source.CHAT:
+            _, error = await self._get_existing_session_or_404(session_id)
+            if error is not None:
+                return error
+        try:
+            data = await asyncio.to_thread(review_events, source, session_id, self._ensure_session_db)
+        except PermissionError:
+            return web.json_response({"error": "此来源的读取权限未开启或已到期。"}, status=403)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    async def _handle_companion_work(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.companion.work_mode import active_work, finish_work, schedule_work_review, start_work
+
+        if request.method == "POST":
+            if self._companion_stream_controls:
+                return web.json_response({"error": "请等待当前回复结束再切换模式。"}, status=409)
+            body, error = await self._read_json_body(request)
+            if error is not None:
+                return error
+            if body.get("enabled") is True:
+                session_id = str(body.get("session_id") or "")
+                _, error = await self._get_existing_session_or_404(session_id)
+                if error is not None:
+                    return error
+                await asyncio.to_thread(start_work, session_id)
+            elif body.get("enabled") is False:
+                previous = await asyncio.to_thread(finish_work)
+                if previous:
+                    schedule_work_review(*previous)
+            else:
+                return web.json_response({"error": "请选择进入或结束工作模式。"}, status=400)
+        state = await asyncio.to_thread(active_work)
+        return web.json_response({
+            "enabled": state is not None,
+            "work_id": state[0] if state else None,
+            "session_id": state[1] if state else None,
+        }, headers={"Cache-Control": "no-store"})
+
+    async def _handle_work_answer(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.tools.clarify_gateway import resolve_gateway_clarify
+
+        body, error = await self._read_json_body(request)
+        if error is not None:
+            return error
+        control = self._companion_stream_controls.get(str(body.get("run_id") or "")) or {}
+        question_id = str(body.get("question_id") or "")
+        answer = body.get("answer")
+        if not question_id or question_id != control.get("work_question_id"):
+            return web.json_response({"error": "问题已失效。"}, status=409)
+        if not isinstance(answer, str) or not answer.strip() or len(answer) > 2000:
+            return web.json_response({"error": "请输入不超过 2000 字的回复。"}, status=400)
+        if not resolve_gateway_clarify(question_id, answer.strip()):
+            return web.json_response({"error": "问题已失效。"}, status=409)
+        return web.json_response({"answered": True})
+
+    async def _handle_web_initiative(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.companion.web_initiative import preference, set_preference
+
+        if request.method == "GET":
+            enabled = await asyncio.to_thread(preference)
+        else:
+            body, error = await self._read_json_body(request)
+            if error is not None:
+                return error
+            enabled = body.get("enabled")
+            if type(enabled) is not bool:
+                return web.json_response({"error": "请选择开启或关闭主动联系。"}, status=400)
+            await asyncio.to_thread(set_preference, enabled)
+        return web.json_response({"enabled": enabled}, headers={"Cache-Control": "no-store"})
+
+    async def _handle_companion_event_grant(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.events.control import change_event_grant
+        from honeyos.events.store import Source
+
+        try:
+            source = Source(request.match_info["source"])
+        except ValueError:
+            return web.json_response({"error": "未知事件来源。"}, status=400)
+        data = await asyncio.to_thread(change_event_grant, source, request.method == "POST")
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
 
     async def _handle_companion_settings(
         self, request: "web.Request"
@@ -5386,6 +5503,7 @@ class APIServerAdapter(BasePlatformAdapter):
         shadow_user_message: Any = None,
         study_planning: bool = False,
         study_revision: bool = False,
+        work_mode: bool = False,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -5657,9 +5775,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         from honeyos.routing.selective_loading import resolve_turn_toolsets
 
-        enabled_toolsets = list(resolve_turn_toolsets(
-            shadow_user_message, configured_toolsets, user_config,
-        ))
+        enabled_toolsets = ["companion_work", "todo", "clarify"] if work_mode else list(
+            resolve_turn_toolsets(shadow_user_message, configured_toolsets, user_config)
+        )
 
         if study_planning:
             from honeyos.study.planning import planning_instructions
@@ -5691,7 +5809,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "verbose_logging": False,
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
             "enabled_toolsets": enabled_toolsets,
-            "skip_memory": study_planning,
+            "skip_memory": study_planning or work_mode,
             "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
@@ -6229,12 +6347,16 @@ class APIServerAdapter(BasePlatformAdapter):
             return None, web.json_response(_openai_error(f"Session not found: {session_id}", code="session_not_found"), status=404)
         return session, None
 
-    async def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
+    async def _conversation_history_for_session(
+        self, session_id: str, *, with_source_ids: bool = False,
+    ) -> List[Dict[str, Any]]:
         db = await self._ensure_session_db_async()
         if db is None:
             return []
         try:
-            return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+            return await asyncio.to_thread(
+                db.get_messages_as_conversation, session_id, include_row_ids=with_source_ids,
+            )
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
@@ -6795,6 +6917,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         companion_view = request.headers.get("X-HoneyOS-Companion-View") == "1"
         internal_turn = request.headers.get("X-HoneyOS-Internal-Turn") == "proactive-topic"
+        if companion_view:
+            from honeyos.companion.work_mode import active_work
+
+            if await asyncio.to_thread(active_work):
+                return web.json_response({"error": "工作模式需要通过网页实时会话提交。"}, status=409)
         self._record_companion_web_activity(
             companion_view=companion_view and not internal_turn
         )
@@ -6864,7 +6991,9 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             if selection_error:
                 return web.json_response(_openai_error(selection_error), status=400)
-        history = await self._conversation_history_for_session(session_id)
+        history = await self._conversation_history_for_session(
+            session_id, with_source_ids=companion_view and not internal_turn,
+        )
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
@@ -6953,6 +7082,14 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         companion_view = request.headers.get("X-HoneyOS-Companion-View") == "1"
         internal_turn = request.headers.get("X-HoneyOS-Internal-Turn") == "proactive-topic"
+        from honeyos.companion.work_mode import active_work
+
+        work = await asyncio.to_thread(active_work) if companion_view else None
+        if work:
+            if (error := self._event_control_auth(request)) is not None:
+                return error
+            if internal_turn or work[1] != session_id:
+                return web.json_response({"error": "请回到当前的工作会话。"}, status=409)
         self._record_companion_web_activity(
             companion_view=companion_view and not internal_turn
         )
@@ -7146,6 +7283,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 },
             )
 
+        def _work_clarify(question, choices=None, **_):
+            from honeyos.tools import clarify_gateway
+
+            question_id = uuid.uuid4().hex
+            clarify_gateway.register(question_id, gateway_session_key or session_id, question, choices)
+            stream_control["work_question_id"] = question_id
+            _enqueue("work.question", {"question_id": question_id, "question": question[:1000], "choices": choices or []})
+            try:
+                return clarify_gateway.wait_for_response(question_id, timeout=300) or "No response received."
+            finally:
+                stream_control.pop("work_question_id", None)
+                _enqueue("work.question.closed", {"question_id": question_id})
+
         async def _run_and_signal() -> None:
             nonlocal memory_review
             try:
@@ -7173,7 +7323,9 @@ class APIServerAdapter(BasePlatformAdapter):
                         if int(item.get("_row_id") or 0) != reuse_user_message_id
                     ]
                 else:
-                    history = await self._conversation_history_for_session(session_id)
+                    history = await self._conversation_history_for_session(
+                        session_id, with_source_ids=companion_view and not internal_turn and not work,
+                    )
                 result, usage = await self._run_agent(
                     user_message=user_message,
                     conversation_history=history,
@@ -7188,7 +7340,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     route_source=runtime_request.get("route_source") or "global",
                     confirmed_runtime_lock=lock_active,
                     approval_callback=_approval_notify if companion_view else None,
-                    companion_input_budget=companion_view and not internal_turn,
+                    companion_input_budget=companion_view and not internal_turn and not work,
+                    work=work,
+                    clarify_callback=_work_clarify if work else None,
                     agent_ref=stream_control["agent_ref"],
                     **agent_overrides,
                 )
@@ -7249,7 +7403,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     terminal_state = "completed" if final_response.strip() else "empty_response"
                 from honeyos.study.planning import planning_intent
 
-                if terminal_state == "completed" and not planning_intent(user_message, history):
+                if terminal_state == "completed" and not work and not planning_intent(user_message, history):
                     memory_review = {
                         "gateway_session_key": gateway_session_key,
                         "session_id": effective_session_id,
@@ -7484,7 +7638,11 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         from honeyos.tools.approval import resolve_gateway_approval
 
-        resolved = resolve_gateway_approval(session_key, choice)
+        approval_id = str(body.get("approval_id") or "")
+        if approval_id.startswith("work-"):
+            if (error := self._event_control_auth(request)) is not None:
+                return error
+        resolved = resolve_gateway_approval(session_key, choice, approval_id=approval_id)
         if resolved <= 0:
             return web.json_response(
                 _openai_error("This permission request has expired", code="approval_not_pending"),
@@ -9715,6 +9873,8 @@ class APIServerAdapter(BasePlatformAdapter):
         confirmed_runtime_lock: bool = False,
         approval_callback=None,
         companion_input_budget: bool = False,
+        work: tuple[str, str] | None = None,
+        clarify_callback=None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -9743,7 +9903,11 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from honeyos.study.planning import planning_intent, planning_revision
 
-        study_planning = planning_intent(user_message, conversation_history)
+        from honeyos.companion.work_mode import WORK_GUIDANCE, work_turn
+
+        study_planning = not work and planning_intent(user_message, conversation_history)
+        if work:
+            ephemeral_system_prompt = "\n\n".join(filter(None, (ephemeral_system_prompt, WORK_GUIDANCE)))
         loop = asyncio.get_running_loop()
         # Capture before hopping to the executor — ContextVars do not follow
         # run_in_executor threads, so the profile scope must be re-entered
@@ -9768,6 +9932,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 approval_session_key = gateway_session_key or session_id or ""
                 approval_token = set_current_session_key(approval_session_key)
+                work_token = work_turn.set(work)
                 if approval_callback is not None and approval_session_key:
                     register_gateway_notify(approval_session_key, approval_callback)
                 agent = None
@@ -9789,7 +9954,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         shadow_user_message=user_message,
                         study_planning=study_planning,
                         study_revision=study_planning and planning_revision(user_message, conversation_history),
+                        work_mode=bool(work),
                     )
+                    if work:
+                        if getattr(agent, "api_mode", None) == "codex_app_server" or getattr(agent, "provider", None) == "moa":
+                            raise RuntimeError("Work mode requires the gateway-managed model transport.")
+                        agent._work_mode_enabled = True
+                        agent.clarify_callback = clarify_callback
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     if (
@@ -9801,6 +9972,12 @@ class APIServerAdapter(BasePlatformAdapter):
                         lane = str(gateway_session_key or "")
                         if lane.endswith(":api_server:dm:local-owner"):
                             agent._companion_memory_lane = lane
+                            from honeyos.companion.distillation import reviewed_history_rows
+                            from honeyos.core.constants import get_honeyos_home
+
+                            agent._companion_reviewed_history = reviewed_history_rows(
+                                get_honeyos_home(), lane, session_id or "", conversation_history or [],
+                            )
                         # The browser uses the bounded request window below.
                         # Foreground summarization would send the full old history
                         # before that window is applied.
@@ -9943,6 +10120,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         if approval_callback is not None and approval_session_key:
                             unregister_gateway_notify(approval_session_key)
                     finally:
+                        work_turn.reset(work_token)
                         reset_current_session_key(approval_token)
                         clear_session_vars(tokens)
 
@@ -10757,6 +10935,10 @@ class APIServerAdapter(BasePlatformAdapter):
         return True
 
     async def _generate_scheduled_companion_diary(self, target_date: str):
+        from honeyos.companion.work_mode import active_work
+
+        while await asyncio.to_thread(active_work):
+            await asyncio.sleep(30)
         """Generate one profile-local diary entry from the shared owner lane."""
         from honeyos.companion.diary_automation import (
             generate_diary_entry,

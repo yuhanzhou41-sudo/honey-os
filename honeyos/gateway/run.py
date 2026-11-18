@@ -11494,6 +11494,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if _is_honeyos_runtime():
             self._start_topic_pool_poller()
+        if Platform.API_SERVER in self.adapters:
+            self._start_web_initiative_poller()
 
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -19133,6 +19135,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return datetime.now(timezone.utc)
 
     async def _run_topic_collection_if_due(self) -> bool:
+        from honeyos.companion.work_mode import active_work
+
+        if await asyncio.to_thread(active_work):
+            return False
         try:
             from honeyos.companion.topic_scout import TopicScout
 
@@ -19151,7 +19157,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _run_topic_pool_pulse(self, *, now: datetime | None = None) -> bool:
         """Reserve and enqueue at most one due proactive topic turn."""
+        from honeyos.companion.work_mode import active_work
 
+        if await asyncio.to_thread(active_work):
+            return False
         store = self._topic_pool_store_instance()
         try:
             try:
@@ -19326,6 +19335,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 task.add_done_callback(background.discard)
         except Exception:
             logger.debug("Failed to start Topic Pool poller", exc_info=True)
+
+    def _start_web_initiative_poller(self) -> None:
+        """Poll web-only initiative independently of the legacy Scout."""
+        existing = getattr(self, "_web_initiative_poll_task", None)
+        if existing is not None and not existing.done():
+            return
+
+        async def poll():
+            from honeyos.companion.web_initiative import run_hourly
+            from honeyos.core.time import local_timezone
+
+            await asyncio.sleep(10)
+            while True:
+                await run_hourly(self, self._topic_pool_store_instance(), datetime.now(local_timezone()))
+                await asyncio.sleep(60)
+
+        task = asyncio.create_task(poll())
+        self._web_initiative_poll_task = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
 
 
