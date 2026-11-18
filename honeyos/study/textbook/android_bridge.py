@@ -16,6 +16,10 @@ from typing import Iterable, Sequence
 
 MUMU_ADB = Path(r"D:\Program Files\Netease\MuMu\nx_main\adb.exe")
 MUMU_MANAGER = Path(r"D:\Program Files\Netease\MuMu\nx_main\MuMuManager.exe")
+# The gateway runs inside WSL; executing the Windows binary through interop keeps
+# adb talking to the emulator on the Windows side of the NAT.
+WSL_MUMU_ADB = Path("/mnt/d/Program Files/Netease/MuMu/nx_main/adb.exe")
+WSL_MUMU_MANAGER = Path("/mnt/d/Program Files/Netease/MuMu/nx_main/MuMuManager.exe")
 REMOTE_SHOT = "/sdcard/honeyos_capture.png"
 
 
@@ -33,9 +37,17 @@ def default_adb_path() -> str:
     configured = os.environ.get("HONEYOS_ADB_PATH")
     if configured:
         return configured
-    if MUMU_ADB.is_file():
-        return str(MUMU_ADB)
+    for candidate in (MUMU_ADB, WSL_MUMU_ADB):
+        if candidate.is_file():
+            return str(candidate)
     return shutil.which("adb") or "adb"
+
+
+def default_mumu_manager() -> Path:
+    for candidate in (MUMU_MANAGER, WSL_MUMU_MANAGER):
+        if candidate.is_file():
+            return candidate
+    return MUMU_MANAGER
 
 
 def default_serial() -> str:
@@ -92,7 +104,20 @@ class AndroidBridge:
         except AdbError:
             return False
 
+    def connect(self) -> bool:
+        """Attach a TCP serial (emulator restarts drop the connection)."""
+        if ":" not in self.serial:
+            return False
+        try:
+            self._run(["connect", self.serial], timeout=20)
+        except AdbError:
+            return False
+        return self.online()
+
     def ensure_online(self) -> None:
+        if self.online():
+            return
+        self.connect()
         if not self.online():
             raise AdbError(
                 "模拟器 adb 不在线。请先启动 MuMu 实例并确认 adb devices 中有 device。"
@@ -154,8 +179,8 @@ class AndroidBridge:
 class MuMuManager:
     """Start the emulator instance through MuMuManager when it is not running."""
 
-    def __init__(self, manager_path: Path | str = MUMU_MANAGER, runner=subprocess.run):
-        self.manager_path = Path(manager_path)
+    def __init__(self, manager_path: Path | str | None = None, runner=subprocess.run):
+        self.manager_path = Path(manager_path) if manager_path else default_mumu_manager()
         self._runner = runner
 
     def available(self) -> bool:
@@ -183,6 +208,7 @@ def wait_for_device(bridge: AndroidBridge, *, timeout: float = 90.0, interval: f
     while time.monotonic() < deadline:
         if bridge.online():
             return True
+        bridge.connect()
         time.sleep(interval)
     return False
 
