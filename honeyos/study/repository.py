@@ -318,6 +318,20 @@ class StudyRepository:
             ).fetchone()
         return self._resource_from_row(row) if row is not None else None
 
+    def find_resource_by_textbook_section(
+        self, book_id: str, section_id: str, *, connection=None
+    ) -> StudyResource | None:
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM study_resources "
+                "WHERE resource_type = 'textbook' "
+                "AND json_extract(metadata_json, '$.textbook.book_id') = ? "
+                "AND json_extract(metadata_json, '$.textbook.section_id') = ? "
+                "ORDER BY created_at, id LIMIT 1",
+                (book_id, section_id),
+            ).fetchone()
+        return self._resource_from_row(row) if row is not None else None
+
     def find_indexed_resource_by_attachments(self, attachment_ids: list[str], *, connection=None) -> StudyResource | None:
         if not attachment_ids:
             return None

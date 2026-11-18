@@ -2583,6 +2583,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from honeyos.study.review_http import review_routes
         from honeyos.study.planning_http import planning_routes
+        from honeyos.study.textbook_http import textbook_routes
 
         routes: List[tuple] = [
             ("GET", "/", self._handle_companion_react),
@@ -2856,7 +2857,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated
             # by a NAS-minted JWT (NOT API_SERVER_KEY).
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
-        return planning_routes(self) + routes + review_routes(self)
+        return planning_routes(self) + routes + review_routes(self) + textbook_routes(self)
 
     # ------------------------------------------------------------------
     # HoneyOS local companion web channel

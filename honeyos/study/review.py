@@ -476,3 +476,49 @@ class StudyReview:
             result = {"score": sum(item["correct"] for item in results), "results": results}
             db.execute("UPDATE study_review_quizzes SET answers=? WHERE id=?", (json.dumps(result), quiz_id))
             return result
+
+    def prune_derivatives(self, resource_ids):
+        """Delete cards/questions/attempts that belong to finished study material."""
+        ids = [value for value in dict.fromkeys(resource_ids or []) if isinstance(value, str) and value]
+        counts = {"questions": 0, "cards": 0, "attempts": 0, "recalls": 0, "quizzes": 0, "intake": 0}
+        if not ids:
+            return counts
+        marks = ",".join("?" for _ in ids)
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            question_ids = [row["id"] for row in db.execute(
+                f"SELECT id FROM study_review_questions WHERE resource_id IN ({marks})", ids)]
+            card_ids = [row["id"] for row in db.execute(
+                f"SELECT id FROM study_review_cards WHERE resource_id IN ({marks})", ids)]
+            intake_ids = [row["id"] for row in db.execute(
+                f"SELECT id FROM study_review_intake WHERE id IN ({marks})", ids)]
+            quiz_ids = []
+            for row in db.execute("SELECT id, question_ids FROM study_review_quizzes"):
+                try:
+                    owned = set(json.loads(row["question_ids"]))
+                except (TypeError, ValueError):
+                    continue
+                if owned & set(question_ids):
+                    quiz_ids.append(row["id"])
+            if card_ids:
+                card_marks = ",".join("?" for _ in card_ids)
+                counts["recalls"] = db.execute(
+                    f"DELETE FROM study_review_recalls WHERE card_id IN ({card_marks})", card_ids).rowcount
+            if question_ids:
+                question_marks = ",".join("?" for _ in question_ids)
+                counts["attempts"] = db.execute(
+                    f"DELETE FROM study_review_attempts WHERE question_id IN ({question_marks})", question_ids).rowcount
+                db.execute(f"DELETE FROM study_review_question_sources WHERE question_id IN ({question_marks})",
+                           question_ids)
+            if quiz_ids:
+                quiz_marks = ",".join("?" for _ in quiz_ids)
+                counts["quizzes"] = db.execute(
+                    f"DELETE FROM study_review_quizzes WHERE id IN ({quiz_marks})", quiz_ids).rowcount
+            counts["cards"] = db.execute(
+                f"DELETE FROM study_review_cards WHERE resource_id IN ({marks})", ids).rowcount
+            counts["questions"] = db.execute(
+                f"DELETE FROM study_review_questions WHERE resource_id IN ({marks})", ids).rowcount
+            if intake_ids:
+                counts["intake"] = db.execute(
+                    f"DELETE FROM study_review_intake WHERE id IN ({marks})", intake_ids).rowcount
+        return counts
