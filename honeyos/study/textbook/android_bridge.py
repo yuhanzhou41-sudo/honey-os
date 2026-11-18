@@ -225,11 +225,9 @@ class AndroidBridge:
             return self.dump_ui()
         return dump
 
-    def expand_toc(self, *, max_rounds: int = 40, settle: float = 0.8) -> str:
-        """Tap each chapter's chevron so section rows appear, then return the dump."""
+    def _expand_visible(self, dump: str, *, max_rounds: int = 40, settle: float = 0.8) -> str:
         from .outline import parse_toc_rows
 
-        dump = self.open_toc()
         attempted: set[str] = set()
         for _ in range(max_rounds):
             rows = parse_toc_rows(dump)
@@ -251,6 +249,31 @@ class AndroidBridge:
             time.sleep(settle)
             dump = self.dump_ui()
         return dump
+
+    def expand_toc(self, *, max_rounds: int = 40, settle: float = 0.8) -> str:
+        """Tap each chapter's chevron so section rows appear, then return the dump."""
+        return self._expand_visible(self.open_toc(), max_rounds=max_rounds, settle=settle)
+
+    def capture_toc(self, *, max_scrolls: int = 10, settle: float = 0.8) -> list[str]:
+        """Expand and scroll the drawer, returning one dump per visible page."""
+        dump = self.open_toc()
+        pages: list[str] = []
+        seen: set[str] = set()
+        for _ in range(max_scrolls):
+            dump = self._expand_visible(dump, settle=settle)
+            pages.append(dump)
+            from .outline import parse_toc_rows
+
+            titles = {item["title"] for item in parse_toc_rows(dump)["chapters"]}
+            fresh = titles - seen
+            seen |= titles
+            width, height = self.screen_size()
+            self.swipe(width // 4, int(height * 0.78), width // 4, int(height * 0.3), 350)
+            time.sleep(settle)
+            dump = self.dump_ui()
+            if not fresh and dump == pages[-1]:
+                break
+        return pages
 
 
 class MuMuManager:

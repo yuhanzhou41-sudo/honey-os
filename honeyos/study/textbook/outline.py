@@ -224,6 +224,57 @@ def parse_toc_rows(dump: str) -> dict[str, Any]:
     return {"chapters": chapters, "sections": sections}
 
 
+def merge_toc_dumps(
+    dumps: list[str], *, book_id: str, title: str = "", source: dict[str, Any] | None = None
+) -> BookOutline:
+    """Merge scrolled TOC pages; chapter context carries across pages."""
+    chapters: list[dict[str, Any]] = []
+    seen_chapters: set[str] = set()
+    sections: list[SectionRef] = []
+    seen_sections: set[str] = set()
+    chapter = ""
+    for dump in dumps:
+        try:
+            root = ET.fromstring(dump)
+        except ET.ParseError:
+            continue
+        for node in root.iter():
+            label = _clean_line(node.get("text") or "")
+            if not label:
+                continue
+            if CHAPTER_HEADING.match(label):
+                chapter = label
+                if label not in seen_chapters:
+                    seen_chapters.add(label)
+                    chapters.append({"title": label, "bounds": node.get("bounds") or ""})
+                continue
+            if not SECTION_HEADING.match(label) or not chapter:
+                continue
+            key = normalize(label)
+            if key in seen_sections:
+                continue
+            seen_sections.add(key)
+            sections.append(
+                SectionRef(
+                    section_id=make_section_id(book_id, chapter, label),
+                    title=label,
+                    chapter=chapter,
+                    sequence=len(sections) + 1,
+                    tap=_center(node.get("bounds") or ""),
+                )
+            )
+    if not chapters and not sections:
+        raise TextbookOutlineError("目录抓取没有读到章节，请确认目录已打开。")
+    payload = dict(source or {})
+    payload["chapters"] = chapters
+    return BookOutline(
+        book_id=book_id,
+        title=title or book_id,
+        sections=tuple(sections),
+        source=payload,
+    )
+
+
 def parse_toc_from_ui_dump(
     dump: str, *, book_id: str, title: str = "", source: dict[str, Any] | None = None
 ) -> BookOutline:

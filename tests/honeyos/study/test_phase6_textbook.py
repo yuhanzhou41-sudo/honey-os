@@ -8,6 +8,7 @@ from honeyos.study.textbook import (
     SectionCache,
     TextbookService,
     locate_sections,
+    merge_toc_dumps,
     parse_outline_from_text,
     parse_outline_from_ui_dump,
     parse_toc_from_ui_dump,
@@ -212,6 +213,17 @@ def test_parse_toc_rows_finds_chevron_and_sections():
     assert rows["chapters"][0]["title"] == "第九章 心律失常"
     assert rows["chapters"][0]["chevron"] == (520, 1057)
     assert rows["sections"][0]["title"] == "第一节 概述"
+
+
+def test_merge_toc_dumps_carries_chapter_across_scroll_pages():
+    page_a = (
+        "<hierarchy><node text=\"第九章 心律失常\" bounds=\"[77,1022][480,1075]\" />"
+        "<node text=\"第一节 概述\" bounds=\"[77,1080][480,1130]\" /></hierarchy>"
+    )
+    page_b = "<hierarchy><node text=\"第二节 室性心律失常\" bounds=\"[77,300][480,350]\" /></hierarchy>"
+    outline = merge_toc_dumps([page_a, page_b], book_id="renwei")
+    assert [item.title for item in outline.sections] == ["第一节 概述", "第二节 室性心律失常"]
+    assert all(item.chapter == "第九章 心律失常" for item in outline.sections)
 
 
 def test_parse_toc_drawer_records_chapters_without_sections():

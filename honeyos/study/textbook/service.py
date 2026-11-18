@@ -23,6 +23,7 @@ from .outline import (
     locate_sections,
     make_section_id,
     normalize,
+    merge_toc_dumps,
     parse_outline_from_text,
     parse_outline_from_ui_dump,
     parse_toc_from_ui_dump,
@@ -106,10 +107,14 @@ class TextbookService:
         active = bridge or self.bridge
         if active is None:
             active = AndroidBridge()
-        dump = active.expand_toc() if hasattr(active, "expand_toc") else active.open_toc() if hasattr(active, "open_toc") else active.dump_ui()
-        outline = parse_toc_from_ui_dump(
-            dump, book_id=book_id, title=title, source={"kind": "device_toc", "captured_at": _now()}
-        )
+        source = {"kind": "device_toc", "captured_at": _now()}
+        if hasattr(active, "capture_toc"):
+            outline = merge_toc_dumps(
+                active.capture_toc(), book_id=book_id, title=title, source=source
+            )
+        else:
+            dump = active.expand_toc() if hasattr(active, "expand_toc") else active.open_toc() if hasattr(active, "open_toc") else active.dump_ui()
+            outline = parse_toc_from_ui_dump(dump, book_id=book_id, title=title, source=source)
         if not outline.sections:
             try:
                 existing = self.index.load(book_id)
