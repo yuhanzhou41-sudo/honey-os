@@ -17,6 +17,7 @@ import { applyHoneyTheme, readHoneyTheme, type HoneyTheme } from "../../design-s
 import { useHoneyStore } from "../../runtime/honey-store";
 import { EventPermissions } from "./EventPermissions";
 import { WebInitiative } from "./WebInitiative";
+import { StudySkillReview } from "./StudySkillReview";
 
 import { fetchModelOptions, setGlobalDefaultModel } from "../../api/models";
 const providers = [
@@ -289,6 +290,7 @@ export function SettingsPage() {
         </section>
         <EventPermissions />
         <WebInitiative />
+        <StudySkillReview />
       </div>
     </PageFrame>
   );

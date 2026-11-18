@@ -64,6 +64,23 @@ def work_action(args, **_):
             summary = str(args.get("content") or "").strip()[:720]
             save_summary(work_id, summary)
             return json.dumps({"saved": bool(summary)})
+        if action == "submit_study_skill":
+            from honeyos.companion.study_skills import submit, validate_manifest
+
+            content = args.get("content")
+            if not isinstance(content, str) or len(content) > 2000:
+                raise ValueError("Provide a JSON manifest under 2000 characters.")
+            manifest = validate_manifest(json.loads(content))
+            digest = sha256(manifest.encode()).hexdigest()
+            if not request_single_gateway_approval(
+                "提交复习笔记 Skill 候选",
+                f"本地验证后提交审核。此操作仅登记候选。SHA-256：{digest}\n{manifest}",
+            ):
+                return json.dumps({"error": "Candidate submission was not approved."})
+            if identity != active_work():
+                raise ValueError("The active work session changed.")
+            return json.dumps({"version": submit(manifest, work_id), "sha256": digest,
+                               "review": "设置 → 复习笔记 Skill"}, ensure_ascii=False)
         if action == "read_cqmu_timetable":
             start, end = cqmu_date_range(args.get("start_date"), args.get("end_date"))
             if not request_single_gateway_approval(
@@ -121,9 +138,9 @@ registry.register(
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["list", "read", "write", "run_python", "summary", "read_cqmu_timetable"]},
+                "action": {"type": "string", "enum": ["list", "read", "write", "run_python", "summary", "read_cqmu_timetable", "submit_study_skill"]},
                 "path": {"type": "string", "description": "Visible relative candidate file path."},
-                "content": {"type": "string", "description": "Complete file text or final work summary."},
+                "content": {"type": "string", "description": "File text, work summary, or submit_study_skill JSON with name, purpose and heading for the offline review-note formatter."},
                 "start_date": {"type": "string", "description": "Inclusive CQMU timetable start date, YYYY-MM-DD."},
                 "end_date": {"type": "string", "description": "Inclusive CQMU timetable end date, YYYY-MM-DD."},
             },

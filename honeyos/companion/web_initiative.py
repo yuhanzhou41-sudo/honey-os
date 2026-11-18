@@ -30,7 +30,33 @@ def _settings():
             singleton INTEGER PRIMARY KEY CHECK (singleton=1),
             enabled INTEGER NOT NULL, last_check REAL
         )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS delivery (
+            id INTEGER PRIMARY KEY, sent_at TEXT NOT NULL
+        )""")
         yield connection
+
+
+def status() -> dict:
+    from datetime import datetime
+
+    from honeyos.companion.work_mode import active_work
+
+    with _settings() as connection:
+        row = connection.execute("SELECT enabled, last_check FROM control WHERE singleton=1").fetchone()
+        deliveries = connection.execute("SELECT sent_at FROM delivery ORDER BY id DESC LIMIT 20").fetchall()
+    enabled, last_check = row or (False, None)
+    return {
+        "enabled": bool(enabled),
+        "paused_for_work": bool(enabled and active_work()),
+        "last_check_at": datetime.fromtimestamp(last_check).astimezone().isoformat() if last_check else None,
+        "recent_deliveries": [item[0] for item in deliveries],
+    }
+
+
+def _record_delivery(now) -> None:
+    with _settings() as connection:
+        connection.execute("INSERT INTO delivery (sent_at) VALUES (?)", (now.isoformat(),))
+        connection.execute("DELETE FROM delivery WHERE id NOT IN (SELECT id FROM delivery ORDER BY id DESC LIMIT 20)")
 
 
 def preference() -> bool:
@@ -163,7 +189,13 @@ async def run_hourly(runner, topic_store, now):
         if (key in runner._running_agents
                 or any(item["session_id"] == session_id for item in adapter._companion_stream_controls.values())):
             return False
-        return bool((await adapter.send(session_id, text)).success)
+        if not (await adapter.send(session_id, text)).success:
+            return False
+        try:
+            await asyncio.to_thread(_record_delivery, now)
+        except sqlite3.Error:
+            logger.warning("Could not record successful web initiative delivery", exc_info=True)
+        return True
     except Exception:
         logger.warning("Hourly companion initiative check failed")
         return False

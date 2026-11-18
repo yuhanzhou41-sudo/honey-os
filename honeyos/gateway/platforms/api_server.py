@@ -2644,6 +2644,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/api/companion/work", self._handle_companion_work),
             ("POST", "/api/companion/work", self._handle_companion_work),
             ("POST", "/api/companion/work/answer", self._handle_work_answer),
+            ("GET", "/api/companion/study-skill", self._handle_study_skill),
+            ("POST", "/api/companion/study-skill", self._handle_study_skill),
             ("GET", "/api/companion/web-initiative", self._handle_web_initiative),
             ("POST", "/api/companion/web-initiative", self._handle_web_initiative),
             ("POST", "/api/companion/events/{source}/grant", self._handle_companion_event_grant),
@@ -3700,14 +3702,32 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": "问题已失效。"}, status=409)
         return web.json_response({"answered": True})
 
+    async def _handle_study_skill(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.companion import study_skills
+
+        headers = {"Cache-Control": "no-store"}
+        if request.method == "POST":
+            body, error = await self._read_json_body(request)
+            if error is not None:
+                return error
+            try:
+                action = body.get("action")
+                if action == "run":
+                    note = await asyncio.to_thread(study_skills.run, body.get("notes"))
+                    return web.json_response({"note": note}, headers=headers)
+                await asyncio.to_thread(study_skills.change, action, body.get("version"), body.get("digest"))
+            except ValueError as exc:
+                return web.json_response({"error": str(exc)}, status=400, headers=headers)
+        return web.json_response(await asyncio.to_thread(study_skills.status), headers=headers)
+
     async def _handle_web_initiative(self, request: "web.Request") -> "web.Response":
         if (error := self._event_control_auth(request)) is not None:
             return error
-        from honeyos.companion.web_initiative import preference, set_preference
+        from honeyos.companion.web_initiative import set_preference, status
 
-        if request.method == "GET":
-            enabled = await asyncio.to_thread(preference)
-        else:
+        if request.method == "POST":
             body, error = await self._read_json_body(request)
             if error is not None:
                 return error
@@ -3715,7 +3735,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if type(enabled) is not bool:
                 return web.json_response({"error": "请选择开启或关闭主动联系。"}, status=400)
             await asyncio.to_thread(set_preference, enabled)
-        return web.json_response({"enabled": enabled}, headers={"Cache-Control": "no-store"})
+        return web.json_response(await asyncio.to_thread(status), headers={"Cache-Control": "no-store"})
 
     async def _handle_companion_event_grant(self, request: "web.Request") -> "web.Response":
         if (error := self._event_control_auth(request)) is not None:

@@ -8,6 +8,29 @@ from honeyos.tools import approval
 from honeyos.tools.work_tool import work_action
 
 
+def test_study_skill_submission_requires_approval_and_leaves_candidate_disabled(tmp_path, monkeypatch):
+    from honeyos.companion import study_skills
+
+    monkeypatch.setenv("HONEYOS_HOME", str(tmp_path))
+    monkeypatch.setenv("HONEYOS_PROJECTS_HOME", str(tmp_path))
+    token = work_turn.set(start_work("review-session"))
+    request = {"action": "submit_study_skill", "content": json.dumps({
+        "name": "Review", "purpose": "Format submitted notes", "heading": "Study",
+    })}
+    try:
+        with patch("honeyos.tools.work_tool.request_single_gateway_approval", return_value=False):
+            assert "error" in json.loads(work_action(request))
+        assert study_skills.status()["candidates"] == []
+        with patch("honeyos.tools.work_tool.request_single_gateway_approval", return_value=True) as gate:
+            result = json.loads(work_action(request))
+        review = study_skills.status()
+        assert result["sha256"] in gate.call_args.args[1]
+        assert review["candidates"][0]["digest"] == result["sha256"]
+        assert review["active_version"] is None
+    finally:
+        work_turn.reset(token)
+
+
 def test_workspace_approval_and_end_summary(tmp_path, monkeypatch):
     monkeypatch.setenv("HONEYOS_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("HONEYOS_PROJECTS_HOME", str(tmp_path / "projects"))

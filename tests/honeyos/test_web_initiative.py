@@ -54,6 +54,7 @@ async def test_only_positive_hourly_decision_reaches_main_and_local_chat(pilot):
     writer.assert_awaited_once()
     adapter.send.assert_awaited_once_with("session", writer.return_value)
     store.latest_channel.assert_called_with(platform=Platform.API_SERVER.value)
+    assert web_initiative.status()["recent_deliveries"] == [(now + timedelta(hours=1)).isoformat()]
 
 
 @pytest.mark.asyncio
@@ -88,3 +89,4 @@ async def test_recent_or_live_chat_skips_check_and_disabling_cancels_delivery(pi
     assert not await web_initiative.run_hourly(runner, store, now)
     writer.assert_awaited_once()
     adapter.send.assert_not_awaited()
+    assert web_initiative.status()["recent_deliveries"] == []
