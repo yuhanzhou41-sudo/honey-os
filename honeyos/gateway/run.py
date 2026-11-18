@@ -19135,6 +19135,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return datetime.now(timezone.utc)
 
     async def _run_topic_collection_if_due(self) -> bool:
+        from honeyos.companion.work_mode import active_work
+
+        if await asyncio.to_thread(active_work):
+            return False
         try:
             from honeyos.companion.topic_scout import TopicScout
 
@@ -19153,7 +19157,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _run_topic_pool_pulse(self, *, now: datetime | None = None) -> bool:
         """Reserve and enqueue at most one due proactive topic turn."""
+        from honeyos.companion.work_mode import active_work
 
+        if await asyncio.to_thread(active_work):
+            return False
         store = self._topic_pool_store_instance()
         try:
             try:

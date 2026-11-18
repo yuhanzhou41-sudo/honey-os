@@ -122,6 +122,7 @@ export async function answerApproval(options: {
   sessionId: string;
   sessionKey: string;
   choice: PermissionChoice;
+  approvalId?: string;
 }): Promise<void> {
   const response = await fetchWithLocalSessionRecovery(
     apiPath(`/api/sessions/${encodeURIComponent(options.sessionId)}/approval`),
@@ -129,7 +130,7 @@ export async function answerApproval(options: {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-HoneyOS-Session-Key": options.sessionKey },
-      body: JSON.stringify({ choice: options.choice }),
+      body: JSON.stringify({ choice: options.choice, approval_id: options.approvalId }),
     },
   );
   if (!response.ok) throw await responseError(response);

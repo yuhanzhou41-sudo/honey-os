@@ -2619,7 +2619,7 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None, *, approval_id: str = "") -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -2637,11 +2637,15 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
-        if resolve_all:
-            targets = list(queue)
-            queue.clear()
+        if approval_id.startswith("work-"):
+            if choice not in {"once", "deny"}:
+                return 0
+            targets = [entry for entry in queue if entry.data.get("approval_id") == approval_id]
         else:
-            targets = [queue.pop(0)]
+            eligible = [entry for entry in queue if not entry.data.get("exact_approval")]
+            targets = eligible if resolve_all else eligible[:1]
+        for entry in targets:
+            queue.remove(entry)
         if not queue:
             _gateway_queues.pop(session_key, None)
 
@@ -3615,6 +3619,23 @@ def check_dangerous_command(command: str, env_type: str,
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
         ),
     )
+
+
+def request_single_gateway_approval(command: str, description: str) -> bool:
+    """Require an exact, single operation approval from the current web turn."""
+    session_key = get_current_session_key(default="")
+    with _lock:
+        notify = _gateway_notify_cbs.get(session_key)
+    if not session_key or notify is None:
+        return False
+    from uuid import uuid4
+
+    result = _await_gateway_decision(session_key, notify, {
+        "approval_id": "work-" + uuid4().hex, "exact_approval": True,
+        "command": command, "description": description, "pattern_key": "work_action",
+        "allow_session": False, "allow_permanent": False,
+    })
+    return result.get("resolved") is True and result.get("choice") == "once"
 
 
 def request_tool_approval(

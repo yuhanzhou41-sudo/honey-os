@@ -1225,9 +1225,11 @@ def build_turn_context(
     # ext_prefetch_cache, api_content, system prompt, or TurnContext.
     _cognitive_context = None
     _cognitive_shadow_result = None
+    from honeyos.companion.work_mode import work_turn
+
     try:
         _shadow_query = original_user_message if isinstance(original_user_message, str) else ""
-        if _shadow_query and not is_trivial_prompt(_shadow_query):
+        if _shadow_query and work_turn.get() is None and not is_trivial_prompt(_shadow_query):
             lane = getattr(agent, "_companion_memory_lane", "")
             if lane:
                 from honeyos.companion.continuity import StructuredMemoryStore
@@ -1270,6 +1272,7 @@ def build_turn_context(
         from honeyos.companion.personality_observation_hook import _resolve_companion_home
         from honeyos.companion.physiology_shadow import live_signals
         from honeyos.companion.pre_reply_appraisal import appraise_before_reply, current_state_note
+        from honeyos.companion.work_mode import active_work
 
         home = _resolve_companion_home(agent)
         values = live_signals(home)
@@ -1283,7 +1286,7 @@ def build_turn_context(
             )
             post_reply_appraisal = partial(
                 appraise_before_reply, home, agent.session_id, turn_id, _shadow_query[:900],
-                recent=recent, recalled=recalled[:900],
+                recent=recent, recalled=recalled[:900], cancelled=lambda: bool(active_work()),
             )
 
     # ── api_content sidecar: persist what you send ──

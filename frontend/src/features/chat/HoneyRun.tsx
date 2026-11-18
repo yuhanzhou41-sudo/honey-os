@@ -128,7 +128,7 @@ function ToolTimeline({ parts }: { parts: Extract<RunPart, { kind: "tool" }>[] }
 function PermissionPart({ part, pending, onAnswer }: {
   part: Extract<RunPart, { kind: "approval" }>;
   pending: boolean;
-  onAnswer: (choice: PermissionChoice) => void;
+  onAnswer: (choice: PermissionChoice, approvalId: string) => void;
 }) {
   if (part.status !== "waiting") {
     return <p className="my-3 text-sm text-[var(--foreground-muted)]">{part.status === "denied" ? "这一步没有执行" : "你已确认，正在继续"}</p>;
@@ -150,7 +150,7 @@ function PermissionPart({ part, pending, onAnswer }: {
       ) : null}
       <div className="mt-4 flex flex-wrap gap-2">
         {part.permission.choices.map((choice) => (
-          <Button key={choice} variant={choice === "deny" ? "ghost" : "primary"} disabled={pending} onClick={() => onAnswer(choice)}>
+          <Button key={choice} variant={choice === "deny" ? "ghost" : "primary"} disabled={pending} onClick={() => onAnswer(choice, part.permission.approval_id)}>
             {choiceLabels[choice]}
           </Button>
         ))}
@@ -162,7 +162,7 @@ function PermissionPart({ part, pending, onAnswer }: {
 export function HoneyRun({ run, approvalPending, onAnswer, onRetry }: {
   run: HoneyRunState;
   approvalPending: boolean;
-  onAnswer: (choice: PermissionChoice) => void;
+  onAnswer: (choice: PermissionChoice, approvalId: string) => void;
   onRetry?: () => void;
 }) {
   if (run.phase === "idle") return null;

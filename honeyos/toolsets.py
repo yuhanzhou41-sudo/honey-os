@@ -257,6 +257,11 @@ TOOLSETS = {
         "includes": []
     },
 
+    "companion_work": {
+        "description": "Owner-approved candidate workspace operations",
+        "tools": ["work_action"],
+    },
+
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],

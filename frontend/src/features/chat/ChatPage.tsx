@@ -1,7 +1,7 @@
 import StudyPlanDraft, { splitStudyPlanDraft } from "./StudyPlanDraft";
 import { ArrowClockwiseIcon, ArrowDownIcon, ArrowUpIcon, ClockCounterClockwiseIcon, ImageIcon, PaperPlaneTiltIcon, PlusIcon, StopIcon, TrashIcon, XIcon, SmileyIcon } from "@phosphor-icons/react";
 import { fetchStickerStatus, markStickerUsed, stickerChatMessage, type StickerItem, type StickerStatus } from "../../api/stickers";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -29,7 +29,8 @@ import { HoneyMessage } from "../../components/honey/HoneyMessage";
 import { StickerDrawer } from "../../components/honey/StickerDrawer";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
 import { Button } from "../../components/ui/Button";
-import type { PermissionChoice } from "../../runtime/honey-events";
+import type { HoneyEvent, PermissionChoice } from "../../runtime/honey-events";
+import { requestJson } from "../../api/client";
 import { assistantBubblesForDisplay } from "../../runtime/chat-bubble-segmenter";
 import { useHoneyStore } from "../../runtime/honey-store";
 import { HoneyRun } from "./HoneyRun";
@@ -37,6 +38,8 @@ import { ReplyFeedback } from "./ReplyFeedback";
 
 type ChatAttachment = { id: string; name: string; dataUrl: string };
 type QueuedMessage = { id: string; display: string; input: ChatInput };
+type WorkMode = { enabled: boolean; work_id: string | null; session_id: string | null };
+type WorkQuestion = { id: string; runId: string; text: string; choices: string[] };
 
 const draftKey = (sessionId: string) => `honeyos-chat-draft:${sessionId}`;
 const queueKey = (sessionId: string) => `honeyos-chat-pending:${sessionId}`;
@@ -126,6 +129,46 @@ function combineQueuedInputs(messages: QueuedMessage[]): ChatInput {
 }
 
 export function ChatPage() {
+  const queryClient = useQueryClient();
+  const work = useQuery({
+    queryKey: ["companion-work"],
+    queryFn: () => requestJson<WorkMode>("/api/companion/work"),
+    refetchOnWindowFocus: true,
+  });
+  const switchWork = useMutation({
+    mutationFn: ({ enabled, sessionId }: { enabled: boolean; sessionId: string }) =>
+      requestJson<WorkMode>("/api/companion/work", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, session_id: sessionId }),
+      }),
+    onSuccess: (state) => queryClient.setQueryData(["companion-work"], state),
+  });
+  const [workQuestion, setWorkQuestion] = useState<WorkQuestion>();
+  const [workAnswer, setWorkAnswer] = useState("");
+  const answerWork = useMutation({
+    mutationFn: async ({ question, answer }: { question: WorkQuestion; answer: string }) =>
+      requestJson<{ answered: boolean }>("/api/companion/work/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: question.runId, question_id: question.id, answer }),
+      }),
+    onSuccess: () => setWorkQuestion(undefined),
+  });
+
+  function handleWorkEvent(event: HoneyEvent) {
+    if (event.name === "work.question") {
+      setWorkAnswer("");
+      setWorkQuestion({
+        id: String(event.payload.question_id),
+        runId: String(event.payload.run_id),
+        text: String(event.payload.question),
+        choices: Array.isArray(event.payload.choices) ? event.payload.choices.map(String) : [],
+      });
+    } else if (event.name === "work.question.closed") {
+      setWorkQuestion((current) => current?.id === event.payload.question_id ? undefined : current);
+    }
+  }
   const {
     loading, error, messages, name, status, sessionId, sessionKey, run, sending, history,
     queueUserMessage, beginReply, applyRunEvent, finishTurn, finishStoppedTurn, finishStoppedEmpty,
@@ -486,6 +529,7 @@ export function ChatPage() {
     setStoppedUserMessageId(null);
     setRecoverRunId(null);
     setRetryUserMessageId(null);
+    setWorkQuestion(undefined);
     beginReply();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -495,9 +539,10 @@ export function ChatPage() {
         sessionId,
         sessionKey,
         message: combineQueuedInputs(submitted),
-        instructions: naturalReplyInstructions,
+        instructions: work.data?.enabled ? undefined : naturalReplyInstructions,
         signal: controller.signal,
         onEvent: (event) => {
+          handleWorkEvent(event);
           if (event.name === "run.started") {
             setSubmittedMessages(submitted);
             setQueuedMessages([]);
@@ -675,6 +720,7 @@ export function ChatPage() {
     if (!pending.length || sending || !sessionId || !sessionKey) return;
     setQueuedMessages(pending);
     followRef.current = true;
+    setWorkQuestion(undefined);
     beginReply();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -682,10 +728,11 @@ export function ChatPage() {
       let terminalStatus: ChatRunStatus | null = null;
       await streamChat({
         sessionId, sessionKey, message: combineQueuedInputs(pending),
-        instructions: naturalReplyInstructions,
+        instructions: work.data?.enabled ? undefined : naturalReplyInstructions,
         reuseUserMessageId,
         signal: controller.signal,
         onEvent: (event) => {
+          handleWorkEvent(event);
           if (event.name === "run.started") {
             setSubmittedMessages(pending);
             setQueuedMessages([]);
@@ -780,12 +827,12 @@ export function ChatPage() {
     deleteConversationMutation.mutate(item.id);
   }
 
-  async function respondToApproval(choice: PermissionChoice) {
+  async function respondToApproval(choice: PermissionChoice, approvalId: string) {
     if (!sessionId || !sessionKey || approvalPending) return;
     setApprovalPending(true);
     try {
-      await answerApproval({ sessionId, sessionKey, choice });
-      applyRunEvent({ name: "approval.responded", payload: { choice } });
+      await answerApproval({ sessionId, sessionKey, choice, approvalId });
+      applyRunEvent({ name: "approval.responded", payload: { choice, approval_id: approvalId } });
     } catch (approvalError) {
       failTurn(approvalError instanceof Error ? approvalError.message : "approval_unavailable");
     } finally {
@@ -841,8 +888,12 @@ export function ChatPage() {
       <header className="mx-auto flex min-h-[4.75rem] w-full max-w-[56rem] shrink-0 items-center gap-3 border-b border-[var(--border)] px-1">
         <div className="min-w-0">
           <h1 className="truncate text-lg font-semibold tracking-[-0.02em]">{name}</h1>
-          <p className="truncate text-xs text-[var(--foreground-muted)]">{replyBusy ? "正在陪你聊" : status}</p>
+          <p className="truncate text-xs text-[var(--foreground-muted)]">{work.data?.enabled ? "工作模式" : replyBusy ? "正在陪你聊" : status}</p>
         </div>
+        {work.data ? <Button type="button" variant="secondary" disabled={!sessionId || replyBusy || switchWork.isPending}
+          onClick={() => sessionId && switchWork.mutate({ enabled: !work.data?.enabled, sessionId })}>
+          {work.data.enabled ? "结束工作" : "开始工作"}
+        </Button> : null}
         <Button className="ml-auto" type="button" size="icon" variant="ghost" aria-label="历史聊天" title="历史聊天" onClick={() => setHistoryOpen((open) => !open)}>
           <ClockCounterClockwiseIcon size={20} />
         </Button>
@@ -890,6 +941,26 @@ export function ChatPage() {
           </div>
         ) : null}
       </header>
+      {switchWork.error ? <p className="mx-auto my-2 w-full max-w-[56rem] text-sm" role="alert">{switchWork.error.message}</p> : null}
+      {sending && workQuestion ? (
+        <form className="mx-auto my-3 grid w-full max-w-[56rem] gap-2 rounded-xl border border-[var(--border)] p-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (workAnswer.trim()) answerWork.mutate({ question: workQuestion, answer: workAnswer.trim() });
+          }}>
+          <label htmlFor="work-answer" className="text-sm font-semibold">{workQuestion.text}</label>
+          {workQuestion.choices.length ? <div className="flex flex-wrap gap-2">
+            {workQuestion.choices.map((choice) => <Button type="button" variant="secondary" key={choice}
+              disabled={answerWork.isPending} onClick={() => answerWork.mutate({ question: workQuestion, answer: choice })}>{choice}</Button>)}
+          </div> : null}
+          <div className="flex gap-2">
+            <input id="work-answer" className="honey-setting-control min-w-0 flex-1" placeholder="输入回答"
+              maxLength={2000} value={workAnswer} onChange={(event) => setWorkAnswer(event.target.value)} />
+            <Button type="submit" disabled={answerWork.isPending || !workAnswer.trim()}>回答</Button>
+          </div>
+          {answerWork.error ? <p role="alert" className="text-sm">{answerWork.error.message}</p> : null}
+        </form>
+      ) : null}
 
       {historyOpen ? (
         <>

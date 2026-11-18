@@ -124,10 +124,11 @@ async def run_hourly(runner, topic_store, now):
     """Check once a rolling hour and persist an accepted web-only message."""
     from honeyos.gateway.config import Platform
     from honeyos.gateway.session import SessionSource
+    from honeyos.companion.work_mode import active_work
 
     try:
         adapter = runner.adapters.get(Platform.API_SERVER)
-        if adapter is None or not await asyncio.to_thread(preference):
+        if adapter is None or not await asyncio.to_thread(preference) or await asyncio.to_thread(active_work):
             return False
         channel = await asyncio.to_thread(topic_store.latest_channel, platform=Platform.API_SERVER.value)
         if channel is None or now.timestamp() - channel.last_user_message_at.timestamp() < ACTIVE_CHAT_SECONDS:
@@ -150,10 +151,10 @@ async def run_hourly(runner, topic_store, now):
             return False
         context = await asyncio.to_thread(_context, db, session_id, now)
         reason = await asyncio.to_thread(_decision, context)
-        if not reason or not await asyncio.to_thread(preference):
+        if not reason or not await asyncio.to_thread(preference) or await asyncio.to_thread(active_work):
             return False
         text = await _write_message(context, reason)
-        if not text or not await asyncio.to_thread(preference):
+        if not text or not await asyncio.to_thread(preference) or await asyncio.to_thread(active_work):
             return False
         latest = await asyncio.to_thread(topic_store.latest_channel, platform=Platform.API_SERVER.value)
         if (latest is None or latest.last_user_message_at != channel.last_user_message_at
