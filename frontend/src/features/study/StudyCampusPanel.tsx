@@ -66,7 +66,10 @@ function stripTicket(raw: string): { url: string; stripped: boolean } {
 function loadLinks(): CampusLink[] {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as Record<string, string>;
-    return DEFAULTS.map((item) => ({ ...item, url: raw[item.id] ?? item.url }));
+    return DEFAULTS.map((item) => ({
+      ...item,
+      url: (raw[item.id] ?? "").trim() || item.url,
+    }));
   } catch {
     return DEFAULTS;
   }
