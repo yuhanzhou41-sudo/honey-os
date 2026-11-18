@@ -1607,7 +1607,11 @@ def run_conversation(
             )
 
         api_messages = []
+        reviewed_history = getattr(agent, "_companion_reviewed_history", None) or {}
         for idx, msg in enumerate(messages):
+            if (idx < current_turn_user_idx and msg.get("_row_id") in reviewed_history
+                    and reviewed_history[msg["_row_id"]] == msg.get("content")):
+                continue
             api_msg = msg.copy()
 
             # api_content is the persistence sidecar carrying the exact bytes

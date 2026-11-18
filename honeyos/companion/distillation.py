@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 import uuid
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -334,6 +335,47 @@ Write the chapter and each operation in the dominant language of the transcript
         **call_overrides,
     )
     return str(response.choices[0].message.content or "")
+
+
+def reviewed_history_rows(
+    home: Path, lane_key: str, session_id: str, messages: list[dict],
+) -> dict[int, str]:
+    """Identify fully reviewed old exchanges using durable row IDs and text."""
+    starts = [index for index, message in enumerate(messages) if message.get("role") == "user"]
+    if len(starts) <= 3:
+        return {}
+    db_path = (home / "continuity.db").resolve()
+    if not db_path.is_file():
+        return {}
+    try:
+        with closing(sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True, timeout=0.25)) as db:
+            reviewed = db.execute(
+                """SELECT run.source_start_id, run.source_end_id
+                     FROM distillation_runs AS run
+                     JOIN distillation_state AS state
+                       ON state.lane_key=run.lane_key AND state.session_id=run.session_id
+                     JOIN conversation_chapters AS chapter
+                       ON chapter.id=run.chapter_id AND chapter.lane_key=run.lane_key
+                      AND chapter.source_session_id=run.session_id
+                    WHERE run.lane_key=? AND run.session_id=? AND run.status='completed'
+                      AND run.source_start_id>0 AND run.source_end_id<=state.last_source_row_id""",
+                (lane_key, session_id),
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    if not reviewed:
+        return {}
+
+    covered = {}
+    for start, end in zip(starts[:-3], starts[1:-2]):
+        exchange = messages[start:end]
+        if (exchange[-1].get("role") == "assistant"
+                and len(MemoryDistiller._conversational_messages(exchange)) == len(exchange)
+                and all(len(message["content"].strip()) <= 6000
+                        and any(first <= message["_row_id"] <= last for first, last in reviewed)
+                        for message in exchange)):
+            covered.update((message["_row_id"], message["content"]) for message in exchange)
+    return covered
 
 
 class MemoryDistiller:

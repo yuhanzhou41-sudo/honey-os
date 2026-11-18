@@ -1231,6 +1231,7 @@ def build_turn_context(
         _shadow_query = original_user_message if isinstance(original_user_message, str) else ""
         if _shadow_query and work_turn.get() is None and not is_trivial_prompt(_shadow_query):
             lane = getattr(agent, "_companion_memory_lane", "")
+            native_note = ""
             if lane:
                 from honeyos.companion.continuity import StructuredMemoryStore
                 from honeyos.core.constants import get_honeyos_home
@@ -1262,6 +1263,7 @@ def build_turn_context(
                 _cognitive_shadow_result,
                 session_id=str(getattr(agent, "session_id", "") or ""),
                 turn_id=str(turn_id or ""),
+                structured_context=native_note or "",
                 **recall_options,
             )
     except Exception:

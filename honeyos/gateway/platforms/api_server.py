@@ -6346,12 +6346,16 @@ class APIServerAdapter(BasePlatformAdapter):
             return None, web.json_response(_openai_error(f"Session not found: {session_id}", code="session_not_found"), status=404)
         return session, None
 
-    async def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
+    async def _conversation_history_for_session(
+        self, session_id: str, *, with_source_ids: bool = False,
+    ) -> List[Dict[str, Any]]:
         db = await self._ensure_session_db_async()
         if db is None:
             return []
         try:
-            return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+            return await asyncio.to_thread(
+                db.get_messages_as_conversation, session_id, include_row_ids=with_source_ids,
+            )
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
@@ -6986,7 +6990,9 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             if selection_error:
                 return web.json_response(_openai_error(selection_error), status=400)
-        history = await self._conversation_history_for_session(session_id)
+        history = await self._conversation_history_for_session(
+            session_id, with_source_ids=companion_view and not internal_turn,
+        )
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
@@ -7316,7 +7322,9 @@ class APIServerAdapter(BasePlatformAdapter):
                         if int(item.get("_row_id") or 0) != reuse_user_message_id
                     ]
                 else:
-                    history = await self._conversation_history_for_session(session_id)
+                    history = await self._conversation_history_for_session(
+                        session_id, with_source_ids=companion_view and not internal_turn and not work,
+                    )
                 result, usage = await self._run_agent(
                     user_message=user_message,
                     conversation_history=history,
@@ -9963,6 +9971,12 @@ class APIServerAdapter(BasePlatformAdapter):
                         lane = str(gateway_session_key or "")
                         if lane.endswith(":api_server:dm:local-owner"):
                             agent._companion_memory_lane = lane
+                            from honeyos.companion.distillation import reviewed_history_rows
+                            from honeyos.core.constants import get_honeyos_home
+
+                            agent._companion_reviewed_history = reviewed_history_rows(
+                                get_honeyos_home(), lane, session_id or "", conversation_history or [],
+                            )
                         # The browser uses the bounded request window below.
                         # Foreground summarization would send the full old history
                         # before that window is applied.

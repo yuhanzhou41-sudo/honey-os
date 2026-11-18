@@ -637,3 +637,11 @@ def test_f2_4_replacement_parser_uses_new_value_not_old_mentioned_value():
 
     assert values == {("25", "分钟")}
     assert ("40", "分钟") not in values
+
+
+def test_structured_memory_duplicate_leaves_space_for_a_distinct_cognitive_hit():
+    duplicate = Candidate("same", "用户明早要带蓝色文件夹")
+    distinct = Candidate("different", "另有一份纸质材料需要签字")
+    result = _build([duplicate, distinct], exclude_summaries=["用户明早要带蓝色文件夹"])
+    assert [item.memory_id for item in result.included] == ["different"]
+    assert result.rejected[0].reason == "duplicate_context"
