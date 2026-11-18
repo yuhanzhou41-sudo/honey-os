@@ -1,246 +1,97 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 
-import { companionAccess, SOURCE_LABELS } from "../../api/companion-access";
-import { profilePrefix } from "../../api/client";
+import { requestJson } from "../../api/client";
 
-type CampusLink = {
-  id: string;
-  name: string;
-  description: string;
-  url: string;
-  placeholder: string;
-};
+const categories = [
+  ["考试", "考试日期、时间、考场"],
+  ["成绩", "各学期课程成绩与学分"],
+  ["课程与作业", "学习通、网络教学平台的课程、任务和资料"],
+  ["校历与通知", "教学周、学校日程与教务通知"],
+  ["综测", "综合测评进度与结果"],
+  ["第二课堂", "活动、学分与认定记录"],
+] as const;
 
-const STORAGE_KEY = "honeyos.campus.links";
-
-const DEFAULTS: CampusLink[] = [
-  {
-    id: "chaoxing",
-    name: "学习通",
-    description: "课程任务、签到与课程资料。登录和操作在浏览器里完成。",
-    url: "https://i.chaoxing.com/",
-    placeholder: "https://i.chaoxing.com/",
-  },
-  {
-    id: "jwc",
-    name: "教务系统",
-    description: "课表、考试安排与成绩查询。首次使用需自己登录。",
-    url: "https://jwc.cqmu.edu.cn/",
-    placeholder: "学校教务系统网址",
-  },
-  {
-    id: "zongce",
-    name: "综测",
-    description: "学年综合测评填报。带 ticket 的链接会过期，这里只保留系统首页。",
-    url: "https://xgxt.cqmu.edu.cn/",
-    placeholder: "https://xgxt.cqmu.edu.cn/",
-  },
-  {
-    id: "erke",
-    name: "二课",
-    description: "第二课堂活动与学分。校内系统地址请填写一次，之后从这里进入。",
-    url: "",
-    placeholder: "第二课堂系统网址",
-  },
-  {
-    id: "portal",
-    name: "校园门户",
-    description: "信息门户登录（统一身份认证）。旧地址 portal.paas 已停用，这里已换成新地址。",
-    url: "https://my.cqmu.edu.cn/",
-    placeholder: "https://my.cqmu.edu.cn/",
-  },
-];
-
-function stripTicket(raw: string): { url: string; stripped: boolean } {
-  try {
-    const parsed = new URL(raw);
-    if (!parsed.searchParams.has("ticket")) return { url: raw, stripped: false };
-    parsed.searchParams.delete("ticket");
-    return { url: parsed.toString(), stripped: true };
-  } catch {
-    return { url: raw, stripped: false };
-  }
+function localDay(date: Date): string {
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai" }).format(date);
 }
 
-function loadLinks(): CampusLink[] {
-  try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as Record<string, string>;
-    return DEFAULTS.map((item) => {
-      const saved = (raw[item.id] ?? "").trim();
-      if (item.id === "portal" && saved.includes("portal.paas.cqmu.edu.cn")) {
-        return { ...item, url: item.url };
-      }
-      return { ...item, url: saved || item.url };
-    });
-  } catch {
-    return DEFAULTS;
-  }
+function initialRange() {
+  const now = Date.now();
+  return { start: localDay(new Date(now)), end: localDay(new Date(now + 13 * 86_400_000)) };
 }
 
 export function StudyCampusPanel() {
-  const [links, setLinks] = useState<CampusLink[]>(loadLinks);
-  const [message, setMessage] = useState("");
-  const work = useQuery({ queryKey: ["companion", "work"], queryFn: companionAccess.work, retry: false });
-  const access = useQuery({ queryKey: ["companion", "events"], queryFn: companionAccess.events, retry: false });
-
-  function update(id: string, url: string) {
-    setLinks((rows) => rows.map((item) => (item.id === id ? { ...item, url } : item)));
-  }
-
-  function save() {
-    const payload: Record<string, string> = {};
-    let stripped = false;
-    const next = links.map((item) => {
-      const clean = stripTicket(item.url.trim());
-      if (clean.stripped) stripped = true;
-      payload[item.id] = clean.url;
-      return { ...item, url: clean.url };
-    });
-    setLinks(next);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    setMessage(stripped ? "入口已保存；会过期的 ticket 已去掉，登录时系统会重新跳转。" : "入口已保存在本机浏览器。");
-  }
-
-  function open(link: CampusLink) {
-    const clean = stripTicket(link.url.trim());
-    if (!clean.url) {
-      setMessage(`请先填写${link.name}的网址。`);
-      return;
-    }
-    if (clean.stripped) {
-      setMessage(`已去掉会过期的 ticket，打开首页后按提示重新登录。`);
-    }
-    window.open(clean.url, "_blank", "noopener,noreferrer");
-  }
-
-  const prefix = profilePrefix();
+  const [range, setRange] = useState(initialRange);
+  const calendar = useMutation({
+    mutationFn: (selected: typeof range) => requestJson<{ days: Record<string, string[]> }>("/api/study/campus/calendar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(selected),
+    }),
+  });
+  const days = Object.entries(calendar.data?.days ?? {}).sort(([left], [right]) => left.localeCompare(right));
 
   return (
     <div className="space-y-5 text-sm">
-      <p className="text-[var(--foreground-muted)]">
-        这里只保存入口链接，不保存账号密码；登录、签到现在网页里由你自己完成。
-      </p>
-      <p className="text-xs text-[var(--foreground-muted)]">
-        这些站点在公网就能访问，不需要校园网或 VPN。若打不开，可先尝试关闭代理，或把 *.cqmu.edu.cn 设为直连。
-      </p>
-
-      <section className="space-y-3">
-        {links.map((link) => (
-          <article key={link.id} className="rounded-xl border border-[var(--border)] p-3">
-            <div className="flex items-center justify-between gap-3">
-              <h3 className="font-medium">{link.name}</h3>
-              <span className="text-xs text-[var(--foreground-muted)]">
-                {link.url.trim() ? "已设置入口" : "待填写网址"}
-              </span>
-            </div>
-            <p className="mt-1 text-xs text-[var(--foreground-muted)]">{link.description}</p>
-            <div className="mt-2 flex gap-2">
-              <input
-                aria-label={`${link.name}网址`}
-                className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm"
-                placeholder={link.placeholder}
-                value={link.url}
-                onChange={(event) => update(link.id, event.target.value)}
-              />
-              <button type="button" className="rounded-full border border-[var(--border)] px-3 py-1.5 text-sm"
-                onClick={() => open(link)}>
-                打开
-              </button>
-            </div>
-          </article>
-        ))}
-        <button type="button" className="rounded-full bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white"
-          onClick={save}>
-          保存入口
-        </button>
-      </section>
-
-      <section className="space-y-3 border-t border-[var(--border)] pt-3">
-        <h3 className="font-medium">工作模式</h3>
-        <p className="text-xs text-[var(--foreground-muted)]">
-          工作模式负责需要连续操作的任务；在聊天里说“进入工作模式”开始，这里只显示状态。
-        </p>
-        <div className="rounded-xl border border-[var(--border)] p-3">
-          {work.isPending ? (
-            <p className="text-xs text-[var(--foreground-muted)]">正在读取状态…</p>
-          ) : work.isError ? (
-            <p className="text-xs text-[var(--foreground-muted)]">当前版本没有提供工作模式接口。</p>
-          ) : (
-            <>
-              <div className="flex items-center justify-between">
-                <span>当前状态</span>
-                <span className={work.data?.enabled ? "text-[var(--accent)]" : "text-[var(--foreground-muted)]"}>
-                  {work.data?.enabled ? "进行中" : "未开启"}
-                </span>
+      <section aria-labelledby="campus-calendar" className="space-y-3 rounded-xl border border-[var(--border)] p-4">
+        <div>
+          <h3 id="campus-calendar" className="font-semibold">我的课表</h3>
+          <p className="mt-1 text-xs text-[var(--foreground-muted)]">
+            首次连接时，在校园专用 Edge 完成学校认证，再回这里刷新。Honey 会复用这个浏览器的登录状态；学校要求重新验证时才需要再次登录。
+          </p>
+        </div>
+        <form className="flex flex-wrap items-end gap-2" onSubmit={(event) => {
+          event.preventDefault();
+          calendar.mutate(range);
+        }}>
+          <label className="grid gap-1 text-xs">开始日期
+            <input type="date" required value={range.start} max={range.end}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2"
+              onChange={(event) => setRange({ ...range, start: event.target.value })} />
+          </label>
+          <label className="grid gap-1 text-xs">结束日期
+            <input type="date" required value={range.end} min={range.start}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2"
+              onChange={(event) => setRange({ ...range, end: event.target.value })} />
+          </label>
+          <button type="submit" disabled={calendar.isPending}
+            className="rounded-lg bg-[var(--accent)] px-3 py-2 font-medium text-white disabled:opacity-50">
+            {calendar.isPending ? "正在连接…" : calendar.data ? "刷新课表" : "连接 / 刷新课表"}
+          </button>
+        </form>
+        {calendar.error ? <p role="alert" className="text-xs">{calendar.error.message}</p> : null}
+        {days.length ? (
+          <div className="space-y-3" aria-live="polite">
+            <p className="text-xs text-[var(--foreground-muted)]">来源：重医教务系统。只展示教务页面中已确认的日期。</p>
+            {days.map(([day, entries]) => (
+              <div key={day} className="border-t border-[var(--border)] pt-2">
+                <h4 className="font-medium"><time dateTime={day}>{day}</time></h4>
+                {entries.length ? (
+                  <ul className="mt-1 grid gap-2">
+                    {entries.map((entry, index) => <li key={index} className="whitespace-pre-line break-words rounded-lg bg-[var(--surface)] p-2">{entry}</li>)}
+                  </ul>
+                ) : <p className="mt-1 text-xs text-[var(--foreground-muted)]">无课</p>}
               </div>
-              {work.data?.enabled && (
-                <p className="mt-1 truncate text-xs text-[var(--foreground-muted)]">
-                  会话 {work.data.session_id || "未知"} · 任务 {work.data.work_id || "未知"}
-                </p>
-              )}
-            </>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <a className="rounded-full border border-[var(--border)] px-3 py-1.5 text-sm"
-            href={`${prefix}/`}>
-            去聊天开始工作模式
-          </a>
-          <a className="rounded-full border border-[var(--border)] px-3 py-1.5 text-sm"
-            href={`${prefix}/settings`}>
-            管理事件权限
-          </a>
-        </div>
+            ))}
+          </div>
+        ) : null}
       </section>
 
-      <section className="space-y-2 border-t border-[var(--border)] pt-3">
-        <h3 className="font-medium">事件权限与访问记录</h3>
-        {access.isPending ? (
-          <p className="text-xs text-[var(--foreground-muted)]">正在读取…</p>
-        ) : access.isError ? (
-          <p className="text-xs text-[var(--foreground-muted)]">当前版本没有提供事件记录接口。</p>
-        ) : (
-          <>
-            <div>
-              <p className="text-xs text-[var(--foreground-muted)]">生效中的读取授权</p>
-              {access.data?.grants?.length ? (
-                <ul className="mt-1 space-y-1">
-                  {access.data.grants.map((grant) => (
-                    <li key={`${grant.source}-${grant.expires_at}`} className="flex justify-between gap-3 text-xs">
-                      <span>{SOURCE_LABELS[grant.source] || grant.source}</span>
-                      <span className="text-[var(--foreground-muted)]">
-                        到期 {new Date(grant.expires_at).toLocaleString()}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-1 text-xs text-[var(--foreground-muted)]">当前没有生效的读取授权。</p>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-[var(--foreground-muted)]">最近访问</p>
-              {access.data?.audit?.length ? (
-                <ul className="mt-1 space-y-1">
-                  {access.data.audit.slice(0, 8).map((row, index) => (
-                    <li key={`${row.checked_at}-${index}`} className="flex justify-between gap-3 text-xs">
-                      <span>{SOURCE_LABELS[row.source] || row.source}</span>
-                      <span className="text-[var(--foreground-muted)]">
-                        {row.allowed ? "允许" : "拒绝"} · {new Date(row.checked_at).toLocaleString()}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-1 text-xs text-[var(--foreground-muted)]">还没有访问记录。</p>
-              )}
-            </div>
-          </>
-        )}
+      <section aria-labelledby="campus-sources">
+        <h3 id="campus-sources" className="font-semibold">其他校园内容</h3>
+        <ul className="mt-2 grid gap-2 sm:grid-cols-2">
+          {categories.map(([name, description]) => (
+            <li key={name} className="rounded-xl border border-[var(--border)] p-3">
+              <div className="flex items-baseline justify-between gap-2">
+                <strong>{name}</strong>
+                <span className="text-xs text-[var(--foreground-muted)]">待接入</span>
+              </div>
+              <p className="mt-1 text-xs text-[var(--foreground-muted)]">{description}</p>
+            </li>
+          ))}
+        </ul>
       </section>
-
-      {message && <p className="text-xs text-[var(--foreground-muted)]">{message}</p>}
     </div>
   );
 }

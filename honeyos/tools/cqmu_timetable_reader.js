@@ -7,10 +7,11 @@ const path = "/eams/courseTableForStd.action";
 const shellPath = "/eams/teaResetPassword!search.action";
 const calendarPath = "/eams/courseTableForStd!calendarCourseTable.action";
 const portalOrigin = "https://portal.paas.cqmu.edu.cn";
+const currentPortalOrigin = "https://my.cqmu.edu.cn";
 const casOrigin = "https://cas.cqmu.edu.cn";
 const endpoint = "http://127.0.0.1:9237";
 
-function readPeriods(start, end, expectedOrigin, expectedPaths, expectedShell) {
+function readPeriods(start, end, expectedOrigin, expectedPaths, expectedShell, detailed) {
   if (location.origin !== expectedOrigin) return null;
   const table = expectedPaths.includes(location.pathname)
     ? document.getElementById("courseTable")
@@ -26,8 +27,10 @@ function readPeriods(start, end, expectedOrigin, expectedPaths, expectedShell) {
       .find((value) => /^\d{4}-\d{2}-\d{2}$/.test(value));
     if (!day || day < start || day > end) continue;
     const periods = new Set(occupied[day] || []);
+    const entries = detailed ? new Set(occupied[day] || []) : null;
     for (const cell of row.cells) {
       if (!cell.id.startsWith(day + "_") || !cell.innerText.trim()) continue;
+      if (entries) entries.add(cell.innerText.trim().slice(0, 1000));
       const spans = [...cell.innerText.matchAll(/[（(]([\d,，、\-–—\s]+)节[)）]/g)];
       if (!spans.length) throw Error("Unknown timetable cell format.");
       for (const [, span] of spans) {
@@ -39,7 +42,7 @@ function readPeriods(start, end, expectedOrigin, expectedPaths, expectedShell) {
         }
       }
     }
-    occupied[day] = [...periods].sort((a, b) => a - b);
+    occupied[day] = entries ? [...entries] : [...periods].sort((a, b) => a - b);
   }
   return occupied;
 }
@@ -71,7 +74,7 @@ function evaluate(tab) {
       method: "Runtime.evaluate",
       params: {
         expression: "(" + readPeriods.toString() + ")(..." +
-          JSON.stringify([argv[1], argv[2], origin, [path, calendarPath], shellPath]) + ")",
+          JSON.stringify([argv[1], argv[2], origin, [path, calendarPath], shellPath, argv[5] === "details"]) + ")",
         returnByValue: true,
       },
     })));
@@ -131,7 +134,7 @@ async function main() {
     const target = (await debuggerRequest("/json/list")).find(({id}) => id === tab.id);
     if (!target) throw Error("BROWSER_UNAVAILABLE");
     const address = new URL(target.url);
-    if ([portalOrigin, casOrigin].includes(address.origin)
+    if ([portalOrigin, currentPortalOrigin, casOrigin].includes(address.origin)
         || (address.origin === origin && /login/i.test(address.pathname))) {
       throw Error("LOGIN_REQUIRED");
     }

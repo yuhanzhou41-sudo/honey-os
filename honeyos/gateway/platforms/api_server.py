@@ -2645,6 +2645,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/companion/work", self._handle_companion_work),
             ("POST", "/api/companion/work/answer", self._handle_work_answer),
             ("GET", "/api/companion/study-skill", self._handle_study_skill),
+            ("POST", "/api/study/campus/calendar", self._handle_campus_calendar),
             ("POST", "/api/companion/study-skill", self._handle_study_skill),
             ("GET", "/api/companion/web-initiative", self._handle_web_initiative),
             ("POST", "/api/companion/web-initiative", self._handle_web_initiative),
@@ -3701,6 +3702,27 @@ class APIServerAdapter(BasePlatformAdapter):
         if not resolve_gateway_clarify(question_id, answer.strip()):
             return web.json_response({"error": "问题已失效。"}, status=409)
         return web.json_response({"answered": True})
+
+    async def _handle_campus_calendar(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from subprocess import TimeoutExpired
+
+        from honeyos.tools.cqmu_timetable import CampusLoginRequired, cqmu_date_range, read_campus_calendar
+
+        body, error = await self._read_json_body(request)
+        if error is not None:
+            return error
+        headers = {"Cache-Control": "no-store"}
+        try:
+            start, end = cqmu_date_range(body.get("start"), body.get("end"))
+            result = await asyncio.to_thread(read_campus_calendar, start, end)
+        except CampusLoginRequired as exc:
+            return web.json_response({"error": str(exc), "status": "login_required"}, status=409, headers=headers)
+        except (ValueError, OSError, TimeoutExpired) as exc:
+            message = str(exc) if isinstance(exc, ValueError) else "校园浏览器暂时无法连接，请稍后刷新。"
+            return web.json_response({"error": message}, status=422, headers=headers)
+        return web.json_response(result, headers=headers)
 
     async def _handle_study_skill(self, request: "web.Request") -> "web.Response":
         if (error := self._event_control_auth(request)) is not None:
