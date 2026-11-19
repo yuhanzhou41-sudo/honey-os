@@ -67,9 +67,11 @@
 
 - 2026-11-19 交接（清理提交）：Edge 调试端口课表链路已移除并分批提交。`83aecfa` 移除旧链路（cqmu_timetable.py、reader.js、`/api/study/campus/calendar` 路由、work_tool 课表动作、相关测试与打包配置），StudyCampusPanel 重写为学习日程卡片并补测试，client.ts 增加 ApiRequestError 承载校园 login_required 状态，react_dist 随之重建；`443a49f` 加入 WebView2 验证宿主与预检脚本；旧 PHASE_C1_REPORT 随本轮文档提交移除。定向测试：`python -m pytest -q -p no:cacheprovider tests/honeyos/test_work_mode.py`（4 通过 1 跳过）；前端全量 `npm.cmd test -- --pool=threads`（18 文件 57 通过）。注意本机 vitest 默认 forks 池无法拉起子进程，全量回归须加 `--pool=threads`。下一步按下方 C1 现场验证清单由用户本人执行。
 
+- 2026-11-19 C1 现场（一）：用户首次运行宿主即被白名单拦截，状态栏记录「已阻止：http://my.cqmu.edu.cn」。随后仅以响应头探测核实：门户 https 301→`/c` →302→`http://my.cqmu.edu.cn/c/portal/login`（被拦点）→301→https →302→`http://cas.cqmu.edu.cn/cas/login` →301→https 后 200，属校方自身的重定向中转机制。CAS 表单 action 为相对路径，凭据仅经 https 提交。宿主白名单已改为对三个已核实域名放行 http+https（默认端口、无 userinfo、域清单不变），以 `a00fcd9` 提交，并重建至 `C:\Users\Zyh20\Desktop\honeyos-campus-probe\CampusHost.exe`，待用户重跑现场验证。
+
 ## C1 现场验证清单（待执行）
 
-验证宿主：`E:\HuaweiMoveData\Users\Zyh20\Documents\ChatGPT\部署本地AI\honeyos-campus-probe-diagnostic\CampusHost.exe`（2026-11-19 11:47 构建，对应 `scripts/campus-host` 当前源码；如需重建使用 `scripts/campus-host/build.ps1` 与同目录的 `honeyos-webview2-1.0.4314.35.nupkg`）。执行者为用户本人，模型与代码不接触账号密码；`--smoke` 仅证明 WebView2 可初始化，不作为会话证据。
+验证宿主：`C:\Users\Zyh20\Desktop\honeyos-campus-probe\CampusHost.exe`（2026-11-19 15:49 重建，含 http 中转放行修复，对应 `scripts/campus-host` 当前源码；旧构建 honeyos-campus-probe-diagnostic 会拦截校方 http 重定向中转，勿再用）。如需重建：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/campus-host/build.ps1 -Package E:\HuaweiMoveData\Users\Zyh20\Documents\ChatGPT\部署本地AI\honeyos-webview2-1.0.4314.35.nupkg -OutputDirectory <仓库外专用构建目录>`。执行者为用户本人，模型与代码不接触账号密码；`--smoke` 仅证明 WebView2 可初始化，不作为会话证据。
 
 1. 运行宿主（不带参数），确认打开 `my.cqmu.edu.cn`，顶部状态栏只显示允许来源。
 2. 在官方页面本人完成统一认证登录；若状态栏显示「已阻止：来源」，记录该来源并停止，不轮换登录方式反复尝试。
