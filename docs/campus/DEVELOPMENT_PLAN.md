@@ -77,6 +77,8 @@
 
 - 2026-11-19 步骤 2 交付（待现场放行）：宿主新增 `--capture` 模式——用户官方登录并进入考试查询页后，自动识别四列表格（课程名称/考试日期/考试安排/考试地点），单元格脱敏后经 postMessage 单向上行，写出快照至 `%LOCALAPPDATA%\HoneyOS\campus\snapshots\exams.latest.json`（契约 campus-exams-snapshot/1），以 `2a39fc1` 提交。Gateway 新增 honeyos/campus 模块与路由 `/api/campus/status`、`/api/campus/exams`、`/api/campus/exams/refresh`：快照契约校验、迟到旧快照不覆盖新结果、整批事务替换、24 小时过期判定、宿主缺失时返回可行动提示，以 `65fac01` 提交。校园抽屉新增「近期考试」卡片（倒计时/未排期/已结束、来源与采集时间、过期标注、手动刷新、未采集时的宿主指引），以 `6ab304f` 提交。测试：campus pytest 9 项通过；路由表断言 5 项通过；前端 vitest 全量 18 文件 64 项通过（含校园面板 8 项）；tsc 构建通过。放行测试：宿主 `--capture` 现场捕获 → 新版 Gateway 下抽屉刷新 → 卡片与官方页逐项核对（脱敏）→ 重启宿主后再捕获应正常更新且旧缓存显式标注过期。
 
+- 2026-11-19 部署勘察（补丁同步按约定停手）：比对确认 WSL 运行仓库（`~/projects/honey-os`，feature/chat-message-batching）从未包含校园线代码——无 StudyCampusPanel.tsx 及其任何历史、StudyPage.tsx 无校园挂载点（0 引用）、无 cqmu_timetable 痕迹；约 20 个文件带未提交在途改动（memory/chat 工作，含 api_server.py）；WSL 侧无 node/npm 且无 node_modules，前端无法在该环境重建。结论：校园改动进入运行版需要一次真正的 git 合并（建议在 WSL 仓库将 E: 开发树加为 remote 后 fetch+merge，解决冲突、重建前端并重启 honeyos-gateway），不属于安全补丁范围，未做任何触碰。宿主 --capture 捕获环节验证不依赖部署，可先行。
+
 ## C1 现场验证清单（已执行；降级模式收尾）
 
 验证宿主：`C:\Users\Zyh20\Desktop\honeyos-campus-probe\CampusHost.exe`（2026-11-19 15:59 重建，含 http 中转与教务 8080 端口放行，对应 `scripts/campus-host` 当前源码；旧构建 honeyos-campus-probe-diagnostic 与 15:49 前构建均缺教务 8080 放行，勿再用）。如需重建：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/campus-host/build.ps1 -Package E:\HuaweiMoveData\Users\Zyh20\Documents\ChatGPT\部署本地AI\honeyos-webview2-1.0.4314.35.nupkg -OutputDirectory <仓库外专用构建目录>`。执行者为用户本人，模型与代码不接触账号密码；`--smoke` 仅证明 WebView2 可初始化，不作为会话证据。
