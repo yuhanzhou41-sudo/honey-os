@@ -162,6 +162,57 @@ internal static class CampusHost
 
     private const string EamsHome = "https://jiaowu.cqmu.edu.cn:8080/eams/home.action";
 
+    // 仅识别表头含「课程名称/成绩」的成绩表；输出「课程|成绩|学分|学期」。
+    private const string ExtractGradesScript =
+        @"(function(){
+            function clean(t){ t=String(t==null?'':t); return t.replace(/[\|\t\n\r;]/g,' ').replace(/\s+/g,' ').trim(); }
+            function scan(doc){
+              var tables=doc.getElementsByTagName('table');
+              for(var i=0;i<tables.length;i++){
+                var tb=tables[i]; if(tb.rows.length<2) continue;
+                for(var h=0;h<3 && h<tb.rows.length;h++){
+                  var head=tb.rows[h]; var map={};
+                  for(var c=0;c<head.cells.length;c++){
+                    var t=clean(head.cells[c].textContent);
+                    if(t.indexOf('课程名称')>=0||t==='课程'){ if(map.course===undefined) map.course=c; }
+                    else if(t.indexOf('成绩')>=0||t==='分数'){ if(map.score===undefined) map.score=c; }
+                    else if(t.indexOf('学分')>=0){ if(map.credit===undefined) map.credit=c; }
+                    else if(t.indexOf('学期')>=0){ if(map.term===undefined) map.term=c; }
+                  }
+                  if(map.course===undefined||map.score===undefined){ continue; }
+                  var out=[];
+                  for(var r=h+1;r<tb.rows.length;r++){
+                    var tr=tb.rows[r];
+                    function cell(k){ return map[k]===undefined?'':clean(tr.cells[map[k]].textContent); }
+                    var row=[cell('course'),cell('score'),cell('credit'),cell('term')];
+                    if(!row[0]){ continue; }
+                    out.push(row.join('|'));
+                  }
+                  if(out.length>0){ return out; }
+                }
+              }
+              return null;
+            }
+            var rows=scan(document);
+            if(rows===null){
+              try{
+                for(var f=0;f<window.frames.length;f++){
+                  rows=scan(window.frames[f].document);
+                  if(rows!==null){ break; }
+                }
+              }catch(e){}
+            }
+            if(rows!==null && rows.length>0){
+              window.chrome.webview.postMessage('GRADES'+'\t'+String(rows.length)+'\t'+rows.join('\t')+'\t'+clicked());
+            }
+            function clicked(){
+              try{
+                var v=localStorage.getItem('__honeyosClick')||'';
+                return clean(v).substring(0,30);
+              }catch(e){ return ''; }
+            }
+        })();";
+
     // 记录用户点击的菜单文字（最多两步），用于下次自动回放。
     // 教务系统地址栏不随页面变化，只能靠点菜单；课表要先点「我的课表」再点「学生课表」。
     private const string ClickRecorderScript =
@@ -335,7 +386,25 @@ internal static class CampusHost
         return sb.Append("]}").ToString();
     }
 
-    // 账号标识只保留 ASCII 安全字符，同时作为 WebView2 profile 与快照文件名的一部分。
+    private static string BuildGradesJson(string source, string account, string[][] rows)
+    {
+        var sb = new StringBuilder();
+        sb.Append("{\"schema\":\"campus-grades-snapshot/1\",\"account\":\"")
+          .Append(JsonEscape(account))
+          .Append("\",\"captured_at\":\"")
+          .Append(DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz"))
+          .Append("\",\"source\":\"").Append(JsonEscape(source))
+          .Append("\",\"row_count\":").Append(rows.Length).Append(",\"rows\":[");
+        for (int i = 0; i < rows.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"course\":\"").Append(JsonEscape(rows[i][0]))
+              .Append("\",\"score\":\"").Append(JsonEscape(rows[i][1]))
+              .Append("\",\"credit\":\"").Append(JsonEscape(rows[i][2]))
+              .Append("\",\"term\":\"").Append(JsonEscape(rows[i][3])).Append("\"}");
+        }
+        return sb.Append("]}").ToString();
+    }
     private static string SafeProfile(string value)
     {
         var sb = new StringBuilder();
@@ -465,29 +534,38 @@ internal static class CampusHost
         {
             bool captured = false;
             bool capturedTimetable = false;
+            bool capturedGrades = false;
             int examCount = 0;
             int timetableCount = 0;
+            int gradeCount = 0;
             int autoAttempts = 0;
             DateTime autoRetryAt = DateTime.MinValue;
             int clickAttempts = 0;
             DateTime clickRetryAt = DateTime.MinValue;
             int examClickStep = 0;
             int timetableClickStep = 0;
+            int gradesClickStep = 0;
             bool diagnoseDone = false;
             DateTime diagnoseAt = DateTime.MinValue;
             string autoExams = auto ? LoadNav(profile, "exams") : "";
             string autoTimetable = auto ? LoadNav(profile, "timetable") : "";
+            string autoGrades = auto ? LoadNav(profile, "grades") : "";
             DateTime captureDeadline = DateTime.UtcNow.AddSeconds(CaptureTimeoutSeconds);
+            Func<bool> allDone = delegate {
+                return (!(autoExams.Length > 0) || captured)
+                    && (!(autoTimetable.Length > 0) || capturedTimetable)
+                    && (!(autoGrades.Length > 0) || capturedGrades);
+            };
             window.Controls.Add(browser);
             window.Controls.Add(status);
             timeout.Tick += delegate { timeout.Stop(); window.Close(); };
             poll.Tick += async delegate {
                 if (!capture) { poll.Stop(); return; }
-                if (captured && capturedTimetable) { poll.Stop(); return; }
+                if (allDone()) { poll.Stop(); return; }
                 if (DateTime.UtcNow > captureDeadline)
                 {
                     poll.Stop();
-                    status.Text = "未检测到完整的考试/课表数据；可关闭窗口后重试。";
+                    status.Text = "未检测到完整数据；可关闭窗口后重试。";
                     return;
                 }
                 try
@@ -499,8 +577,9 @@ internal static class CampusHost
                     if (here.IdnHost == "jiaowu.cqmu.edu.cn")
                     {
                         string pendingNav = !captured ? autoExams
-                            : (!capturedTimetable ? autoTimetable : "");
-                        int clickStep = !captured ? examClickStep : timetableClickStep;
+                            : (!capturedTimetable ? autoTimetable : autoGrades);
+                        int clickStep = !captured ? examClickStep
+                            : (!capturedTimetable ? timetableClickStep : gradesClickStep);
                         string[] clickChain = pendingNav.StartsWith("click:")
                             ? pendingNav.Substring(6).Split('>')
                             : new string[0];
@@ -517,13 +596,15 @@ internal static class CampusHost
                             if (ok)
                             {
                                 if (!captured) examClickStep++;
-                                else timetableClickStep++;
+                                else if (!capturedTimetable) timetableClickStep++;
+                                else gradesClickStep++;
                                 status.Text = "已自动打开：" + label;
                                 return;
                             }
                         }
                         if (!captured) await current.ExecuteScriptAsync(ExtractExamsScript);
                         if (!capturedTimetable) await current.ExecuteScriptAsync(ExtractTimetableScript);
+                        if (!capturedGrades) await current.ExecuteScriptAsync(ExtractGradesScript);
                         if (auto && captured && !capturedTimetable && !diagnoseDone
                             && DateTime.UtcNow >= diagnoseAt)
                         {
@@ -537,8 +618,9 @@ internal static class CampusHost
                     bool onLoginPage = (here.IdnHost == "cas.cqmu.edu.cn")
                         || here.AbsolutePath.ToLowerInvariant().Contains("login");
                     if (onLoginPage) return;
-                    string target = !captured && autoExams.Length > 0 ? autoExams : autoTimetable;
-                    if (target.Length == 0) return;
+                    string target = !captured && autoExams.Length > 0 ? autoExams
+                        : (!capturedTimetable && autoTimetable.Length > 0 ? autoTimetable : autoGrades);
+                    if (target.Length == 0 || !IsUrlNav(target)) return;
                     autoAttempts++;
                     autoRetryAt = DateTime.UtcNow.AddSeconds(20);
                     status.Text = "已登录，自动前往：" + new Uri(target).AbsolutePath;
@@ -600,7 +682,8 @@ internal static class CampusHost
                                 if (message == null) return;
                                 bool isExams = message.StartsWith("EXAMS\t", StringComparison.Ordinal);
                                 bool isTimetable = message.StartsWith("TIMETABLE\t", StringComparison.Ordinal);
-                                if (!isExams && !isTimetable) return;
+                                bool isGrades = message.StartsWith("GRADES\t", StringComparison.Ordinal);
+                                if (!isExams && !isTimetable && !isGrades) return;
                                 Uri origin;
                                 if (!Uri.TryCreate(core.Source, UriKind.Absolute, out origin) ||
                                     origin.IdnHost != "jiaowu.cqmu.edu.cn") return;
@@ -608,7 +691,7 @@ internal static class CampusHost
                                 int count;
                                 if (parts.Length < 3 || !int.TryParse(parts[1], out count) ||
                                     count <= 0 || count > CaptureMaxRows) return;
-                                int width = isExams ? 4 : 3;
+                                int width = isTimetable ? 3 : 4;
                                 var rows = new string[count][];
                                 for (int i = 0; i < count; i++)
                                 {
@@ -622,8 +705,8 @@ internal static class CampusHost
                                     rows[i] = row;
                                 }
                                 string clicked = parts.Length > count + 2 ? (parts[count + 2] ?? "").Trim() : "";
-                                Trace("captured " + (isExams ? "exams" : "timetable") + " rows=" + count
-                                    + " click=" + clicked);
+                                string kindName = isExams ? "exams" : (isTimetable ? "timetable" : "grades");
+                                Trace("captured " + kindName + " rows=" + count + " click=" + clicked);
                                 // 导航配置只做首次引导，已存在则不被覆盖（课表需要两步链路）。
                                 string lastClick = clicked.Contains(">")
                                     ? clicked.Substring(clicked.LastIndexOf('>') + 1).Trim()
@@ -639,7 +722,7 @@ internal static class CampusHost
                                     examCount = count;
                                     diagnoseAt = DateTime.UtcNow.AddSeconds(20);
                                 }
-                                else
+                                else if (isTimetable)
                                 {
                                     WriteSnapshot(SnapshotName("timetable", profile),
                                         BuildTimetableJson("https://jiaowu.cqmu.edu.cn:8080", profile, rows));
@@ -649,17 +732,23 @@ internal static class CampusHost
                                     capturedTimetable = true;
                                     timetableCount = count;
                                 }
-                                status.Text = "已保存：考试 " + examCount + " 条、课表 " + timetableCount + " 条。";
-                                if (captured && capturedTimetable)
+                                else
+                                {
+                                    WriteSnapshot(SnapshotName("grades", profile),
+                                        BuildGradesJson("https://jiaowu.cqmu.edu.cn:8080", profile, rows));
+                                    if (!NavExists(profile, "grades"))
+                                        SaveNav(profile, "grades",
+                                            lastClick.Length > 0 ? "click:" + lastClick : core.Source);
+                                    capturedGrades = true;
+                                    gradeCount = count;
+                                }
+                                status.Text = "已保存：考试 " + examCount + " 条、课表 " + timetableCount
+                                    + " 条、成绩 " + gradeCount + " 条。";
+                                if (allDone())
                                 {
                                     poll.Stop();
                                     if (auto) { status.Text += "同步完成，窗口即将关闭。"; CloseLater(window, 1500); }
-                                    else status.Text += "可继续切换到另一个查询页，或关闭窗口。";
-                                }
-                                else if (auto && captured && !capturedTimetable && IsUrlNav(autoTimetable))
-                                {
-                                    status.Text += " 自动前往课表页…";
-                                    core.Navigate(autoTimetable);
+                                    else status.Text += "可继续切换到其他查询页，或关闭窗口。";
                                 }
                             }
                             catch (Exception)

@@ -13,8 +13,10 @@ from honeyos.campus.snapshot import (
     CampusSnapshotError,
     DEFAULT_ACCOUNT,
     ExamRow,
+    GradeRow,
     MissingSnapshotError,
     TimetableRow,
+    read_grades_snapshot,
     read_snapshot,
     read_timetable_snapshot,
 )
@@ -159,6 +161,77 @@ class CampusTimetableService:
             source, batch_key, captured_at, rows, account=account,
         )
         payload = self.get_timetable()
+        payload.update({"result": "updated", "imported": imported})
+        return payload
+
+
+class CampusGradesService:
+    """成绩读取服务：与考试、课表共用快照、过期、迟到与账号隔离规则。"""
+
+    def __init__(self, home: Path | str | None = None, snapshot_path: Path | str | None = None,
+                 account: str | None = None):
+        self.repository = CampusRepository(home=home)
+        self.snapshot_path = Path(snapshot_path) if snapshot_path is not None else None
+        self.account = account
+
+    def get_grades(self) -> dict:
+        data = self.repository.list_grades(self.account)
+        metas = data["meta"]
+        last_success_at = max((m["last_success_at"] for m in metas), default=None)
+        captured_at = max((m["captured_at"] for m in metas), default=None)
+        source = metas[0]["source"] if metas else None
+        stale = _older_than_hours(captured_at, STALE_AFTER_HOURS) if captured_at else False
+        return {
+            "account": data["account"],
+            "records": data["records"],
+            "source": source,
+            "captured_at": captured_at,
+            "last_success_at": last_success_at,
+            "row_count": len(data["records"]),
+            "has_data": bool(metas),
+            "stale": stale,
+            "needs_capture": not metas,
+        }
+
+    def refresh(self) -> dict:
+        try:
+            snapshot = read_grades_snapshot(
+                self.snapshot_path,
+                account=self.account or DEFAULT_ACCOUNT,
+            )
+        except MissingSnapshotError:
+            return {
+                "result": "snapshot_missing",
+                "action": "open-host",
+                "message": "尚未发现成绩快照：请在宿主中完成官方登录并打开成绩查询页，然后重试。",
+            }
+        except CampusSnapshotError as exc:
+            return {"result": "snapshot_invalid", "action": "open-host", "message": str(exc)}
+
+        source: str = snapshot["source"]
+        captured_at: str = snapshot["captured_at"]
+        account: str = snapshot["account"]
+        rows: list[GradeRow] = snapshot["rows"]
+
+        stored = self.repository.latest_captured_at(source, account=account, kind="grades")
+        stored_at = _parse_iso(stored)
+        new_at = _parse_iso(captured_at)
+        if stored_at is not None and new_at is not None and stored_at >= new_at:
+            return {
+                "result": "no_new_snapshot",
+                "account": account,
+                "captured_at": stored,
+                "message": "宿主成绩快照未更新；请在宿主中重新捕获后再刷新。",
+            }
+        if new_at is None:
+            return {"result": "snapshot_invalid", "action": "open-host",
+                    "message": "成绩快照捕获时间无法解析，已拒绝导入。"}
+
+        batch_key = captured_at[:10]
+        imported = self.repository.import_grades(
+            source, batch_key, captured_at, rows, account=account,
+        )
+        payload = self.get_grades()
         payload.update({"result": "updated", "imported": imported})
         return payload
 

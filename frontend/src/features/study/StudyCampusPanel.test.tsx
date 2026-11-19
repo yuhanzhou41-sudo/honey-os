@@ -4,10 +4,13 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import {
   getCampusExams,
+  getCampusGrades,
   getCampusTimetable,
   refreshCampusExams,
+  refreshCampusGrades,
   refreshCampusTimetable,
   type CampusExams,
+  type CampusGrades,
   type CampusTimetable,
 } from "../../api/campus";
 import { StudyCampusPanel, examCountdown, extractExamDate, todayWeekdayLabel } from "./StudyCampusPanel";
@@ -29,7 +32,26 @@ vi.mock("../../api/campus", () => ({
   refreshCampusExams: vi.fn(),
   getCampusTimetable: vi.fn(),
   refreshCampusTimetable: vi.fn(),
+  getCampusGrades: vi.fn(),
+  refreshCampusGrades: vi.fn(),
 }));
+
+function gradesFixture(overrides: Partial<CampusGrades> = {}): { grades: CampusGrades } {
+  return {
+    grades: {
+      account: "major",
+      records: [],
+      source: "https://jiaowu.cqmu.edu.cn:8080",
+      captured_at: null,
+      last_success_at: null,
+      row_count: 0,
+      has_data: false,
+      stale: false,
+      needs_capture: true,
+      ...overrides,
+    },
+  };
+}
 
 function examsFixture(overrides: Partial<CampusExams> = {}): { exams: CampusExams } {
   return {
@@ -82,6 +104,8 @@ beforeEach(() => {
   vi.mocked(refreshCampusExams).mockResolvedValue(examsFixture());
   vi.mocked(getCampusTimetable).mockResolvedValue(timetableFixture());
   vi.mocked(refreshCampusTimetable).mockResolvedValue(timetableFixture());
+  vi.mocked(getCampusGrades).mockResolvedValue(gradesFixture());
+  vi.mocked(refreshCampusGrades).mockResolvedValue(gradesFixture());
 });
 
 afterEach(() => {

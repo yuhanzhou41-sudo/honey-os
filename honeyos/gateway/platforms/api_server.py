@@ -2608,6 +2608,24 @@ class APIServerAdapter(BasePlatformAdapter):
 
     # === HoneyOS Campus timetable handlers ===
 
+    async def _handle_campus_grades(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.campus import CampusGradesService
+
+        account = request.query.get("account") or None
+        grades = await asyncio.to_thread(CampusGradesService(account=account).get_grades)
+        return web.json_response({"grades": grades}, headers={"Cache-Control": "no-store"})
+
+    async def _handle_campus_grades_refresh(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.campus import CampusGradesService
+
+        account = request.query.get("account") or None
+        result = await asyncio.to_thread(CampusGradesService(account=account).refresh)
+        return web.json_response({"grades": result}, headers={"Cache-Control": "no-store"})
+
     async def _handle_campus_timetable(self, request: "web.Request") -> "web.Response":
         if (error := self._event_control_auth(request)) is not None:
             return error
@@ -2814,6 +2832,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/campus/exams/refresh", self._handle_campus_exams_refresh),
             ("GET", "/api/campus/timetable", self._handle_campus_timetable),
             ("POST", "/api/campus/timetable/refresh", self._handle_campus_timetable_refresh),
+            ("GET", "/api/campus/grades", self._handle_campus_grades),
+            ("POST", "/api/campus/grades/refresh", self._handle_campus_grades_refresh),
             # === /HoneyOS Campus exams ===
             # === /HoneyOS Study Classic Pomodoro Phase 3.2 ===
             # === /HoneyOS Study Pomodoro Phase 3 ===

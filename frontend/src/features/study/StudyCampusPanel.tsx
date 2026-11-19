@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarBlank, CheckSquare, Student } from "@phosphor-icons/react";
+import { CalendarBlank, CheckSquare, GraduationCap, Student } from "@phosphor-icons/react";
 
 import {
   getCampusExams,
+  getCampusGrades,
   getCampusTimetable,
   refreshCampusExams,
+  refreshCampusGrades,
   refreshCampusTimetable,
 } from "../../api/campus";
 import { listStudyPlans } from "../../api/study";
@@ -54,6 +56,7 @@ export function StudyCampusPanel() {
   const plans = useQuery({ queryKey: ["study", "plans"], queryFn: listStudyPlans });
   const examsQuery = useQuery({ queryKey: ["campus", "exams"], queryFn: getCampusExams });
   const timetableQuery = useQuery({ queryKey: ["campus", "timetable"], queryFn: getCampusTimetable });
+  const gradesQuery = useQuery({ queryKey: ["campus", "grades"], queryFn: getCampusGrades });
   const refresh = useMutation({
     mutationFn: refreshCampusExams,
     onSuccess: (data) => queryClient.setQueryData(["campus", "exams"], data),
@@ -62,8 +65,13 @@ export function StudyCampusPanel() {
     mutationFn: refreshCampusTimetable,
     onSuccess: (data) => queryClient.setQueryData(["campus", "timetable"], data),
   });
+  const refreshGrades = useMutation({
+    mutationFn: refreshCampusGrades,
+    onSuccess: (data) => queryClient.setQueryData(["campus", "grades"], data),
+  });
   const exams = examsQuery.data?.exams;
   const timetable = timetableQuery.data?.timetable;
+  const grades = gradesQuery.data?.grades;
   const todayCourses = (timetable?.records ?? []).filter((record) => record.day === weekday);
   const agenda = (plans.data?.plans ?? [])
     .filter((plan) => plan.status === "active")
@@ -197,6 +205,73 @@ export function StudyCampusPanel() {
         {refresh.data?.exams?.message && (
           <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
             {refresh.data.exams.message}
+          </p>
+        )}
+      </section>
+
+      <section aria-labelledby="campus-grades" className="rounded-2xl border border-[var(--border)] bg-[var(--surface-raised)] p-4">
+        <div className="flex items-center justify-between gap-2">
+          <h3 id="campus-grades" className="flex items-center gap-2 text-base font-semibold">
+            <GraduationCap size={20} aria-hidden /> 成绩
+            {grades && grades.row_count > 0 && (
+              <span className="text-xs font-normal text-[var(--foreground-muted)]">
+                {grades.row_count} 门
+              </span>
+            )}
+          </h3>
+          <button
+            type="button"
+            onClick={() => refreshGrades.mutate()}
+            disabled={refreshGrades.isPending}
+            aria-label="刷新成绩"
+            className="text-xs text-[var(--foreground-muted)] disabled:opacity-50"
+          >
+            {refreshGrades.isPending ? "刷新中…" : "刷新"}
+          </button>
+        </div>
+        {gradesQuery.isError ? (
+          <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
+            暂时无法读取校园成绩数据。
+          </p>
+        ) : gradesQuery.isPending ? (
+          <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
+            正在读取校园成绩数据…
+          </p>
+        ) : grades && grades.needs_capture ? (
+          <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
+            尚未采集成绩数据：请在宿主中完成官方登录并打开成绩查询页，然后点刷新。
+          </p>
+        ) : grades && grades.row_count === 0 ? (
+          <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
+            学校当前没有可显示的成绩记录。
+          </p>
+        ) : grades ? (
+          <>
+            <ul className="mt-3 divide-y divide-[var(--border)]">
+              {grades.records.slice(0, 8).map((record) => (
+                <li key={record.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2">
+                  <strong className="min-w-0 break-words font-medium">{record.course}</strong>
+                  <span className="rounded-full bg-[var(--surface)] px-2 py-0.5 text-xs tabular-nums">
+                    {record.score || "—"}
+                  </span>
+                  {record.credit && (
+                    <span className="text-xs text-[var(--foreground-muted)]">{record.credit} 学分</span>
+                  )}
+                  {record.term && (
+                    <span className="text-xs text-[var(--foreground-muted)]">{record.term}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-[var(--foreground-muted)]">
+              来源 {grades.source ?? "未知"} · 采集于 {formatCaptured(grades.captured_at)}
+              {grades.stale ? "（缓存已过期，请刷新）" : ""}
+            </p>
+          </>
+        ) : null}
+        {refreshGrades.data?.grades?.message && (
+          <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
+            {refreshGrades.data.grades.message}
           </p>
         )}
       </section>
