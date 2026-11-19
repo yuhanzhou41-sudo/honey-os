@@ -11,7 +11,7 @@ internal static class CampusHost
     private static bool Allowed(string target)
     {
         Uri uri;
-        return Uri.TryCreate(target, UriKind.Absolute, out uri) && uri.Scheme == "https" &&
+        return Uri.TryCreate(target, UriKind.Absolute, out uri) && (uri.Scheme == "https" || uri.Scheme == "http") &&
             uri.IsDefaultPort && uri.UserInfo.Length == 0 && (uri.IdnHost == "my.cqmu.edu.cn" ||
             uri.IdnHost == "cas.cqmu.edu.cn" || uri.IdnHost == "jiaowu.cqmu.edu.cn");
     }
