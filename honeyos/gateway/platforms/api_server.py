@@ -2563,6 +2563,45 @@ class APIServerAdapter(BasePlatformAdapter):
                 library_id, target, protected_paths=repository.local_source_paths(connection=conn)
             )
 
+    # === HoneyOS Campus exam snapshot handlers ===
+
+    async def _handle_campus_status(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.campus import CampusExamsService
+        from honeyos.campus.snapshot import default_snapshot_path
+
+        def _status():
+            snapshot_path = default_snapshot_path()
+            exams = CampusExamsService().get_exams()
+            exams.update(
+                session_mode="manual_login_per_launch",
+                snapshot_path=str(snapshot_path),
+                snapshot_available=snapshot_path.is_file(),
+            )
+            return exams
+
+        status = await asyncio.to_thread(_status)
+        return web.json_response({"status": status}, headers={"Cache-Control": "no-store"})
+
+    async def _handle_campus_exams(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.campus import CampusExamsService
+
+        exams = await asyncio.to_thread(CampusExamsService().get_exams)
+        return web.json_response({"exams": exams}, headers={"Cache-Control": "no-store"})
+
+    async def _handle_campus_exams_refresh(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.campus import CampusExamsService
+
+        result = await asyncio.to_thread(CampusExamsService().refresh)
+        return web.json_response({"exams": result}, headers={"Cache-Control": "no-store"})
+
+    # === /HoneyOS Campus exam snapshot handlers ===
+
     # === /HoneyOS Study Storage Core handlers ===
 
     def _authenticated_file_handler(self, handler):
@@ -2741,6 +2780,11 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/study/storage/discover", self._authenticated_file_handler(self._handle_study_storage_discover)),
             ("POST", "/api/study/storage/libraries/{library_id}/cleanup", self._authenticated_file_handler(self._handle_study_storage_cleanup)),
             # === /HoneyOS Study Storage Core ===
+            # === HoneyOS Campus exams ===
+            ("GET", "/api/campus/status", self._handle_campus_status),
+            ("GET", "/api/campus/exams", self._handle_campus_exams),
+            ("POST", "/api/campus/exams/refresh", self._handle_campus_exams_refresh),
+            # === /HoneyOS Campus exams ===
             # === /HoneyOS Study Classic Pomodoro Phase 3.2 ===
             # === /HoneyOS Study Pomodoro Phase 3 ===
             # === HoneyOS C1.2 Local Sticker Runtime ===
