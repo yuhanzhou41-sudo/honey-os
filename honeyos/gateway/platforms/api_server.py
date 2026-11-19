@@ -2573,11 +2573,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def _status():
             snapshot_path = default_snapshot_path()
-            exams = CampusExamsService().get_exams()
+            service = CampusExamsService()
+            exams = service.get_exams()
             exams.update(
                 session_mode="manual_login_per_launch",
                 snapshot_path=str(snapshot_path),
                 snapshot_available=snapshot_path.is_file(),
+                accounts=service.repository.list_accounts(),
             )
             return exams
 
@@ -2589,7 +2591,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return error
         from honeyos.campus import CampusExamsService
 
-        exams = await asyncio.to_thread(CampusExamsService().get_exams)
+        account = request.query.get("account") or None
+        exams = await asyncio.to_thread(CampusExamsService(account=account).get_exams)
         return web.json_response({"exams": exams}, headers={"Cache-Control": "no-store"})
 
     async def _handle_campus_exams_refresh(self, request: "web.Request") -> "web.Response":
@@ -2597,7 +2600,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return error
         from honeyos.campus import CampusExamsService
 
-        result = await asyncio.to_thread(CampusExamsService().refresh)
+        account = request.query.get("account") or None
+        result = await asyncio.to_thread(CampusExamsService(account=account).refresh)
         return web.json_response({"exams": result}, headers={"Cache-Control": "no-store"})
 
     # === /HoneyOS Campus exam snapshot handlers ===
@@ -2609,7 +2613,10 @@ class APIServerAdapter(BasePlatformAdapter):
             return error
         from honeyos.campus import CampusTimetableService
 
-        timetable = await asyncio.to_thread(CampusTimetableService().get_timetable)
+        account = request.query.get("account") or None
+        timetable = await asyncio.to_thread(
+            CampusTimetableService(account=account).get_timetable
+        )
         return web.json_response({"timetable": timetable}, headers={"Cache-Control": "no-store"})
 
     async def _handle_campus_timetable_refresh(self, request: "web.Request") -> "web.Response":
@@ -2617,7 +2624,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return error
         from honeyos.campus import CampusTimetableService
 
-        result = await asyncio.to_thread(CampusTimetableService().refresh)
+        account = request.query.get("account") or None
+        result = await asyncio.to_thread(CampusTimetableService(account=account).refresh)
         return web.json_response({"timetable": result}, headers={"Cache-Control": "no-store"})
 
     # === /HoneyOS Campus timetable handlers ===

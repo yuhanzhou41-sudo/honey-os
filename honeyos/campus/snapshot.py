@@ -21,6 +21,8 @@ MAX_CELL = 200
 TIMETABLE_SCHEMA = "campus-timetable-snapshot/1"
 TIMETABLE_FILE = "timetable.latest.json"
 MAX_TIMETABLE_ROWS = 500
+DEFAULT_ACCOUNT = "default"
+MAX_ACCOUNT_LEN = 32
 
 
 class CampusSnapshotError(Exception):
@@ -60,6 +62,27 @@ class TimetableRow:
     def fingerprint(self) -> str:
         joined = "\x1f".join((self.day, self.period, self.detail)).encode("utf-8")
         return hashlib.sha256(joined).hexdigest()
+
+
+def normalize_account(value: object) -> str:
+    """账号标识只允许短 ASCII 标识，避免路径穿越与快照串号。"""
+    if not isinstance(value, str) or not value.strip():
+        return DEFAULT_ACCOUNT
+    name = value.strip()
+    if len(name) > MAX_ACCOUNT_LEN:
+        raise InvalidSnapshotError("账号标识过长。")
+    if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in name):
+        raise InvalidSnapshotError("账号标识只允许字母、数字、下划线与短横线。")
+    return name
+
+
+def snapshot_file(account: str = DEFAULT_ACCOUNT, file_name: str = SNAPSHOT_FILE) -> str:
+    if normalize_account(account) == DEFAULT_ACCOUNT:
+        return file_name
+    if file_name.endswith(".latest.json"):
+        return f"{file_name[:-len('.latest.json')]}.{account}.latest.json"
+    stem, _, ext = file_name.rpartition(".")
+    return f"{stem}.{account}.{ext}"
 
 
 def default_snapshot_path(file_name: str = SNAPSHOT_FILE) -> Path:
@@ -137,14 +160,18 @@ def normalize_snapshot(payload: object) -> dict:
         rows.append(row)
     return {
         "schema": SNAPSHOT_SCHEMA,
+        "account": normalize_account(payload.get("account")),
         "captured_at": captured_at,
         "source": source[:128],
         "rows": rows,
     }
 
 
-def read_snapshot(path: Path | str | None = None) -> dict:
-    snapshot_path = Path(path) if path is not None else default_snapshot_path()
+def read_snapshot(path: Path | str | None = None, account: str = DEFAULT_ACCOUNT) -> dict:
+    snapshot_path = (
+        Path(path) if path is not None
+        else default_snapshot_path(snapshot_file(account, SNAPSHOT_FILE))
+    )
     if not snapshot_path.is_file():
         raise MissingSnapshotError(str(snapshot_path))
     try:
@@ -182,15 +209,18 @@ def normalize_timetable(payload: object) -> dict:
         rows.append(row)
     return {
         "schema": TIMETABLE_SCHEMA,
+        "account": normalize_account(payload.get("account")),
         "captured_at": captured_at,
         "source": source[:128],
         "rows": rows,
     }
 
 
-def read_timetable_snapshot(path: Path | str | None = None) -> dict:
+def read_timetable_snapshot(path: Path | str | None = None,
+                            account: str = DEFAULT_ACCOUNT) -> dict:
     snapshot_path = (
-        Path(path) if path is not None else default_snapshot_path(TIMETABLE_FILE)
+        Path(path) if path is not None
+        else default_snapshot_path(snapshot_file(account, TIMETABLE_FILE))
     )
     if not snapshot_path.is_file():
         raise MissingSnapshotError(str(snapshot_path))

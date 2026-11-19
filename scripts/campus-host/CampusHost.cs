@@ -11,6 +11,7 @@ internal static class CampusHost
     private const int CaptureMaxRows = 200;
     private const int CaptureCellMax = 200;
     private const int CaptureTimeoutSeconds = 600;
+    private const int WatchIntervalSeconds = 600;
 
     private static readonly string[] AllowedOrigins =
     {
@@ -164,10 +165,12 @@ internal static class CampusHost
         return sb.ToString();
     }
 
-    private static string BuildSnapshotJson(string source, string[][] rows)
+    private static string BuildSnapshotJson(string source, string account, string[][] rows)
     {
         var sb = new StringBuilder();
-        sb.Append("{\"schema\":\"campus-exams-snapshot/1\",\"captured_at\":\"")
+        sb.Append("{\"schema\":\"campus-exams-snapshot/1\",\"account\":\"")
+          .Append(JsonEscape(account))
+          .Append("\",\"captured_at\":\"")
           .Append(DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz"))
           .Append("\",\"source\":\"").Append(JsonEscape(source))
           .Append("\",\"row_count\":").Append(rows.Length).Append(",\"rows\":[");
@@ -182,10 +185,12 @@ internal static class CampusHost
         return sb.Append("]}").ToString();
     }
 
-    private static string BuildTimetableJson(string source, string[][] rows)
+    private static string BuildTimetableJson(string source, string account, string[][] rows)
     {
         var sb = new StringBuilder();
-        sb.Append("{\"schema\":\"campus-timetable-snapshot/1\",\"captured_at\":\"")
+        sb.Append("{\"schema\":\"campus-timetable-snapshot/1\",\"account\":\"")
+          .Append(JsonEscape(account))
+          .Append("\",\"captured_at\":\"")
           .Append(DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz"))
           .Append("\",\"source\":\"").Append(JsonEscape(source))
           .Append("\",\"row_count\":").Append(rows.Length).Append(",\"rows\":[");
@@ -197,6 +202,45 @@ internal static class CampusHost
               .Append("\",\"detail\":\"").Append(JsonEscape(rows[i][2])).Append("\"}");
         }
         return sb.Append("]}").ToString();
+    }
+
+    // 账号标识只保留 ASCII 安全字符，同时作为 WebView2 profile 与快照文件名的一部分。
+    private static string SafeProfile(string value)
+    {
+        var sb = new StringBuilder();
+        foreach (char c in value ?? "")
+        {
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                || (c >= '0' && c <= '9') || c == '_' || c == '-')
+                sb.Append(c);
+            if (sb.Length >= 32) break;
+        }
+        return sb.ToString();
+    }
+
+    private static string SnapshotName(string stem, string profile)
+    {
+        return string.IsNullOrEmpty(profile)
+            ? stem + ".latest.json"
+            : stem + "." + profile + ".latest.json";
+    }
+
+    // 会话探活：只记录时间、域名与读取结果，不记录任何页面内容。
+    private static void WriteWatch(string result, string host, int exams, int timetable)
+    {
+        try
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "HoneyOS", "campus");
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "session-watch.jsonl");
+            string line = "{\"at\":\"" + DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz")
+                + "\",\"result\":\"" + JsonEscape(result)
+                + "\",\"host\":\"" + JsonEscape(host)
+                + "\",\"exams\":" + exams + ",\"timetable\":" + timetable + "}";
+            File.AppendAllText(path, line + "\n", new UTF8Encoding(false));
+        }
+        catch { }
     }
 
     private static void WriteSnapshot(string fileName, string json)
@@ -214,10 +258,19 @@ internal static class CampusHost
     [STAThread]
     private static int Main(string[] args)
     {
-        bool smoke = args.Length == 1 && args[0] == "--smoke";
-        bool capture = args.Length == 1 && args[0] == "--capture";
-        if (args.Length != 0 && !smoke && !capture) return 2;
-        Application.EnableVisualStyles();
+        bool smoke = false;
+        bool capture = false;
+        bool watch = false;
+        string profile = "";
+        for (int i = 0; i < args.Length; i++)
+        {
+            string arg = args[i];
+            if (arg == "--smoke") smoke = true;
+            else if (arg == "--capture") capture = true;
+            else if (arg == "--watch") { watch = true; capture = true; }
+            else if (arg == "--profile" && i + 1 < args.Length) profile = SafeProfile(args[++i]);
+            else return 2;
+        }        Application.EnableVisualStyles();
         int result = 1;
         using (var window = new Form { Text = "HoneyOS · 校园连接验证", Width = 1000, Height = 720 })
         using (var browser = new WebView2 { Dock = DockStyle.Fill })
@@ -226,6 +279,7 @@ internal static class CampusHost
                            : "正在启动独立校园窗口…" })
         using (var timeout = new Timer { Interval = 30000 })
         using (var poll = new Timer { Interval = 2000 })
+        using (var heartbeat = new Timer { Interval = WatchIntervalSeconds * 1000 })
         {
             bool captured = false;
             bool capturedTimetable = false;
@@ -236,8 +290,9 @@ internal static class CampusHost
             window.Controls.Add(status);
             timeout.Tick += delegate { timeout.Stop(); window.Close(); };
             poll.Tick += async delegate {
-                if (!capture || (captured && capturedTimetable)) { poll.Stop(); return; }
-                if (DateTime.UtcNow > captureDeadline)
+                if (!capture) { poll.Stop(); return; }
+                if (!watch && captured && capturedTimetable) { poll.Stop(); return; }
+                if (!watch && DateTime.UtcNow > captureDeadline)
                 {
                     poll.Stop();
                     status.Text = "未检测到完整的考试/课表数据；可关闭窗口后重试。";
@@ -258,9 +313,11 @@ internal static class CampusHost
             window.Shown += async delegate {
                 try {
                     if (smoke) timeout.Start();
-                    string profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "HoneyOS", "CampusHostProbe", smoke ? "runtime-check" : "official-login");
-                    var environment = await CoreWebView2Environment.CreateAsync(null, profile);
+                    string profileDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "HoneyOS", "CampusHostProbe",
+                        (smoke ? "runtime-check" : "official-login")
+                        + (string.IsNullOrEmpty(profile) ? "" : "-" + profile));
+                    var environment = await CoreWebView2Environment.CreateAsync(null, profileDir);
                     await browser.EnsureCoreWebView2Async(environment);
                     var core = browser.CoreWebView2;
                     core.Settings.AreDevToolsEnabled = false;
@@ -316,15 +373,15 @@ internal static class CampusHost
                                 }
                                 if (isExams)
                                 {
-                                    WriteSnapshot("exams.latest.json",
-                                        BuildSnapshotJson("https://jiaowu.cqmu.edu.cn:8080", rows));
+                                    WriteSnapshot(SnapshotName("exams", profile),
+                                        BuildSnapshotJson("https://jiaowu.cqmu.edu.cn:8080", profile, rows));
                                     captured = true;
                                     examCount = count;
                                 }
                                 else
                                 {
-                                    WriteSnapshot("timetable.latest.json",
-                                        BuildTimetableJson("https://jiaowu.cqmu.edu.cn:8080", rows));
+                                    WriteSnapshot(SnapshotName("timetable", profile),
+                                        BuildTimetableJson("https://jiaowu.cqmu.edu.cn:8080", profile, rows));
                                     capturedTimetable = true;
                                     timetableCount = count;
                                 }
@@ -338,6 +395,32 @@ internal static class CampusHost
                             }
                         };
                         poll.Start();
+                        if (watch)
+                        {
+                            heartbeat.Tick += delegate {
+                                try
+                                {
+                                    var live = browser.CoreWebView2;
+                                    if (live == null) return;
+                                    Uri here;
+                                    string host = Uri.TryCreate(live.Source, UriKind.Absolute, out here)
+                                        ? here.IdnHost : "";
+                                    if (host == "jiaowu.cqmu.edu.cn")
+                                    {
+                                        WriteWatch("reload", host, examCount, timetableCount);
+                                        live.Reload();
+                                    }
+                                    else
+                                    {
+                                        WriteWatch("login_required", host, examCount, timetableCount);
+                                        status.Text = "会话可能已过期（当前停留：" + host + "）；请重新登录后继续。";
+                                    }
+                                }
+                                catch { }
+                            };
+                            heartbeat.Start();
+                            status.Text = "会话探活已开启：每 10 分钟记录一次结果，可最小化窗口。";
+                        }
                     }
                     if (smoke) { result = 0; window.Close(); return; }
                     core.Navigate(Portal);
