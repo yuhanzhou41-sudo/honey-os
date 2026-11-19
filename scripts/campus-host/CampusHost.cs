@@ -190,6 +190,34 @@ internal static class CampusHost
         string safe = target.Replace("\\", "\\\\").Replace("'", "\\'");
         return @"(function(target){
             function txt(e){ return String(e.innerText||e.textContent||'').replace(/\s+/g,' ').trim(); }
+            function norm(s){ return String(s||'').replace(/\s+/g,''); }
+            var want=norm(target);
+            function ownLabel(r){
+              var n=r.nextSibling, guard=0;
+              while(n && guard++<4){
+                if(n.nodeType===3){ var t=norm(n.nodeValue); if(t){ return t; } }
+                else if(n.nodeType===1){ var t2=norm(txt(n)); if(t2){ return t2.substring(0,20); } }
+                n=n.nextSibling;
+              }
+              n=r.previousSibling; guard=0;
+              while(n && guard++<4){
+                if(n.nodeType===3){ var t3=norm(n.nodeValue); if(t3){ return t3; } }
+                else if(n.nodeType===1){ var t4=norm(txt(n)); if(t4){ return t4.substring(0,20); } }
+                n=n.previousSibling;
+              }
+              return '';
+            }
+            function byRadio(doc){
+              var rs=[].slice.call(doc.querySelectorAll('input[type=radio]'));
+              for(var i=0;i<rs.length;i++){
+                var own=ownLabel(rs[i]);
+                if(!own || own.length>16){ continue; }
+                if(own.indexOf(want)!==0){ continue; }
+                if(!rs[i].checked){ rs[i].click(); }
+                return rs[i].checked ? 'RADIO:'+own : 'UNCHECKED:'+own;
+              }
+              return null;
+            }
             function hitIn(doc){
               var nodes=[].slice.call(doc.querySelectorAll('a,label'));
               for(var i=0;i<nodes.length;i++){
@@ -203,23 +231,54 @@ internal static class CampusHost
               }
               return null;
             }
-            function clickIt(el){
-              el.click();
-              var radio=el.querySelector ? el.querySelector('input[type=radio]') : null;
-              if(radio && !radio.checked){ radio.click(); }
-              return 'CLICKED:'+txt(el);
+            function attempt(doc){
+              var r=byRadio(doc);
+              if(r){ return r; }
+              var hit=hitIn(doc);
+              if(!hit){ return null; }
+              var radio=hit.querySelector ? hit.querySelector('input[type=radio]') : null;
+              if(radio){
+                if(!radio.checked){ radio.click(); }
+                return radio.checked ? 'RADIO:'+txt(hit) : 'UNCHECKED:'+txt(hit);
+              }
+              hit.click();
+              return 'CLICKED:'+txt(hit);
             }
-            var hit=hitIn(document);
-            if(hit){ return clickIt(hit); }
+            var res=attempt(document);
+            if(res){ return res; }
             for(var f=0;f<window.frames.length;f++){
               try{
-                var frameHit=hitIn(window.frames[f].document);
-                if(frameHit){ return clickIt(frameHit); }
+                var fr=attempt(window.frames[f].document);
+                if(fr){ return fr; }
               }catch(e){}
             }
             return 'NOTFOUND';
         })('" + safe + @"');";
     }
+
+    // 诊断：只导出表格结构（表头文字与行列数），不导出任何课程内容。
+    private const string DiagnoseScript =
+        @"(function(){
+            function clean(t){ return String(t==null?'':t).replace(/[\|\t\n\r;]/g,' ').replace(/\s+/g,' ').trim(); }
+            function head(tb){
+              var out=[];
+              for(var r=0;r<tb.rows.length && r<2;r++){
+                var cells=[];
+                for(var c=0;c<tb.rows[r].cells.length && c<12;c++){
+                  cells.push(clean(tb.rows[r].cells[c].textContent).substring(0,12));
+                }
+                out.push(cells.join('/'));
+              }
+              return out.join(' || ');
+            }
+            var parts=[];
+            var tables=document.getElementsByTagName('table');
+            parts.push('tables='+tables.length+' frames='+window.frames.length);
+            for(var i=0;i<tables.length && parts.length<7;i++){
+              parts.push('['+i+'] rows='+tables[i].rows.length+' head='+head(tables[i]));
+            }
+            return parts.join(' ;; ');
+        })();";
 
     private static string JsonEscape(string value)
     {
@@ -414,6 +473,8 @@ internal static class CampusHost
             DateTime clickRetryAt = DateTime.MinValue;
             int examClickStep = 0;
             int timetableClickStep = 0;
+            bool diagnoseDone = false;
+            DateTime diagnoseAt = DateTime.MinValue;
             string autoExams = auto ? LoadNav(profile, "exams") : "";
             string autoTimetable = auto ? LoadNav(profile, "timetable") : "";
             DateTime captureDeadline = DateTime.UtcNow.AddSeconds(CaptureTimeoutSeconds);
@@ -451,7 +512,9 @@ internal static class CampusHost
                             string label = clickChain[clickStep].Trim();
                             string clicked = await current.ExecuteScriptAsync(ReplayScript(label));
                             Trace("replay click[" + clickStep + "] '" + label + "' -> " + clicked);
-                            if (clicked != null && clicked.Contains("CLICKED"))
+                            bool ok = clicked != null
+                                && (clicked.Contains("CLICKED") || clicked.Contains("RADIO:"));
+                            if (ok)
                             {
                                 if (!captured) examClickStep++;
                                 else timetableClickStep++;
@@ -461,6 +524,12 @@ internal static class CampusHost
                         }
                         if (!captured) await current.ExecuteScriptAsync(ExtractExamsScript);
                         if (!capturedTimetable) await current.ExecuteScriptAsync(ExtractTimetableScript);
+                        if (auto && captured && !capturedTimetable && !diagnoseDone
+                            && DateTime.UtcNow >= diagnoseAt)
+                        {
+                            diagnoseDone = true;
+                            Trace("diagnose " + await current.ExecuteScriptAsync(DiagnoseScript));
+                        }
                         return;
                     }
                     // 自动模式：落在门户/登录页说明会话失效；登录完成后按记录的地址继续。
@@ -568,6 +637,7 @@ internal static class CampusHost
                                             lastClick.Length > 0 ? "click:" + lastClick : core.Source);
                                     captured = true;
                                     examCount = count;
+                                    diagnoseAt = DateTime.UtcNow.AddSeconds(20);
                                 }
                                 else
                                 {
