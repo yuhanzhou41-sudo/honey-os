@@ -1,5 +1,5 @@
-import { ArrowClockwiseIcon, ArrowDownIcon, ArrowUpIcon, ClockCounterClockwiseIcon, ImageIcon, PaperPlaneTiltIcon, PlusIcon, StopIcon, TrashIcon, XIcon, SmileyIcon } from "@phosphor-icons/react";
 import { fetchStickerStatus, markStickerUsed, stickerChatMessage, type StickerItem, type StickerStatus } from "../../api/stickers";
+import { ArrowClockwiseIcon, ArrowDownIcon, ArrowUpIcon, ClockCounterClockwiseIcon, ImageIcon, PaperPlaneTiltIcon, PlusIcon, StopIcon, TrashIcon, XIcon, SmileyIcon } from "@phosphor-icons/react";
 import { useMutation } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -11,11 +11,15 @@ import {
   splitUserMessages,
   stopChat,
   streamChat,
-  userMessageBreak,
   watchSessionMessages,
+  userMessageBreak,
+  fetchChatSessionModel,
+  setChatSessionModel,
   type ChatInput,
   type ChatRunStatus,
 } from "../../api/chat";
+import { fetchModelOptions, type ModelOptions } from "../../api/models";
+import { CHAT_DOCUMENT_ACCEPT, chatStudyDocumentContext, uploadChatStudyDocument, type ChatStudyDocument } from "../../api/chat-study-library";
 import { deleteCompanionConversation, fetchCompanionMessages, rollbackCompanionTimeline, startNewCompanionConversation, switchCompanionConversation, type ChatMessage, type HistoryItem } from "../../api/companion";
 import { HoneyAvatar } from "../../components/honey/HoneyAvatar";
 import { HoneyMessage } from "../../components/honey/HoneyMessage";
@@ -28,6 +32,7 @@ import { useHoneyStore } from "../../runtime/honey-store";
 import { HoneyRun } from "./HoneyRun";
 
 type ChatAttachment = { id: string; name: string; dataUrl: string };
+type PendingChatDocument = ChatStudyDocument;
 type QueuedMessage = { id: string; display: string; input: ChatInput };
 
 const draftKey = (sessionId: string) => `honeyos-chat-draft:${sessionId}`;
@@ -126,6 +131,8 @@ export function ChatPage() {
   } = useHoneyStore();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [documents, setDocuments] = useState<PendingChatDocument[]>([]);
+  const [documentUploading, setDocumentUploading] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [submittedMessages, setSubmittedMessages] = useState<QueuedMessage[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
@@ -133,6 +140,85 @@ export function ChatPage() {
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [chatModelOptions, setChatModelOptions] = useState<ModelOptions | null>(null);
+  const [chatModelSelection, setChatModelSelection] = useState("");
+  const [chatModelBusy, setChatModelBusy] = useState(false);
+  const [chatModelError, setChatModelError] = useState("");
+
+  useEffect(() => {
+    void fetchStickerStatus()
+      .then(setStickerStatus)
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchModelOptions()
+      .then((payload) => {
+        if (!cancelled) setChatModelOptions(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setChatModelError("模型列表暂时无法读取");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionId || !sessionKey || !chatModelOptions) return;
+    let cancelled = false;
+    setChatModelError("");
+    void fetchChatSessionModel({ sessionId, sessionKey })
+      .then((session) => {
+        if (cancelled) return;
+        const model = String(session.model || chatModelOptions.model || "");
+        const preferredProvider = String(chatModelOptions.provider || "");
+        const providers = chatModelOptions.providers.filter(
+          (provider) => provider.authenticated && provider.models.includes(model),
+        );
+        const provider =
+          providers.find((item) => item.slug === preferredProvider)
+          || providers.find((item) => item.is_current)
+          || providers[0];
+        setChatModelSelection(
+          provider && model ? `${provider.slug}::${model}` : "",
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setChatModelError("当前会话模型状态暂时无法读取");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, sessionKey, chatModelOptions]);
+
+  async function handleChatModelChange(value: string) {
+    if (!sessionId || !sessionKey || !value || sending || chatModelBusy) return;
+    const splitAt = value.indexOf("::");
+    if (splitAt <= 0) return;
+    const provider = value.slice(0, splitAt);
+    const model = value.slice(splitAt + 2);
+    if (!provider || !model) return;
+
+    const previous = chatModelSelection;
+    setChatModelSelection(value);
+    setChatModelBusy(true);
+    setChatModelError("");
+    try {
+      await setChatSessionModel({ sessionId, sessionKey, provider, model });
+    } catch (modelError) {
+      setChatModelSelection(previous);
+      setChatModelError(
+        modelError instanceof Error ? modelError.message : "模型切换失败",
+      );
+    } finally {
+      setChatModelBusy(false);
+    }
+  }
+
+  const authenticatedChatModelProviders = (chatModelOptions?.providers || [])
+    .filter((provider) => provider.authenticated && provider.models.length > 0);
   const [stoppedReply, setStoppedReply] = useState(false);
   const [stoppedUserMessageId, setStoppedUserMessageId] = useState<number | null>(null);
   const [recoverRunId, setRecoverRunId] = useState<string | null>(null);
@@ -183,13 +269,45 @@ export function ChatPage() {
     }
   }, [messages, run]);
 
-  useEffect(() => {
-    void fetchStickerStatus()
-      .then(setStickerStatus)
-      .catch(() => undefined);
-  }, []);
-
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const controller = new AbortController();
+    let closed = false;
+    let retryTimer: number | null = null;
+
+    const listen = async () => {
+      if (closed) return;
+      try {
+        await watchSessionMessages({
+          sessionId,
+          sessionKey: sessionKey ?? undefined,
+          signal: controller.signal,
+          onMessage: async (notice) => {
+            if (closed || String(notice.session_id) !== String(sessionId)) return;
+            try {
+              const result = await fetchCompanionMessages(sessionId, sessionKey || "");
+              if (!closed) mergeTimelineMessages(result.data || []);
+            } catch {
+              // Durable DB state remains authoritative; normal reopen can reconcile.
+            }
+          },
+        });
+      } catch {
+        if (closed || controller.signal.aborted) return;
+      }
+      if (!closed) retryTimer = window.setTimeout(() => void listen(), 3000);
+    };
+
+    void listen();
+    return () => {
+      closed = true;
+      controller.abort();
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [sessionId, sessionKey, mergeTimelineMessages]);
+
 
   useEffect(() => {
     if (!sessionId || draftSessionRef.current === sessionId) return;
@@ -254,44 +372,6 @@ export function ChatPage() {
       finishStoppedTurn();
       setStoppedReply(true);
       setStoppedUserMessageId(Number(status.user_message_id || 0) || null);
-  useEffect(() => {
-    if (!sessionId) return;
-    const controller = new AbortController();
-    let closed = false;
-    let retryTimer: number | null = null;
-
-    const listen = async () => {
-      if (closed) return;
-      try {
-        await watchSessionMessages({
-          sessionId,
-          sessionKey: sessionKey ?? undefined,
-          signal: controller.signal,
-          onMessage: async (notice) => {
-            if (closed || String(notice.session_id) !== String(sessionId)) return;
-            try {
-              const result = await fetchCompanionMessages(sessionId, sessionKey || "");
-              if (!closed) mergeTimelineMessages(result.data || []);
-            } catch {
-              // Durable DB state remains authoritative; normal reopen can reconcile.
-            }
-          },
-        });
-      } catch {
-        if (closed || controller.signal.aborted) return;
-      }
-      if (!closed) retryTimer = window.setTimeout(() => void listen(), 3000);
-    };
-
-    void listen();
-    return () => {
-      closed = true;
-      controller.abort();
-      if (retryTimer !== null) window.clearTimeout(retryTimer);
-    };
-  }, [sessionId, sessionKey, mergeTimelineMessages]);
-
-
       setRecoverRunId(null);
       setRetryUserMessageId(null);
       return true;
@@ -411,17 +491,29 @@ export function ChatPage() {
 
   function send(event: FormEvent) {
     event.preventDefault();
-    if (sending) return;
+    if (sending || documentUploading) return;
     const text = draft.trim();
-    if (!text && !attachments.length) return;
-    const message = [text, ...attachments.map((item) => `![${item.name}](${item.dataUrl})`)].filter(Boolean).join("\n\n");
+    if (!text && !attachments.length && !documents.length) return;
+
+    const documentDisplay = documents.map((item) => `📄 ${item.name} · 已加入学习资料库`);
+    const message = [
+      text,
+      ...documentDisplay,
+      ...attachments.map((item) => `![${item.name}](${item.dataUrl})`),
+    ].filter(Boolean).join("\n\n");
+
+    const documentContext = documents.map(chatStudyDocumentContext).join("\n\n");
+    const combinedText = [text, documentContext].filter(Boolean).join("\n\n");
+
     const input: ChatInput = attachments.length ? [
-      ...(text ? [{ type: "text" as const, text }] : []),
+      ...(combinedText ? [{ type: "text" as const, text: combinedText }] : []),
       ...attachments.map((item) => ({ type: "image_url" as const, image_url: { url: item.dataUrl, detail: "auto" as const } })),
-    ] : text;
+    ] : combinedText;
+
     setDraft("");
     if (sessionId) localStorage.removeItem(draftKey(sessionId));
     setAttachments([]);
+    setDocuments([]);
     setAttachmentError("");
     setStoppedReply(false);
     queueUserMessage(message);
@@ -588,20 +680,41 @@ export function ChatPage() {
     if (edit) setDraft(selected);
   }
 
-  async function attachImages(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files || []).slice(0, Math.max(0, 4 - attachments.length));
+  async function attachFiles(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files || []);
     event.target.value = "";
     if (!files.length) return;
+
     setAttachmentError("");
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    const documentFiles = files.filter((file) => !file.type.startsWith("image/"));
+
     try {
-      const next = await Promise.all(files.map(async (file) => ({
-        id: `${file.name}-${file.lastModified}-${file.size}`,
-        name: file.name,
-        dataUrl: await readChatImage(file),
-      })));
-      setAttachments((current) => [...current, ...next].slice(0, 4));
-    } catch {
-      setAttachmentError("图片没有读出来，请使用小于 15MB 的常见图片格式");
+      if (imageFiles.length) {
+        const allowedImages = imageFiles.slice(0, Math.max(0, 4 - attachments.length));
+        const next = await Promise.all(allowedImages.map(async (file) => ({
+          id: `${file.name}-${file.lastModified}-${file.size}`,
+          name: file.name,
+          dataUrl: await readChatImage(file),
+        })));
+        setAttachments((current) => [...current, ...next].slice(0, 4));
+      }
+
+      if (documentFiles.length) {
+        setDocumentUploading(true);
+        for (const file of documentFiles) {
+          const uploaded = await uploadChatStudyDocument(file, sessionId || undefined);
+          setDocuments((current) => [...current, uploaded]);
+        }
+      }
+    } catch (error) {
+      setAttachmentError(
+        error instanceof Error
+          ? `附件处理失败：${error.message}`
+          : "附件处理失败，请确认文件格式和大小",
+      );
+    } finally {
+      setDocumentUploading(false);
     }
   }
 
@@ -702,6 +815,39 @@ export function ChatPage() {
         <Button className="ml-auto" type="button" size="icon" variant="ghost" aria-label="历史聊天" title="历史聊天" onClick={() => setHistoryOpen((open) => !open)}>
           <ClockCounterClockwiseIcon size={20} />
         </Button>
+        {authenticatedChatModelProviders.length ? (
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <label className="sr-only" htmlFor="honeyos-chat-model">当前会话模型</label>
+            <select
+              id="honeyos-chat-model"
+              aria-label="聊天模型"
+              title="当前会话模型覆盖（优先于全局默认）"
+              className="h-8 w-[6.75rem] max-w-[24vw] shrink-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-raised)] px-2 text-[11px] text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] disabled:opacity-50 sm:w-[8.5rem]"
+              value={chatModelSelection}
+              disabled={sending || chatModelBusy || !sessionId || !sessionKey}
+              onChange={(event) => void handleChatModelChange(event.target.value)}
+            >
+              {!chatModelSelection ? <option value="">选择模型</option> : null}
+              {authenticatedChatModelProviders.map((provider) => (
+                <optgroup key={provider.slug} label={provider.name}>
+                  {provider.models.map((model) => (
+                    <option key={`${provider.slug}::${model}`} value={`${provider.slug}::${model}`}>
+                      {model}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            {chatModelError ? (
+              <span
+                className="max-w-[14rem] truncate text-[10px] text-[var(--danger)]"
+                title={chatModelError}
+              >
+                {chatModelError}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         <Button type="button" size="icon" variant="ghost" aria-label="开启新的聊天" title="开启新的聊天" disabled={replyBusy || newConversation.isPending} onClick={createConversation}>
           <PlusIcon size={20} />
         </Button>
@@ -943,6 +1089,24 @@ export function ChatPage() {
             </Button>
           </div>
         ) : null}
+        {documents.length ? (
+          <div className="mb-2 flex gap-2 overflow-x-auto" aria-label="待发送文档">
+            {documents.map((item) => (
+              <div key={item.id} className="flex max-w-72 shrink-0 items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs">
+                <span className="min-w-0 truncate">📄 {item.name}</span>
+                <span className="shrink-0 text-[var(--success)]">已入库</span>
+                <button
+                  type="button"
+                  aria-label={`移除 ${item.name}`}
+                  onClick={() => setDocuments((current) => current.filter((entry) => entry.id !== item.id))}
+                  className="grid size-6 shrink-0 place-items-center rounded-full hover:bg-[var(--surface-raised)]"
+                >
+                  <XIcon size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {stickerOpen ? (
           <StickerDrawer
             onClose={() => setStickerOpen(false)}
@@ -963,8 +1127,23 @@ export function ChatPage() {
           </div>
         ) : null}
         <div className="flex items-end gap-2 rounded-[var(--radius-lg)] border border-[var(--border-strong)] bg-[var(--surface-raised)] p-2 shadow-[0_12px_32px_rgba(56,48,39,0.10)] focus-within:ring-2 focus-within:ring-[var(--focus)]">
-          <input ref={fileRef} type="file" accept="image/*" multiple className="sr-only" onChange={attachImages} />
-          <Button type="button" size="icon" variant="ghost" aria-label="添加图片" disabled={replyBusy || attachments.length >= 4} onClick={() => fileRef.current?.click()}>
+          <input
+            ref={fileRef}
+            type="file"
+            accept={`image/*,${CHAT_DOCUMENT_ACCEPT}`}
+            multiple
+            className="sr-only"
+            onChange={attachFiles}
+          />
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            aria-label="添加附件"
+            title="添加图片或学习资料"
+            disabled={replyBusy || documentUploading}
+            onClick={() => fileRef.current?.click()}
+          >
             <ImageIcon size={20} />
           </Button>
           <Button
@@ -1000,7 +1179,7 @@ export function ChatPage() {
             disabled={replyBusy}
             className="max-h-40 min-h-11 flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2.5 text-[15px] leading-6 outline-none placeholder:text-[var(--foreground-faint)] [field-sizing:content]"
           />
-          <Button type="submit" size="icon" aria-label="发送消息" title="发送消息" disabled={replyBusy || (!draft.trim() && !attachments.length) || !sessionId || !sessionKey}>
+          <Button type="submit" size="icon" aria-label="发送消息" title="发送消息" disabled={replyBusy || documentUploading || (!draft.trim() && !attachments.length && !documents.length) || !sessionId || !sessionKey}>
             <ArrowUpIcon size={20} weight="bold" />
           </Button>
           {replyBusy ? (

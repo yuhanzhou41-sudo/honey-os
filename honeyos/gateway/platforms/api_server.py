@@ -2765,6 +2765,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/api/sessions/{session_id}/chat/{run_id}/status", self._handle_session_chat_status),
             ("POST", "/api/sessions/{session_id}/approval", self._handle_companion_approval),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
+            ("POST", "/api/model/default", self._handle_global_model_switch),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
             ("POST", "/v1/responses", self._handle_responses),
             ("GET", "/v1/responses/{response_id}", self._handle_get_response),
@@ -5525,10 +5526,62 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 _selective_phase = "rules"
             else:
-                enabled_toolsets = list(
-                    select_safe_fallback_toolsets(configured_toolsets)
-                )
-                _selective_phase = "safe_fallback"
+                # SELECTIVE_LOADING_V2
+                _qwen_decision = None
+                _qwen_elapsed_ms = 0.0
+                try:
+                    import concurrent.futures
+                    import time as _time
+                    from honeyos.routing.turn_router import build_default_router
+
+                    _qwen_started = _time.perf_counter()
+                    _pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    _future = _pool.submit(
+                        build_default_router().route,
+                        str(shadow_user_message or ""),
+                    )
+                    try:
+                        _candidate = _future.result(timeout=3.0)
+                    except concurrent.futures.TimeoutError:
+                        _candidate = None
+                        _future.cancel()
+                    finally:
+                        # Do not wait for a timed-out classifier thread.
+                        _pool.shutdown(wait=False, cancel_futures=True)
+                    _qwen_elapsed_ms = (_time.perf_counter() - _qwen_started) * 1000.0
+                    if (
+                        _candidate is not None
+                        and getattr(_candidate, "source", "") == "local_qwen"
+                        and float(getattr(_candidate, "confidence", 0.0)) >= 0.65
+                    ):
+                        _qwen_decision = _candidate
+                except Exception:
+                    logger.exception(
+                        "SELECTIVE_LOADING_V2 local Qwen failed; using safe fallback"
+                    )
+
+                if _qwen_decision is not None:
+                    enabled_toolsets = list(
+                        select_toolsets_for_route(_qwen_decision, configured_toolsets)
+                    )
+                    _selective_phase = "local_qwen"
+                    logger.warning(
+                        "SELECTIVE_LOADING_V2 phase=local_qwen intent=%s confidence=%.3f elapsed_ms=%.1f enabled_toolsets=%s",
+                        _qwen_decision.intent,
+                        float(_qwen_decision.confidence),
+                        _qwen_elapsed_ms,
+                        enabled_toolsets,
+                    )
+                else:
+                    enabled_toolsets = list(
+                        select_safe_fallback_toolsets(configured_toolsets)
+                    )
+                    _selective_phase = "safe_fallback"
+                    logger.warning(
+                        "SELECTIVE_LOADING_V2 phase=safe_fallback elapsed_ms=%.1f enabled_toolsets=%s",
+                        _qwen_elapsed_ms,
+                        enabled_toolsets,
+                    )
 
             logger.warning(
                 "SELECTIVE_LOADING_V1 phase=%s configured_toolsets=%s enabled_toolsets=%s",
@@ -6189,7 +6242,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if len(session_id) > self._MAX_SESSION_HEADER_LEN:
             return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
 
-        model = body.get("model") or self._model_name
+        # The advertised Gateway name is not a provider model. Leave the
+        # session unpinned when the caller has not selected a model.
+        model = body.get("model")
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
@@ -6602,7 +6657,10 @@ class APIServerAdapter(BasePlatformAdapter):
             stored_model = session.get("model") if isinstance(session, dict) else None
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
-            session_model = stored_model if (stored_model and stored_route is None) else None
+            # Older unpinned sessions stored the built-in Gateway alias.
+            session_model = (
+                stored_model if stored_route is None and stored_model != "honeyos-agent" else None
+            )
             agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
             selection_error = self._request_route_conflict_error(
                 session_id=session_id,
@@ -6737,7 +6795,10 @@ class APIServerAdapter(BasePlatformAdapter):
             stored_model = session.get("model") if isinstance(session, dict) else None
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
-            session_model = stored_model if (stored_model and stored_route is None) else None
+            # Older unpinned sessions stored the built-in Gateway alias.
+            session_model = (
+                stored_model if stored_route is None and stored_model != "honeyos-agent" else None
+            )
             agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
             selection_error = self._request_route_conflict_error(
                 session_id=session_id,
@@ -7221,6 +7282,123 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=409,
             )
         return web.json_response({"choice": choice, "resolved": resolved})
+
+    async def _handle_global_model_switch(self, request: "web.Request") -> "web.Response":
+        # Thin API wrapper over the canonical /model --global switch path.
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        model = _clean_request_string(body.get("model"))
+        provider = _clean_request_string(body.get("provider"))
+        if not model or not provider:
+            return web.json_response({"error": "model_and_provider_required"}, status=400)
+
+        import asyncio
+        from honeyos.gateway.run import _load_gateway_config
+        from honeyos.runtime.model_switch import switch_model as _switch_model
+
+        cfg = _load_gateway_config() or {}
+        model_cfg = cfg.get("model", {})
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+
+        result = await asyncio.to_thread(
+            _switch_model,
+            raw_input=model,
+            current_provider=str(model_cfg.get("provider") or "openrouter"),
+            current_model=str(model_cfg.get("default") or ""),
+            current_base_url=str(model_cfg.get("base_url") or ""),
+            current_api_key="",
+            is_global=True,
+            explicit_provider=provider,
+            user_providers=cfg.get("providers"),
+            custom_providers=cfg.get("custom_providers"),
+        )
+
+        if not result.success:
+            return web.json_response(
+                {
+                    "error": "model_switch_failed",
+                    "detail": str(result.error_message or "model switch failed"),
+                },
+                status=400,
+            )
+
+        # persisted_model_default_v1
+        # runtime.model_switch validates/resolves the requested destination,
+        # but the gateway /model --global surface performs the config commit
+        # afterwards. This API surface must do the same commit explicitly.
+        from honeyos.core.constants import get_honeyos_home
+        import os
+        import tempfile
+        import yaml
+
+        config_path = get_honeyos_home() / "config.yaml"
+        try:
+            if config_path.exists():
+                with config_path.open("r", encoding="utf-8") as fh:
+                    persisted_cfg = yaml.safe_load(fh) or {}
+            else:
+                persisted_cfg = {}
+
+            if not isinstance(persisted_cfg, dict):
+                persisted_cfg = {}
+
+            persisted_model = persisted_cfg.get("model")
+            if not isinstance(persisted_model, dict):
+                persisted_model = {}
+
+            persisted_model["default"] = result.new_model
+            persisted_model["provider"] = result.target_provider
+            if result.base_url:
+                persisted_model["base_url"] = result.base_url
+            persisted_cfg["model"] = persisted_model
+
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(
+                prefix="config.yaml.",
+                suffix=".tmp",
+                dir=str(config_path.parent),
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    yaml.safe_dump(
+                        persisted_cfg,
+                        fh,
+                        allow_unicode=True,
+                        sort_keys=False,
+                    )
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(temp_name, config_path)
+            except Exception:
+                try:
+                    os.unlink(temp_name)
+                except OSError:
+                    pass
+                raise
+        except Exception as exc:
+            return web.json_response(
+                {
+                    "error": "model_persist_failed",
+                    "detail": str(exc),
+                },
+                status=500,
+            )
+
+        return web.json_response(
+            {
+                "success": True,
+                "provider": result.target_provider,
+                "model": result.new_model,
+            }
+        )
 
     async def _handle_session_model_lock(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/model — backend-ack a Browser model lock."""
