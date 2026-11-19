@@ -53,7 +53,7 @@ def test_confirm_and_revision_keep_learning_history(study):
     with pytest.raises(ValueError):
         save_chat_plan(study, raw, revision=True, expected_updated_at="old")
     updated = save_chat_plan(study, raw, revision=True, expected_updated_at=saved.updated_at.isoformat())
-    assert updated.tasks[0].scheduled_date == task.scheduled_date + timedelta(days=1)
+    assert next(item for item in updated.tasks if item.id == task.id).scheduled_date == task.scheduled_date + timedelta(days=1)
     assert [item.id for item in study.list_sessions(task.id)] == [session.id]
 
 
@@ -79,3 +79,30 @@ def test_fixed_reminder_moves_and_is_cancelled_on_delete(study):
     study.delete_plan(plan.id)
     assert not jobs.list_jobs(include_disabled=True)
     assert not study.list_plans()
+
+
+
+def test_generated_plan_cannot_claim_completed_tasks(study):
+    markdown = template_markdown().replace("- [ ]", "- [x]")
+    draft, _ = preview_chat_plan(study, markdown, revision=False)
+    assert all(task.status.value == "planned" for task in draft.tasks)
+    saved = study.save_chat_plan(markdown, revision=False, plan_id=draft.id)
+    assert all(task.status.value == "planned" for task in saved.tasks)
+
+
+def test_generated_revision_preserves_real_completion_status(study):
+    draft, _ = preview_chat_plan(study, template_markdown(), revision=False)
+    saved = study.save_chat_plan(template_markdown(), revision=False, plan_id=draft.id)
+    pending = saved.tasks[0]
+    saved = study.create_task(saved.id, {
+        "title": "Completed practice", "scheduled_date": saved.start_date,
+    })
+    completed = saved.tasks[-1]
+    saved = study.set_task_status(saved.id, completed.id, "completed")
+    proposal = export_study_plan_markdown(saved).replace("- [ ]", "- [x]")
+    revised = study.save_chat_plan(
+        proposal, revision=True, expected_updated_at=saved.updated_at.isoformat(),
+    )
+    statuses = {task.id: task.status.value for task in revised.tasks}
+    assert statuses[pending.id] == "planned"
+    assert statuses[completed.id] == "completed"

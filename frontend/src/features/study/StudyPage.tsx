@@ -1,8 +1,13 @@
+import { confirmManualStudyChange } from "../../api/study-planning";
+import PlanningRequestBuilder from "./PlanningRequestBuilder";
+import StudyCapacityPanel, { CapacitySummary } from "./StudyCapacityPanel";
+import type { StudyCapacityDay } from "../../api/study";
+import { FlexSlotList, TaskDefinitionDetails } from "./StudyDefinitionDetails";
 import { fetchCompanionBootstrap } from "../../api/companion";
 import { listStudyReminders, planExportUrl, planTemplateUrl, setStudyReminder } from "../../api/study-planning";
 import StudyReviewPanel, { StudyQuestionDialog } from "./StudyReviewPanel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   abandonStudySession,
@@ -22,7 +27,6 @@ import {
   setStudyTaskStatus,
   startStudySession,
   updateStudyPlan,
-  updateStudyTask,
   type StudyPlan,
   type StudyPomodoroState,
   type StudySession,
@@ -233,7 +237,7 @@ export function StudyPage() {
       if (!selectedPlan || !planDraft) throw new Error("请先选择学习计划");
       const title = planDraft.title.trim();
       if (!title) throw new Error("计划名称不能为空");
-      return updateStudyPlan(selectedPlan.id, {
+      return confirmManualStudyChange(selectedPlan.id, {
         title,
         description: planDraft.description.trim(),
         start_date: planDraft.start_date,
@@ -269,14 +273,14 @@ export function StudyPage() {
       }
       const title = taskDraft.title.trim();
       if (!title) throw new Error("任务名称不能为空");
-      return updateStudyTask(selectedPlan.id, taskEditingId, {
+      return confirmManualStudyChange(selectedPlan.id, {
         title,
         description: taskDraft.description.trim(),
         scheduled_date: taskDraft.scheduled_date,
         planned_minutes: positiveInt(taskDraft.planned_minutes, "任务时长"),
         review_required: taskDraft.review_required,
         status: taskDraft.status,
-      });
+      }, taskEditingId);
     },
     onSuccess: () => {
       setTaskEditingId("");
@@ -315,9 +319,17 @@ export function StudyPage() {
     onSuccess: refreshPlans,
   });
 
+  const [importCapacity, setImportCapacity] = useState<StudyCapacityDay[]>();
+  const importSequence = useRef(0);
+  const [importReadError, setImportReadError] = useState("");
+
   const previewImport = useMutation({
-    mutationFn: (markdown: string) => previewStudyPlanMarkdown(markdown),
-    onSuccess: ({ plan }) => setImportPreview(plan),
+    mutationFn: ({ markdown }: { markdown: string; sequence: number }) => previewStudyPlanMarkdown(markdown),
+    onSuccess: ({ plan, capacity }, { sequence }) => {
+      if (sequence !== importSequence.current) return;
+      setImportPreview(plan);
+      setImportCapacity(capacity);
+    },
   });
 
   const confirmImport = useMutation({
@@ -421,19 +433,32 @@ export function StudyPage() {
                 accept=".md,text/markdown,text/plain"
                 className="hidden"
                 onChange={async (event) => {
-                  const file = event.target.files?.[0];
+                  const input = event.currentTarget;
+                  const file = input.files?.[0];
+                  input.value = "";
                   if (!file) return;
-                  const text = await file.text();
-                  setImportFileName(file.name);
-                  setImportMarkdown(text);
-                  previewImport.mutate(text);
-                  event.currentTarget.value = "";
+                  const sequence = ++importSequence.current;
+                  setImportPreview(null);
+                  setImportCapacity(undefined);
+                  setImportReadError("");
+                  previewImport.reset();
+                  try {
+                    const text = await file.text();
+                    if (sequence !== importSequence.current) return;
+                    setImportFileName(file.name);
+                    setImportMarkdown(text);
+                    previewImport.mutate({ markdown: text, sequence });
+                  } catch {
+                    if (sequence === importSequence.current) setImportReadError("文件暂时无法读取，请重新选择。");
+                  }
                 }}
               />
             </label>
             <p className="mt-2 text-xs leading-5 text-[var(--foreground-muted)]">
               先预览，不写数据库；确认导入后才进入 canonical StudyPlan。
             </p>
+            <PlanningRequestBuilder key={selectedPlan?.id ?? "new"} plan={selectedPlan} />
+            {importReadError && <p role="alert">{importReadError}</p>}
             {previewImport.error ? (
               <p className="mt-2 text-xs text-red-500">
                 {messageOf(previewImport.error)}
@@ -533,6 +558,7 @@ export function StudyPage() {
       {importPreview ? (
         <ImportPreviewDialog
           plan={importPreview}
+          capacity={importCapacity}
           fileName={importFileName}
           busy={confirmImport.isPending}
           error={confirmImport.error}
@@ -930,6 +956,8 @@ function PlanWorkspace({
         ) : null}
 
         <div className="mt-4 space-y-3">
+          <StudyCapacityPanel plan={plan} date={selectedDate} />
+          <FlexSlotList slots={plan.flex_slots?.filter(slot => slot.scheduled_date === selectedDate)} />
           {tasks.map((task) => (
             <DayTaskCard
               key={task.id}
@@ -1027,6 +1055,7 @@ function DayTaskCard({
               ) : null}
               <div className="mt-2 flex flex-wrap gap-2 text-xs text-[var(--foreground-muted)]">
                 <span>{task.planned_minutes} 分钟</span>
+                <TaskDefinitionDetails task={task} />
                 <span>{taskStatusText(task.status)}</span>
                 {task.review_required ? (
                   <span>↻ 需要复习</span>
@@ -1599,6 +1628,7 @@ function PomodoroClock({
 
 function ImportPreviewDialog({
   plan,
+  capacity,
   fileName,
   busy,
   error,
@@ -1606,6 +1636,7 @@ function ImportPreviewDialog({
   onConfirm,
 }: {
   plan: StudyPlan;
+  capacity?: StudyCapacityDay[];
   fileName: string;
   busy: boolean;
   error: unknown;
@@ -1677,6 +1708,7 @@ function ImportPreviewDialog({
           ))}
         </div>
 
+        <CapacitySummary days={capacity?.filter(day => day.date === date)} />
         <section className="mt-4 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-4">
           <h3 className="font-semibold">
             Day {dayNo} · {date}
@@ -1690,6 +1722,7 @@ function ImportPreviewDialog({
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="font-medium">{task.title}</p>
+                    {plan.schema_version === 2 && <TaskDefinitionDetails task={task} />}
                     {task.description ? (
                       <p className="mt-1 text-sm text-[var(--foreground-muted)]">
                         {task.description}
@@ -1707,6 +1740,7 @@ function ImportPreviewDialog({
                 ) : null}
               </div>
             ))}
+            <FlexSlotList slots={plan.flex_slots?.filter(slot => slot.scheduled_date === date)} />
             {!tasks.length ? (
               <p className="py-6 text-center text-sm text-[var(--foreground-muted)]">
                 这一天没有任务。

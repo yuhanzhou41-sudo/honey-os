@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 
-from .models import StudyPlan, StudyPlanSource, StudyTask
+from .models import SUPPORTED_STUDY_PLAN_VERSIONS, StudyPlan, StudyPlanSource, StudyTask
 from .validation import StudyPlanValidationError, validate_study_plan
 
 
@@ -58,9 +58,23 @@ def parse_study_plan_markdown(text: str) -> StudyPlan:
     front, body = _frontmatter(text)
 
     version = front.get("study_plan_version")
-    if version != 1:
+    if type(version) is not int or version not in SUPPORTED_STUDY_PLAN_VERSIONS:
         raise StudyPlanMarkdownError(
             f"unsupported study_plan_version: {version!r}"
+        )
+
+    allowed_fields = {
+        "study_plan_version", "id", "title", "description", "start_date",
+        "end_date", "status", "focus_minutes", "break_minutes",
+        "long_break_minutes", "long_break_after_sessions", "source_type",
+    }
+    if version == 2:
+        allowed_fields.add("flex_slots")
+    unknown_fields = set(front) - allowed_fields
+    if unknown_fields:
+        raise StudyPlanMarkdownError(
+            "unsupported front matter fields: "
+            + ", ".join(sorted(str(key) for key in unknown_fields))
         )
 
     goals: list[str] = []
@@ -145,6 +159,10 @@ def parse_study_plan_markdown(text: str) -> StudyPlan:
                     raise StudyPlanMarkdownError(
                         f"duration must be an integer: {value!r}"
                     ) from exc
+            elif version == 2 and key in {"priority", "kind"}:
+                current_task[key] = value
+            elif version == 2 and key == "minimum_required":
+                current_task[key] = _bool_value(value)
             elif key == "review":
                 current_task["review_required"] = _bool_value(value)
             elif key == "id":
@@ -196,6 +214,7 @@ def parse_study_plan_markdown(text: str) -> StudyPlan:
         ),
         "goals": goals,
         "tasks": [task.model_dump() for task in tasks],
+        "flex_slots": front.get("flex_slots", []),
     }
 
     if raw_plan["id"] is None:
@@ -207,11 +226,11 @@ def parse_study_plan_markdown(text: str) -> StudyPlan:
         raise StudyPlanMarkdownError(str(exc)) from exc
 
 
-def export_study_plan_markdown(plan: StudyPlan) -> str:
+def export_study_plan_markdown(plan: StudyPlan, *, include_ids: bool = True) -> str:
     plan = validate_study_plan(plan)
 
     front = {
-        "study_plan_version": 1,
+        "study_plan_version": plan.schema_version,
         "id": plan.id,
         "title": plan.title,
         "description": plan.description,
@@ -224,6 +243,15 @@ def export_study_plan_markdown(plan: StudyPlan) -> str:
         "long_break_minutes": plan.long_break_minutes,
         "long_break_after_sessions": plan.long_break_after_sessions,
     }
+
+    if plan.schema_version == 2:
+        front["flex_slots"] = [
+            slot.model_dump(mode="json", exclude=set() if include_ids else {"id"})
+            for slot in plan.flex_slots
+        ]
+
+    if not include_ids:
+        front.pop("id")
 
     parts = [
         "---",
@@ -259,13 +287,18 @@ def export_study_plan_markdown(plan: StudyPlan) -> str:
         for task in day_tasks:
             checked = "x" if task.status.value == "completed" else " "
             parts.append(f"- [{checked}] {task.title}")
-            parts.append(f"  id: {task.id}")
+            if include_ids:
+                parts.append(f"  id: {task.id}")
             parts.append(f"  duration: {task.planned_minutes}")
             parts.append(
                 f"  review: {'true' if task.review_required else 'false'}"
             )
             parts.append(f"  status: {task.status.value}")
             parts.append(f"  order: {task.order_index}")
+            if plan.schema_version == 2:
+                parts.append(f"  priority: {task.priority}")
+                parts.append(f"  minimum_required: {str(task.minimum_required).lower()}")
+                parts.append(f"  kind: {task.kind}")
 
             if task.description:
                 safe_description = " ".join(task.description.splitlines())

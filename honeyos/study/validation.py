@@ -48,6 +48,7 @@ def semantic_plan_dict(plan: StudyPlan) -> dict[str, Any]:
         "long_break_after_sessions": plan.long_break_after_sessions,
         "source_type": plan.source_type.value,
         "goals": list(plan.goals),
+        "flex_slots": [slot.model_dump(mode="json") for slot in plan.flex_slots],
         "tasks": [
             {
                 "id": task.id,
@@ -58,6 +59,9 @@ def semantic_plan_dict(plan: StudyPlan) -> dict[str, Any]:
                 "status": task.status.value,
                 "order_index": task.order_index,
                 "review_required": task.review_required,
+                "priority": task.priority,
+                "minimum_required": task.minimum_required,
+                "kind": task.kind,
             }
             for task in plan.tasks
         ],

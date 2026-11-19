@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { CapacitySummary } from "../study/StudyCapacityPanel";
+import { FlexSlotList, TaskDefinitionDetails } from "../study/StudyDefinitionDetails";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { confirmChatStudyPlan, previewChatStudyPlan, type PlanningPreview } from "../../api/study-planning";
 import { Button } from "../../components/ui/Button";
@@ -21,18 +23,32 @@ export default function StudyPlanDraft({ draft }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
+
+  useEffect(() => {
+    setPreview(undefined);
+    setError("");
+    setDone(false);
+  }, [draft.markdown, draft.revision]);
 
   async function act() {
+    const requestDraft = draft;
     setBusy(true);
     setError("");
     try {
       if (preview) {
-        await confirmChatStudyPlan(draft, preview);
-        setDone(true);
+        await confirmChatStudyPlan(requestDraft, preview);
+        if (latestDraft.current.markdown === requestDraft.markdown
+            && latestDraft.current.revision === requestDraft.revision) setDone(true);
       } else {
-        setPreview(await previewChatStudyPlan(draft));
+        const result = await previewChatStudyPlan(requestDraft);
+        if (latestDraft.current.markdown === requestDraft.markdown
+            && latestDraft.current.revision === requestDraft.revision) setPreview(result);
       }
     } catch (reason) {
+      if (latestDraft.current.markdown !== requestDraft.markdown
+          || latestDraft.current.revision !== requestDraft.revision) return;
       setError(reason instanceof Error ? reason.message : "计划处理失败，请重试。");
       if (preview && draft.revision) setPreview(undefined);
     } finally {
@@ -47,8 +63,11 @@ export default function StudyPlanDraft({ draft }: {
       <ol className="max-h-64 list-decimal overflow-auto pl-5">
         {preview.plan.tasks.map(task => <li key={task.id}>
           {task.scheduled_date} · {task.title} · {task.planned_minutes} 分钟{task.status === "completed" ? " · 已完成" : ""}{task.description ? " · " + task.description : ""}
+          {preview.plan.schema_version === 2 && <TaskDefinitionDetails task={task} />}
         </li>)}
       </ol>
+      <FlexSlotList slots={preview.plan.flex_slots} />
+      <CapacitySummary days={preview.capacity} />
       {draft.revision && <p className="text-sm">调整后，原任务上已设置的提醒会同步更新。</p>}
     </div>}
     {error && <p role="alert">{error}</p>}

@@ -2208,14 +2208,16 @@ class APIServerAdapter(BasePlatformAdapter):
 
         markdown_text = body.get("markdown")
         try:
+            study = StudyService()
             plan = await asyncio.to_thread(
-                StudyService().preview_markdown_plan,
+                study.preview_markdown_plan,
                 markdown_text,
             )
+            capacity = await asyncio.to_thread(study.plan_capacity, plan)
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
 
-        return web.json_response({"plan": self._study_json(plan)})
+        return web.json_response({"plan": self._study_json(plan), "capacity": capacity})
 
     async def _handle_study_import_markdown_plan(self, request: "web.Request") -> "web.Response":
         from honeyos.study.service import StudyService

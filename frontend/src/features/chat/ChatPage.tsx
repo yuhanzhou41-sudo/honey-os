@@ -37,7 +37,6 @@ import { HoneyRun } from "./HoneyRun";
 import { ReplyFeedback } from "./ReplyFeedback";
 
 type ChatAttachment = { id: string; name: string; dataUrl: string };
-type PendingChatDocument = ChatStudyDocument;
 type QueuedMessage = { id: string; display: string; input: ChatInput };
 type WorkMode = { enabled: boolean; work_id: string | null; session_id: string | null };
 type WorkQuestion = { id: string; runId: string; text: string; choices: string[] };
@@ -225,10 +224,6 @@ export function ChatPage() {
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyError, setHistoryError] = useState("");
-  const [chatModelOptions, setChatModelOptions] = useState<ModelOptions | null>(null);
-  const [chatModelSelection, setChatModelSelection] = useState("");
-  const [chatModelBusy, setChatModelBusy] = useState(false);
-  const [chatModelError, setChatModelError] = useState("");
 
   useEffect(() => {
     void fetchStickerStatus()
@@ -236,74 +231,6 @@ export function ChatPage() {
       .catch(() => undefined);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    void fetchModelOptions()
-      .then((payload) => {
-        if (!cancelled) setChatModelOptions(payload);
-      })
-      .catch(() => {
-        if (!cancelled) setChatModelError("模型列表暂时无法读取");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!sessionId || !sessionKey || !chatModelOptions) return;
-    let cancelled = false;
-    setChatModelError("");
-    void fetchChatSessionModel({ sessionId, sessionKey })
-      .then((session) => {
-        if (cancelled) return;
-        const model = String(session.model || chatModelOptions.model || "");
-        const preferredProvider = String(chatModelOptions.provider || "");
-        const providers = chatModelOptions.providers.filter(
-          (provider) => provider.authenticated && provider.models.includes(model),
-        );
-        const provider =
-          providers.find((item) => item.slug === preferredProvider)
-          || providers.find((item) => item.is_current)
-          || providers[0];
-        setChatModelSelection(
-          provider && model ? `${provider.slug}::${model}` : "",
-        );
-      })
-      .catch(() => {
-        if (!cancelled) setChatModelError("当前会话模型状态暂时无法读取");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, sessionKey, chatModelOptions]);
-
-  async function handleChatModelChange(value: string) {
-    if (!sessionId || !sessionKey || !value || sending || chatModelBusy) return;
-    const splitAt = value.indexOf("::");
-    if (splitAt <= 0) return;
-    const provider = value.slice(0, splitAt);
-    const model = value.slice(splitAt + 2);
-    if (!provider || !model) return;
-
-    const previous = chatModelSelection;
-    setChatModelSelection(value);
-    setChatModelBusy(true);
-    setChatModelError("");
-    try {
-      await setChatSessionModel({ sessionId, sessionKey, provider, model });
-    } catch (modelError) {
-      setChatModelSelection(previous);
-      setChatModelError(
-        modelError instanceof Error ? modelError.message : "模型切换失败",
-      );
-    } finally {
-      setChatModelBusy(false);
-    }
-  }
-
-  const authenticatedChatModelProviders = (chatModelOptions?.providers || [])
-    .filter((provider) => provider.authenticated && provider.models.length > 0);
   const [stoppedReply, setStoppedReply] = useState(false);
   const [stoppedUserMessageId, setStoppedUserMessageId] = useState<number | null>(null);
   const [recoverRunId, setRecoverRunId] = useState<string | null>(null);
@@ -681,9 +608,9 @@ export function ChatPage() {
     if (!text && !attachments.length) return;
     const message = [text, ...attachments.map((item) => `![${item.name}](${item.dataUrl})`)].filter(Boolean).join("\n\n");
     const input: ChatInput = attachments.length ? [
-      ...(combinedText ? [{ type: "text" as const, text: combinedText }] : []),
+      ...(text ? [{ type: "text" as const, text: text }] : []),
       ...attachments.map((item) => ({ type: "image_url" as const, image_url: { url: item.dataUrl, detail: "auto" as const } })),
-    ] : combinedText;
+    ] : text;
 
     setDraft("");
     if (sessionId) localStorage.removeItem(draftKey(sessionId));
@@ -880,11 +807,7 @@ export function ChatPage() {
       }
 
       if (documentFiles.length) {
-        setDocumentUploading(true);
-        for (const file of documentFiles) {
-          const uploaded = await uploadChatStudyDocument(file, sessionId || undefined);
-          setDocuments((current) => [...current, uploaded]);
-        }
+        setAttachmentError("学习资料请通过「引用本机文档」加入。");
       }
     } catch (error) {
       setAttachmentError(
@@ -892,8 +815,6 @@ export function ChatPage() {
           ? `附件处理失败：${error.message}`
           : "附件处理失败，请确认文件格式和大小",
       );
-    } finally {
-      setDocumentUploading(false);
     }
   }
 
@@ -1358,24 +1279,6 @@ export function ChatPage() {
             </Button>
           </div>
         ) : null}
-        {documents.length ? (
-          <div className="mb-2 flex gap-2 overflow-x-auto" aria-label="待发送文档">
-            {documents.map((item) => (
-              <div key={item.id} className="flex max-w-72 shrink-0 items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs">
-                <span className="min-w-0 truncate">📄 {item.name}</span>
-                <span className="shrink-0 text-[var(--success)]">已入库</span>
-                <button
-                  type="button"
-                  aria-label={`移除 ${item.name}`}
-                  onClick={() => setDocuments((current) => current.filter((entry) => entry.id !== item.id))}
-                  className="grid size-6 shrink-0 place-items-center rounded-full hover:bg-[var(--surface-raised)]"
-                >
-                  <XIcon size={13} />
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
         {stickerOpen ? (
           <StickerDrawer
             onClose={() => setStickerOpen(false)}
@@ -1428,7 +1331,7 @@ export function ChatPage() {
           <input
             ref={fileRef}
             type="file"
-            accept={`image/*,${CHAT_DOCUMENT_ACCEPT}`}
+            accept="image/*"
             multiple
             className="sr-only"
             onChange={attachFiles}
@@ -1438,8 +1341,8 @@ export function ChatPage() {
             size="icon"
             variant="ghost"
             aria-label="添加附件"
-            title="添加图片或学习资料"
-            disabled={replyBusy || documentUploading}
+            title="添加图片"
+            disabled={replyBusy}
             onClick={() => fileRef.current?.click()}
           >
             <ImageIcon size={20} />

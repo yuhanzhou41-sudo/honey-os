@@ -43,11 +43,11 @@ def test_invalid_generated_plan_uses_same_validation_gate():
         )
 
 
-def test_schema_version_other_than_one_is_rejected():
+def test_unsupported_schema_version_is_rejected():
     with pytest.raises(StudyPlanValidationError):
         validate_study_plan(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "title": "Future",
                 "start_date": date(2026, 9, 21),
                 "end_date": date(2026, 9, 21),

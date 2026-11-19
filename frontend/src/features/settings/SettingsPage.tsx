@@ -132,63 +132,6 @@ export function SettingsPage() {
 
   const editable = settings.data.settings;
 
-  const authenticatedModelProviders = (modelOptions.data?.providers || [])
-    .filter((item) => item.authenticated && item.models.length > 0);
-  const [globalProvider, setGlobalProvider] = useState("");
-  const [globalModel, setGlobalModel] = useState("");
-  const [globalStatus, setGlobalStatus] = useState("");
-
-  useEffect(() => {
-    if (!modelOptions.data) return;
-    const providerFromServer = modelOptions.data.provider || "";
-    const providerOption = authenticatedModelProviders.find((item) => item.slug === providerFromServer)
-      || authenticatedModelProviders[0];
-    if (!providerOption) return;
-    setGlobalProvider(providerOption.slug);
-    const modelFromServer = modelOptions.data.model || "";
-    setGlobalModel(
-      providerOption.models.includes(modelFromServer)
-        ? modelFromServer
-        : (providerOption.models[0] || ""),
-    );
-  }, [modelOptions.data]);
-
-  const saveGlobal = useMutation({
-    mutationFn: setGlobalDefaultModel,
-    onSuccess: async (data) => {
-      setGlobalProvider(data.provider);
-      setGlobalModel(data.model);
-      setGlobalStatus(`全局默认模型已切换为 ${data.model}`);
-      await modelOptions.refetch();
-      await settings.refetch();
-    },
-    onError: (error) => setGlobalStatus(
-      error instanceof Error ? error.message : "全局默认模型保存失败",
-    ),
-  });
-
-  function chooseGlobalProvider(next: string) {
-    setGlobalProvider(next);
-    const option = authenticatedModelProviders.find((item) => item.slug === next);
-    setGlobalModel(option?.models[0] || "");
-    setGlobalStatus("");
-  }
-
-  function saveGlobalModel(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!globalProvider || !globalModel) {
-      setGlobalStatus("请先选择模型服务和模型");
-      return;
-    }
-    setGlobalStatus("正在切换全局默认模型");
-    saveGlobal.mutate({ provider: globalProvider, model: globalModel });
-  }
-
-  const globalProviderOption = authenticatedModelProviders.find(
-    (item) => item.slug === globalProvider,
-  );
-
-
   function chooseProvider(next: string) {
     setProvider(next);
     const option = providers.find((item) => item.value === next);

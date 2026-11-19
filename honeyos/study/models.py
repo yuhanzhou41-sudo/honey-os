@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+SUPPORTED_STUDY_PLAN_VERSIONS = (1, 2)
+CURRENT_STUDY_PLAN_VERSION = max(SUPPORTED_STUDY_PLAN_VERSIONS)
 
 
 def _new_id(prefix: str) -> str:
@@ -67,12 +71,30 @@ class StudyTask(BaseModel):
     scheduled_date: date
     planned_minutes: int = Field(default=40, ge=1, le=1440)
 
+    priority: Literal["must", "standard", "optional"] = "standard"
+    minimum_required: bool = False
+    kind: Literal["study", "review", "quiz", "flashcard"] = "study"
+
+    @model_validator(mode="after")
+    def validate_minimum(self) -> "StudyTask":
+        if self.minimum_required and self.priority != "must":
+            raise ValueError("minimum_required requires priority=must")
+        return self
+
     status: StudyTaskStatus = StudyTaskStatus.PLANNED
     order_index: int = Field(default=0, ge=0)
     review_required: bool = False
 
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
+
+
+class StudyFlexSlot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: _new_id("flex"))
+    scheduled_date: date
+    planned_minutes: int = Field(ge=1, le=1440)
 
 
 class StudyPlan(BaseModel):
@@ -98,19 +120,36 @@ class StudyPlan(BaseModel):
 
     goals: list[str] = Field(default_factory=list)
     tasks: list[StudyTask] = Field(default_factory=list)
+    flex_slots: list[StudyFlexSlot] = Field(default_factory=list)
 
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
 
     @model_validator(mode="after")
     def validate_plan(self) -> "StudyPlan":
-        if self.schema_version != 1:
+        if self.schema_version not in SUPPORTED_STUDY_PLAN_VERSIONS:
             raise ValueError(
                 f"unsupported study plan schema_version: {self.schema_version}"
             )
 
         if self.end_date < self.start_date:
             raise ValueError("end_date must be on or after start_date")
+
+        if self.schema_version == 1 and (
+            self.flex_slots or any(
+                task.priority != "standard" or task.minimum_required or task.kind != "study"
+                for task in self.tasks
+            )
+        ):
+            raise ValueError("V2 fields require schema_version=2")
+
+        slot_ids: set[str] = set()
+        for slot in self.flex_slots:
+            if slot.id in slot_ids:
+                raise ValueError(f"duplicate flex slot id: {slot.id}")
+            slot_ids.add(slot.id)
+            if not self.start_date <= slot.scheduled_date <= self.end_date:
+                raise ValueError("flex slot scheduled_date is outside plan date range")
 
         seen_ids: set[str] = set()
 

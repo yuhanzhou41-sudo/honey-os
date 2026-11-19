@@ -103,3 +103,12 @@ end_date: 2026-09-21
 
     with pytest.raises(StudyPlanMarkdownError):
         parse_study_plan_markdown(text)
+
+
+@pytest.mark.parametrize("field", ["minimum_required", "sunlight", "unexpected"])
+def test_unknown_frontmatter_is_rejected(field):
+    markdown = read_fixture("minimal.md").replace(
+        "study_plan_version: 1", f"study_plan_version: 1\n{field}: true"
+    )
+    with pytest.raises(StudyPlanMarkdownError, match="unsupported front matter"):
+        parse_study_plan_markdown(markdown)

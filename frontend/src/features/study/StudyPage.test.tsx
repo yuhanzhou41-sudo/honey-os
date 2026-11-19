@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StudyPlan } from "../../api/study";
@@ -9,12 +9,14 @@ import QuestionIntakePanel from "./QuestionIntakePanel";
 import { StudyPage } from "./StudyPage";
 
 const {
+  previewStudyPlanMarkdown,
   listStudyPlans,
   updateStudyPlan,
   updateStudyTask,
   listStudySessions,
   getStudyPomodoroState,
 } = vi.hoisted(() => ({
+  previewStudyPlanMarkdown: vi.fn(),
   listStudyPlans: vi.fn(),
   updateStudyPlan: vi.fn(),
   updateStudyTask: vi.fn(),
@@ -22,10 +24,17 @@ const {
   getStudyPomodoroState: vi.fn(),
 }));
 
+vi.mock("../../api/study-planning", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../api/study-planning")>(),
+  confirmManualStudyChange: (id: string, patch: object, taskId?: string) =>
+    taskId ? updateStudyTask(id, taskId, patch) : updateStudyPlan(id, patch),
+}));
+
 vi.mock("../../api/study", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/study")>();
   return {
     ...actual,
+    previewStudyPlanMarkdown,
     listStudyPlans,
     updateStudyPlan,
     updateStudyTask,
@@ -299,4 +308,45 @@ describe("StudyPage Phase 5.3B adaptive workspace", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("25:00")).toBeInTheDocument();
   });
+});
+
+
+
+it("shows V2 minimum tasks and flex time separately", async () => {
+  const task = {
+    ...plan.tasks[0], priority: "must" as const,
+    minimum_required: true, kind: "flashcard" as const,
+  };
+  listStudyPlans.mockResolvedValue({ plans: [{
+    ...plan, schema_version: 2, tasks: [task],
+    flex_slots: [{
+      id: "flex_preview", scheduled_date: task.scheduled_date, planned_minutes: 30,
+    }],
+  }] });
+  renderStudyPage();
+  expect(await screen.findByText(/必做 · 闪卡 · 保底任务/)).toBeInTheDocument();
+  expect(screen.getByRole("list", { name: "机动时间" })).toHaveTextContent("机动时间 30 分钟");
+});
+
+
+
+it("keeps the newest file preview when an earlier response arrives late", async () => {
+  let resolveFirst!: (value: { plan: StudyPlan }) => void;
+  previewStudyPlanMarkdown.mockImplementation((markdown: string) => markdown === "first"
+    ? new Promise(resolve => { resolveFirst = resolve; })
+    : Promise.resolve({ plan: { ...plan, title: "Second preview" } }));
+  renderStudyPage();
+  await screen.findByText("Original task");
+  const input = document.querySelector('input[accept=".md,text/markdown,text/plain"]') as HTMLInputElement;
+  const first = new File(["first"], "first.md");
+  const second = new File(["second"], "second.md");
+  Object.defineProperty(first, "text", { value: async () => "first" });
+  Object.defineProperty(second, "text", { value: async () => "second" });
+  fireEvent.change(input, { target: { files: [first] } });
+  await waitFor(() => expect(previewStudyPlanMarkdown).toHaveBeenCalledWith("first"));
+  fireEvent.change(input, { target: { files: [second] } });
+  await screen.findByRole("heading", { name: "Second preview" });
+  await act(async () => { resolveFirst({ plan: { ...plan, title: "First preview" } }); });
+  expect(screen.queryByRole("heading", { name: "First preview" })).toBeNull();
+  expect(screen.getByRole("heading", { name: "Second preview" })).toBeInTheDocument();
 });

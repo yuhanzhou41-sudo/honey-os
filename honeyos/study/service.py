@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
 import tempfile
 from typing import Any
 
@@ -47,11 +48,11 @@ class StudyService:
     _PLAN_MUTABLE_FIELDS = {
         "title", "description", "start_date", "end_date", "status",
         "focus_minutes", "break_minutes", "long_break_minutes",
-        "long_break_after_sessions", "goals",
+        "long_break_after_sessions", "goals", "flex_slots",
     }
     _TASK_MUTABLE_FIELDS = {
         "title", "description", "scheduled_date", "planned_minutes",
-        "status", "order_index", "review_required",
+        "status", "order_index", "review_required", "priority", "minimum_required", "kind",
     }
     _SESSION_CREATE_FIELDS = {"planned_minutes", "user_summary", "session_type"}
 
@@ -80,6 +81,12 @@ class StudyService:
     def get_plan(self, plan_id: str) -> StudyPlan:
         return self.repository.get_plan(plan_id)
 
+    def plan_capacity(self, plan: StudyPlan) -> list[dict]:
+        return self.repository.capacity_report(validate_study_plan(plan))
+
+    def set_daily_capacity(self, local_date: str, minutes: int | None) -> None:
+        self.repository.set_daily_capacity(local_date, minutes)
+
     def preview_markdown_plan(self, markdown_text: str) -> StudyPlan:
         """Parse and validate StudyPlan Markdown without persistence."""
         if not isinstance(markdown_text, str) or not markdown_text.strip():
@@ -88,6 +95,10 @@ class StudyService:
         plan = parse_study_plan_markdown(markdown_text)
         raw = plan.model_dump()
         raw["source_type"] = StudyPlanSource.MARKDOWN_IMPORT.value
+        if plan.schema_version == 2:
+            raw["status"] = "draft"
+            for task in raw["tasks"]:
+                task["status"] = "planned"
         return validate_study_plan(raw)
 
     def import_markdown_plan(self, markdown_text: str) -> StudyPlan:
@@ -106,10 +117,31 @@ class StudyService:
 
         return self.repository.save_plan(plan)
 
+    def save_chat_plan(
+        self, markdown: str, *, revision: bool,
+        expected_updated_at: str | None = None, plan_id: str | None = None,
+    ) -> StudyPlan:
+        """Revalidate a confirmed chat proposal and preserve learning history."""
+        from .planning import preview_chat_plan
+
+        draft, original = preview_chat_plan(self, markdown, revision=revision)
+        if original is not None:
+            if original.updated_at.isoformat() != expected_updated_at:
+                raise ValueError("计划已变化，请重新预览再确认。")
+            draft.updated_at = self._now()
+            saved = self.repository.save_plan(draft, expected_updated_at=expected_updated_at)
+            from .reminders import sync_plan_reminders
+
+            sync_plan_reminders(self, saved, original)
+            return saved
+        if not isinstance(plan_id, str) or not re.fullmatch(r"plan_[0-9a-f]{32}", plan_id):
+            raise ValueError("请先预览计划再保存。")
+        draft.id = plan_id
+        return self.repository.save_new_plan(draft)
+
     def create_plan(self, payload: dict[str, Any]) -> StudyPlan:
         raw = dict(payload)
         raw.pop("id", None)
-        raw.pop("schema_version", None)
         raw.pop("created_at", None)
         raw.pop("updated_at", None)
         raw["source_type"] = StudyPlanSource.MANUAL.value
@@ -121,18 +153,37 @@ class StudyService:
         plan = validate_study_plan(raw)
         return self.repository.save_plan(plan)
 
-    def update_plan(self, plan_id: str, patch: dict[str, Any]) -> StudyPlan:
-        plan = self.repository.get_plan(plan_id)
-        unknown = set(patch) - self._PLAN_MUTABLE_FIELDS
+    def preview_update(self, plan_id: str, patch: dict, *, task_id: str | None = None):
+        if not isinstance(patch, dict):
+            raise ValueError("修改内容须为对象。")
+        original = self.get_plan(plan_id)
+        proposed = original.model_copy(deep=True)
+        allowed = self._TASK_MUTABLE_FIELDS if task_id else self._PLAN_MUTABLE_FIELDS
+        unknown = set(patch) - allowed
         if unknown:
-            raise ValueError(f"unsupported plan fields: {', '.join(sorted(unknown))}")
-        raw = plan.model_dump()
-        raw.update(patch)
-        raw["updated_at"] = self._now()
-        from .reminders import sync_plan_reminders
+            raise ValueError(f"unsupported fields: {', '.join(sorted(unknown))}")
+        if task_id:
+            for index, task in enumerate(proposed.tasks):
+                if task.id == task_id:
+                    proposed.tasks[index] = StudyTask.model_validate({**task.model_dump(), **patch})
+                    break
+            else:
+                raise StudyTaskNotFoundError(task_id)
+        else:
+            proposed = StudyPlan.model_validate({**proposed.model_dump(), **patch})
+        proposed.updated_at = self._now()
+        return original, validate_study_plan(proposed)
 
-        saved = self.repository.save_plan(validate_study_plan(raw))
-        sync_plan_reminders(self, saved, plan)
+    def update_plan(self, plan_id: str, patch: dict[str, Any], *, expected_updated_at=None) -> StudyPlan:
+        return self.confirm_update(plan_id, patch, expected_updated_at=expected_updated_at)
+
+    def confirm_update(self, plan_id, patch, *, task_id=None, expected_updated_at=None):
+        original, proposed = self.preview_update(plan_id, patch, task_id=task_id)
+        saved = self.repository.save_plan(
+            proposed, expected_updated_at=expected_updated_at or original.updated_at.isoformat(),
+        )
+        from .reminders import sync_plan_reminders
+        sync_plan_reminders(self, saved, original)
         return saved
 
     def delete_plan(self, plan_id: str) -> None:
@@ -160,27 +211,10 @@ class StudyService:
         plan.updated_at = self._now()
         return self.repository.save_plan(validate_study_plan(plan))
 
-    def update_task(self, plan_id: str, task_id: str, patch: dict[str, Any]) -> StudyPlan:
-        plan = self.repository.get_plan(plan_id)
-        unknown = set(patch) - self._TASK_MUTABLE_FIELDS
-        if unknown:
-            raise ValueError(f"unsupported task fields: {', '.join(sorted(unknown))}")
-        for index, task in enumerate(plan.tasks):
-            if task.id != task_id:
-                continue
-            raw = task.model_dump()
-            raw.update(patch)
-            raw["plan_id"] = plan.id
-            raw["updated_at"] = self._now()
-            from .reminders import sync_plan_reminders
-
-            before = plan.model_copy(deep=True)
-            plan.tasks[index] = StudyTask.model_validate(raw)
-            plan.updated_at = self._now()
-            saved = self.repository.save_plan(validate_study_plan(plan))
-            sync_plan_reminders(self, saved, before)
-            return saved
-        raise StudyTaskNotFoundError(task_id)
+    def update_task(self, plan_id: str, task_id: str, patch: dict[str, Any], *, expected_updated_at=None) -> StudyPlan:
+        return self.confirm_update(
+            plan_id, patch, task_id=task_id, expected_updated_at=expected_updated_at,
+        )
 
     def set_task_status(self, plan_id: str, task_id: str, status: str) -> StudyPlan:
         return self.update_task(plan_id, task_id, {"status": status})

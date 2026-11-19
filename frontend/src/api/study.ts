@@ -2,10 +2,12 @@ import { requestJson } from "./client";
 export type StudyPlanStatus="draft"|"active"|"paused"|"completed"|"archived";
 export type StudyPlanSource="honeyos_generated"|"markdown_import"|"manual";
 export type StudyTaskStatus="planned"|"in_progress"|"completed"|"skipped"|"deferred";
-export type StudyTask={id:string;plan_id:string|null;title:string;description:string;scheduled_date:string;planned_minutes:number;status:StudyTaskStatus;order_index:number;review_required:boolean;created_at:string;updated_at:string};
-export type StudyPlan={id:string;schema_version:1;title:string;description:string;start_date:string;end_date:string;status:StudyPlanStatus;focus_minutes:number;break_minutes:number;long_break_minutes:number;long_break_after_sessions:number;source_type:StudyPlanSource;goals:string[];tasks:StudyTask[];created_at:string;updated_at:string};
-export type CreateStudyPlan={title:string;description?:string;start_date:string;end_date:string;focus_minutes?:number;break_minutes?:number;long_break_minutes?:number;long_break_after_sessions?:number;goals?:string[]};
-export type CreateStudyTask={title:string;description?:string;scheduled_date:string;planned_minutes?:number;order_index?:number;review_required?:boolean};
+export type StudyTaskDefinition={priority?:"must"|"standard"|"optional";minimum_required?:boolean;kind?:"study"|"review"|"quiz"|"flashcard"};
+export type StudyFlexSlot={id:string;scheduled_date:string;planned_minutes:number};
+export type StudyTask=StudyTaskDefinition&{id:string;plan_id:string|null;title:string;description:string;scheduled_date:string;planned_minutes:number;status:StudyTaskStatus;order_index:number;review_required:boolean;created_at:string;updated_at:string};
+export type StudyPlan={id:string;schema_version:1|2;flex_slots?:StudyFlexSlot[];title:string;description:string;start_date:string;end_date:string;status:StudyPlanStatus;focus_minutes:number;break_minutes:number;long_break_minutes:number;long_break_after_sessions:number;source_type:StudyPlanSource;goals:string[];tasks:StudyTask[];created_at:string;updated_at:string};
+export type CreateStudyPlan={schema_version?:1|2;flex_slots?:StudyFlexSlot[];title:string;description?:string;start_date:string;end_date:string;focus_minutes?:number;break_minutes?:number;long_break_minutes?:number;long_break_after_sessions?:number;goals?:string[]};
+export type CreateStudyTask=StudyTaskDefinition&{title:string;description?:string;scheduled_date:string;planned_minutes?:number;order_index?:number;review_required?:boolean};
 export type UpdateStudyTask=Partial<CreateStudyTask>&{status?:StudyTaskStatus};
 export const listStudyPlans=()=>requestJson<{plans:StudyPlan[]}>("/api/study/plans");
 export const createStudyPlan=(p:CreateStudyPlan)=>requestJson<{plan:StudyPlan}>("/api/study/plans",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
@@ -17,7 +19,7 @@ export const setStudyTaskStatus=(pid:string,tid:string,status:StudyTaskStatus)=>
 export const deleteStudyTask=(pid:string,tid:string)=>requestJson<{plan:StudyPlan}>(`/api/study/plans/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(tid)}`,{method:"DELETE"});
 
 export const previewStudyPlanMarkdown=(markdown:string)=>
-  requestJson<{plan:StudyPlan}>("/api/study/plans/import/preview",{
+  requestJson<{plan:StudyPlan;capacity?:StudyCapacityDay[]}>("/api/study/plans/import/preview",{
     method:"POST",
     headers:{"Content-Type":"application/json"},
     body:JSON.stringify({markdown}),
@@ -155,4 +157,21 @@ export const clearExpiredStudyFiles = (libraryId: string) =>
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target: "expired_temp" }),
+  });
+
+
+export type StudyCapacityDay = {
+  date: string;
+  candidate_minutes: number;
+  other_minutes: number;
+  total_minutes: number;
+  limit_minutes: number | null;
+  verified: boolean;
+  overloaded: boolean;
+};
+export const getStudyCapacity = (planId: string) =>
+  requestJson<{ capacity: StudyCapacityDay[] }>("/api/study/capacity?plan_id=" + encodeURIComponent(planId));
+export const setStudyDailyCapacity = (day: string, minutes: number | null) =>
+  requestJson<{ saved: boolean }>("/api/study/capacity/" + encodeURIComponent(day), {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes }),
   });

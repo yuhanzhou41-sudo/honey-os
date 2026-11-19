@@ -4,6 +4,9 @@ from contextlib import contextmanager, nullcontext
 import json
 import sqlite3
 from pathlib import Path
+from datetime import date
+
+from honeyos.core.constants import get_honeyos_home
 
 from .models import StudyPlan, StudyResource
 from .validation import validate_study_plan
@@ -18,10 +21,10 @@ class StudyResourceNotFoundError(KeyError):
 
 
 class StudyRepository:
-    """SQLite persistence for canonical StudyPlan v1 objects."""
+    """SQLite persistence for canonical StudyPlan objects."""
 
     def __init__(self, home: Path | str | None = None):
-        root = Path(home) if home is not None else Path.home() / ".honeyos"
+        root = Path(home) if home is not None else get_honeyos_home()
         self.study_dir = root / "study"
         self.db_path = self.study_dir / "study.db"
         self.study_dir.mkdir(parents=True, exist_ok=True)
@@ -53,6 +56,17 @@ class StudyRepository:
                     goals_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS study_daily_capacity (
+                    local_date TEXT PRIMARY KEY,
+                    minutes INTEGER NOT NULL CHECK(minutes BETWEEN 0 AND 1440)
+                );
+
+                CREATE TABLE IF NOT EXISTS study_plan_definitions (
+                    plan_id TEXT PRIMARY KEY
+                        REFERENCES study_plans(id) ON DELETE CASCADE,
+                    definition_json TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS study_tasks (
@@ -105,6 +119,82 @@ class StudyRepository:
                 """
             )
 
+    def capacity_report(self, plan: StudyPlan) -> list[dict]:
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            return self._capacity_report(conn, plan)
+
+    def _capacity_report(self, conn, plan: StudyPlan) -> list[dict]:
+        candidate: dict[str, int] = {}
+        for item in [*plan.tasks, *plan.flex_slots]:
+            day = item.scheduled_date.isoformat()
+            candidate[day] = candidate.get(day, 0) + item.planned_minutes
+        other = dict(conn.execute(
+            "SELECT t.scheduled_date, SUM(t.planned_minutes) FROM study_tasks t "
+            "JOIN study_plans p ON p.id=t.plan_id "
+            "WHERE p.status='active' AND p.id!=? GROUP BY t.scheduled_date",
+            (plan.id,),
+        ).fetchall())
+        definitions = conn.execute(
+            "SELECT d.definition_json FROM study_plan_definitions d "
+            "JOIN study_plans p ON p.id=d.plan_id WHERE p.status='active' AND p.id!=?",
+            (plan.id,),
+        ).fetchall()
+        for row in definitions:
+            for slot in json.loads(row["definition_json"]).get("flex_slots", []):
+                day = slot["scheduled_date"]
+                other[day] = other.get(day, 0) + slot["planned_minutes"]
+        limits = dict(conn.execute("SELECT local_date, minutes FROM study_daily_capacity").fetchall())
+        days = sorted(day for day in candidate.keys() | other.keys() | limits.keys()
+                      if plan.start_date.isoformat() <= day <= plan.end_date.isoformat())
+        return [{
+            "date": day, "candidate_minutes": candidate.get(day, 0),
+            "other_minutes": other.get(day, 0),
+            "total_minutes": candidate.get(day, 0) + other.get(day, 0),
+            "limit_minutes": limits.get(day),
+            "verified": day in limits,
+            "overloaded": day in limits and candidate.get(day, 0) + other.get(day, 0) > limits[day],
+        } for day in days]
+
+    def set_daily_capacity(self, local_date: str, minutes: int | None) -> None:
+        if date.fromisoformat(local_date).isoformat() != local_date:
+            raise ValueError("日期须为 YYYY-MM-DD。")
+        if minutes is not None and (type(minutes) is not int or not 0 <= minutes <= 1440):
+            raise ValueError("每日学习上限须为0至1440的整数分钟。")
+        with self._connect() as conn:
+            if minutes is None:
+                conn.execute("DELETE FROM study_daily_capacity WHERE local_date=?", (local_date,))
+            else:
+                conn.execute(
+                    "INSERT INTO study_daily_capacity (local_date, minutes) VALUES (?,?) "
+                    "ON CONFLICT(local_date) DO UPDATE SET minutes=excluded.minutes",
+                    (local_date, minutes),
+                )
+
+    def _check_capacity_increase(self, conn, plan: StudyPlan) -> None:
+        if plan.status.value not in {"active", "draft"}:
+            return
+        previous = conn.execute("SELECT status FROM study_plans WHERE id=?", (plan.id,)).fetchone()
+        previous_minutes = {}
+        if previous and previous["status"] == plan.status.value:
+            previous_minutes = dict(conn.execute(
+                "SELECT scheduled_date, SUM(planned_minutes) FROM study_tasks "
+                "WHERE plan_id=? GROUP BY scheduled_date", (plan.id,),
+            ).fetchall())
+            definition = conn.execute(
+                "SELECT definition_json FROM study_plan_definitions WHERE plan_id=?", (plan.id,),
+            ).fetchone()
+            if definition:
+                for slot in json.loads(definition["definition_json"]).get("flex_slots", []):
+                    day = slot["scheduled_date"]
+                    previous_minutes[day] = previous_minutes.get(day, 0) + slot["planned_minutes"]
+        for day in self._capacity_report(conn, plan):
+            if day["overloaded"] and day["candidate_minutes"] > previous_minutes.get(day["date"], 0):
+                raise ValueError(
+                    f'{day["date"]} 学习安排 {day["total_minutes"]} 分钟，'
+                    f'超过已设置上限 {day["limit_minutes"]} 分钟。'
+                )
+
     def save_plan(self, plan: StudyPlan, *, expected_updated_at=None, new=False) -> StudyPlan:
         plan = validate_study_plan(plan)
 
@@ -115,6 +205,7 @@ class StudyRepository:
                 return self.get_plan(plan.id)
             if expected_updated_at is not None and (row is None or row["updated_at"] != expected_updated_at):
                 raise ValueError("计划已变化，请重新预览再确认。")
+            self._check_capacity_increase(conn, plan)
             conn.execute(
                 """
                 INSERT INTO study_plans (
@@ -158,6 +249,23 @@ class StudyRepository:
                     plan.created_at.isoformat(),
                     plan.updated_at.isoformat(),
                 ),
+            )
+
+            definition = {
+                "flex_slots": [slot.model_dump(mode="json") for slot in plan.flex_slots],
+                "tasks": {
+                    task.id: {
+                        "priority": task.priority,
+                        "minimum_required": task.minimum_required,
+                        "kind": task.kind,
+                    }
+                    for task in plan.tasks
+                },
+            }
+            conn.execute(
+                "INSERT INTO study_plan_definitions (plan_id, definition_json) VALUES (?, ?) "
+                "ON CONFLICT(plan_id) DO UPDATE SET definition_json=excluded.definition_json",
+                (plan.id, json.dumps(definition, ensure_ascii=False)),
             )
 
             retained = {task.id for task in plan.tasks}
@@ -206,6 +314,7 @@ class StudyRepository:
 
     def get_plan(self, plan_id: str) -> StudyPlan:
         with self._connect() as conn:
+            conn.execute("BEGIN")
             row = conn.execute(
                 "SELECT * FROM study_plans WHERE id = ?",
                 (plan_id,),
@@ -213,6 +322,12 @@ class StudyRepository:
 
             if row is None:
                 raise StudyPlanNotFoundError(plan_id)
+
+            definition_row = conn.execute(
+                "SELECT definition_json FROM study_plan_definitions WHERE plan_id=?",
+                (plan_id,),
+            ).fetchone()
+            definition = json.loads(definition_row["definition_json"]) if definition_row else {}
 
             task_rows = conn.execute(
                 """
@@ -242,8 +357,10 @@ class StudyRepository:
             "goals": json.loads(row["goals_json"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "flex_slots": definition.get("flex_slots", []),
             "tasks": [
                 {
+                    **definition.get("tasks", {}).get(task["id"], {}),
                     "id": task["id"],
                     "plan_id": task["plan_id"],
                     "title": task["title"],
