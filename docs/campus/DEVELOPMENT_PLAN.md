@@ -71,7 +71,11 @@
 
 - 2026-11-19 C1 现场（二）：用户已用新宿主完成门户登录并进入门户页，点击教务系统时被拦，状态栏记录「已阻止：http://jiaowu.cqmu.edu.cn:8080」。探测核实教务（EAMS）部署于 8080 端口：http 302 升级至 `https://jiaowu.cqmu.edu.cn:8080/` →301→ `/eams/manageLogin.action` →200，证书有效，链路无未知第三方域。宿主白名单改为显式 origin 清单（门户/CAS 各 http+https，教务含默认端口与 8080 的 http+https），userinfo 约束不变、清单外一律拦截，以 `1811e69` 提交并重建至桌面目录，待用户继续教务考试页验证。
 
-## C1 现场验证清单（待执行）
+- 2026-11-19 C1 现场（三，收尾判定）：用户确认每次启动宿主都需重新登录信息门户；学校端拒绝账号密码登录，仅手机号+验证码可用（用户日常官方流程相同，属学校限制，凭据问题不纳入 Honey 解决范围，如需处理建议走信息中心官方渠道）。宿主关闭状态下对会话档案做只读元数据核查（仅域名/名称/持久性/过期四列，不读取 cookie 值）：CAS、门户、教务均无持久化登录 cookie，仅存留 4 个分析与界面偏好类持久 cookie——登录态为会话级，学校会话设计如此，宿主无法亦不应绕过。教务在同一门户会话内免二次登录（教务授权验证通过）。
+
+**C1 判定：降级模式收尾**——每次宿主启动由用户完成一次官方验证码登录，连接器在同一会话内完成采集；抽屉呈现缓存与过期标注，会话失效时明确提示人工认证（符合 C1 门槛「失效能明确提示人工认证」）。「重启免登录复用」标记为学校会话设计所致未达项，仅随学校侧变化复测。
+
+## C1 现场验证清单（已执行；降级模式收尾）
 
 验证宿主：`C:\Users\Zyh20\Desktop\honeyos-campus-probe\CampusHost.exe`（2026-11-19 15:59 重建，含 http 中转与教务 8080 端口放行，对应 `scripts/campus-host` 当前源码；旧构建 honeyos-campus-probe-diagnostic 与 15:49 前构建均缺教务 8080 放行，勿再用）。如需重建：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/campus-host/build.ps1 -Package E:\HuaweiMoveData\Users\Zyh20\Documents\ChatGPT\部署本地AI\honeyos-webview2-1.0.4314.35.nupkg -OutputDirectory <仓库外专用构建目录>`。执行者为用户本人，模型与代码不接触账号密码；`--smoke` 仅证明 WebView2 可初始化，不作为会话证据。
 
