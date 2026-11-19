@@ -29,6 +29,12 @@ export async function fetchWithLocalSessionRecovery(url: string, init?: RequestI
   return response;
 }
 
+export class ApiRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message);
+  }
+}
+
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetchWithLocalSessionRecovery(apiPath(path), {
     credentials: "same-origin",
@@ -40,15 +46,17 @@ export async function requestJson<T>(path: string, init?: RequestInit): Promise<
   });
   if (!response.ok) {
     let message = `request_failed:${response.status}`;
+    let code: string | undefined;
     try {
-      const payload = await response.json() as { error?: string | { message?: string }; message?: string };
+      const payload = await response.json() as { error?: string | { message?: string }; message?: string; status?: string };
+      if (typeof payload.status === "string") code = payload.status;
       message = typeof payload.error === "string"
         ? payload.error
         : payload.error?.message || payload.message || message;
     } catch {
       // A restarting local service may close without a JSON body.
     }
-    throw new Error(message);
+    throw new ApiRequestError(message, response.status, code);
   }
   return response.json() as Promise<T>;
 }

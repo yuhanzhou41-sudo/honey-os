@@ -10,7 +10,6 @@ from tempfile import TemporaryFile
 
 from honeyos.companion.work_mode import active_work, save_summary, work_turn, workspace
 from honeyos.tools.approval import request_single_gateway_approval
-from honeyos.tools.cqmu_timetable import cqmu_date_range, read_cqmu_timetable
 from honeyos.tools.registry import registry
 from honeyos.utils import atomic_write_text
 
@@ -81,16 +80,6 @@ def work_action(args, **_):
                 raise ValueError("The active work session changed.")
             return json.dumps({"version": submit(manifest, work_id), "sha256": digest,
                                "review": "设置 → 复习笔记 Skill"}, ensure_ascii=False)
-        if action == "read_cqmu_timetable":
-            start, end = cqmu_date_range(args.get("start_date"), args.get("end_date"))
-            if not request_single_gateway_approval(
-                "读取重庆医科大学个人课表",
-                f"在本机独立 Edge 打开并单次读取个人教学日历，范围 {start} 至 {end}。只返回日期和占用课节。",
-            ):
-                return json.dumps({"error": "Timetable read was not approved."})
-            if identity != active_work():
-                raise ValueError("The active work session changed.")
-            return json.dumps(read_cqmu_timetable(start, end), ensure_ascii=False)
         path = str(args.get("path") or "")
         target = _target(root, path)
         if action == "read":
@@ -134,15 +123,13 @@ registry.register(
     toolset="companion_work",
     schema={
         "name": "work_action",
-        "description": "Inspect or create candidate skill and feature files, test a Python script in an offline sandbox, or record a completion summary. Can also read occupied periods from the CQMU personal timetable using the local Edge session. Writes, execution and timetable reading require separate user approval.",
+        "description": "Inspect or create candidate skill and feature files, test a Python script in an offline sandbox, or record a completion summary. Writes and execution require separate user approval.",
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["list", "read", "write", "run_python", "summary", "read_cqmu_timetable", "submit_study_skill"]},
+                "action": {"type": "string", "enum": ["list", "read", "write", "run_python", "summary", "submit_study_skill"]},
                 "path": {"type": "string", "description": "Visible relative candidate file path."},
                 "content": {"type": "string", "description": "File text, work summary, or submit_study_skill JSON with name, purpose and heading for the offline review-note formatter."},
-                "start_date": {"type": "string", "description": "Inclusive CQMU timetable start date, YYYY-MM-DD."},
-                "end_date": {"type": "string", "description": "Inclusive CQMU timetable end date, YYYY-MM-DD."},
             },
             "required": ["action"],
         },
