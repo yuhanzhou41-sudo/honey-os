@@ -2602,6 +2602,26 @@ class APIServerAdapter(BasePlatformAdapter):
 
     # === /HoneyOS Campus exam snapshot handlers ===
 
+    # === HoneyOS Campus timetable handlers ===
+
+    async def _handle_campus_timetable(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.campus import CampusTimetableService
+
+        timetable = await asyncio.to_thread(CampusTimetableService().get_timetable)
+        return web.json_response({"timetable": timetable}, headers={"Cache-Control": "no-store"})
+
+    async def _handle_campus_timetable_refresh(self, request: "web.Request") -> "web.Response":
+        if (error := self._event_control_auth(request)) is not None:
+            return error
+        from honeyos.campus import CampusTimetableService
+
+        result = await asyncio.to_thread(CampusTimetableService().refresh)
+        return web.json_response({"timetable": result}, headers={"Cache-Control": "no-store"})
+
+    # === /HoneyOS Campus timetable handlers ===
+
     # === /HoneyOS Study Storage Core handlers ===
 
     def _authenticated_file_handler(self, handler):
@@ -2784,6 +2804,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/api/campus/status", self._handle_campus_status),
             ("GET", "/api/campus/exams", self._handle_campus_exams),
             ("POST", "/api/campus/exams/refresh", self._handle_campus_exams_refresh),
+            ("GET", "/api/campus/timetable", self._handle_campus_timetable),
+            ("POST", "/api/campus/timetable/refresh", self._handle_campus_timetable_refresh),
             # === /HoneyOS Campus exams ===
             # === /HoneyOS Study Classic Pomodoro Phase 3.2 ===
             # === /HoneyOS Study Pomodoro Phase 3 ===
@@ -6935,7 +6957,10 @@ class APIServerAdapter(BasePlatformAdapter):
         fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "honeyos.session", "session": self._session_response(fork)}, status=201)
 
-    async def _study_chat_context(self, request: "web.Request", body: Dict[str, Any], user_message: Any) -> str:
+    async def _study_chat_context(
+        self, request: "web.Request", body: Dict[str, Any], user_message: Any,
+        *, work: tuple[str, str] | None = None,
+    ) -> str:
         resource_ids = body.get("study_resource_ids")
         if resource_ids is None:
             return ""
@@ -6950,6 +6975,16 @@ class APIServerAdapter(BasePlatformAdapter):
         from honeyos.agent.message_content import flatten_message_text
 
         try:
+            if work:
+                from honeyos.companion.work_mode import register_work_documents
+
+                def register():
+                    study = StudyService()
+                    documents = [study.get_resource(id_) for id_ in dict.fromkeys(resource_ids)]
+                    register_work_documents(work, [(item.id, item.title) for item in documents])
+
+                await asyncio.to_thread(register)
+                return ""
             excerpts = await asyncio.to_thread(
                 StudyService().build_chat_resource_context, resource_ids,
                 query=flatten_message_text(user_message),
@@ -7162,7 +7197,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
         from honeyos.study.chat_reading import DocumentScopeRequired
         try:
-            study_context = await self._study_chat_context(request, body, user_message)
+            study_context = await self._study_chat_context(request, body, user_message, work=work)
         except DocumentScopeRequired as exc:
             return web.json_response(_openai_error(str(exc), code="study_scope_required"), status=400)
         except ValueError as exc:
@@ -9967,7 +10002,10 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from honeyos.study.planning import planning_intent, planning_revision
 
-        from honeyos.companion.work_mode import WORK_GUIDANCE, work_turn
+        from honeyos.companion.work_mode import WORK_GUIDANCE, trim_document_replay, work_turn
+
+        if conversation_history:
+            conversation_history = trim_document_replay(conversation_history, work=bool(work))
 
         study_planning = not work and planning_intent(user_message, conversation_history)
         if work:
@@ -11421,9 +11459,22 @@ class APIServerAdapter(BasePlatformAdapter):
         if not isinstance(body.get("path"), str):
             return web.json_response({"error": "请输入原文件路径"}, status=400)
         try:
+            if body.get("folder") is True:
+                if body.get("resource_id"):
+                    raise ValueError("重新定位资料时请选择文件")
+                result = await asyncio.to_thread(StudyService().reference_local_folder, body["path"])
+                return web.json_response(result)
+            work_session_id = body.get("work_session_id")
+            if work_session_id is not None:
+                from honeyos.companion.work_mode import active_work
+
+                work = await asyncio.to_thread(active_work)
+                if not work or work[1] != work_session_id:
+                    raise ValueError("请回到当前的工作会话后再引用文档。")
             resource, reused = await asyncio.to_thread(
                 StudyService().reference_local_file,
                 body["path"], resource_id=str(body.get("resource_id") or ""),
+                allow_large=work_session_id is not None,
             )
         except StudyResourceNotFoundError:
             return web.json_response({"error": "资料已从资料库移除"}, status=404)

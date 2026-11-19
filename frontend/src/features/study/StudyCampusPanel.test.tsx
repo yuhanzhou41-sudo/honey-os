@@ -2,8 +2,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import { getCampusExams, refreshCampusExams, type CampusExams } from "../../api/campus";
-import { StudyCampusPanel, examCountdown, extractExamDate } from "./StudyCampusPanel";
+import {
+  getCampusExams,
+  getCampusTimetable,
+  refreshCampusExams,
+  refreshCampusTimetable,
+  type CampusExams,
+  type CampusTimetable,
+} from "../../api/campus";
+import { StudyCampusPanel, examCountdown, extractExamDate, todayWeekdayLabel } from "./StudyCampusPanel";
 
 vi.mock("../../api/study", () => ({
   listStudyPlans: async () => ({
@@ -20,6 +27,8 @@ vi.mock("../../api/study", () => ({
 vi.mock("../../api/campus", () => ({
   getCampusExams: vi.fn(),
   refreshCampusExams: vi.fn(),
+  getCampusTimetable: vi.fn(),
+  refreshCampusTimetable: vi.fn(),
 }));
 
 function examsFixture(overrides: Partial<CampusExams> = {}): { exams: CampusExams } {
@@ -44,6 +53,22 @@ function examDateFromToday(offsetDays: number): string {
   return `${iso} 09:00-11:00`;
 }
 
+function timetableFixture(overrides: Partial<CampusTimetable> = {}): { timetable: CampusTimetable } {
+  return {
+    timetable: {
+      records: [],
+      source: "https://jiaowu.cqmu.edu.cn:8080",
+      captured_at: null,
+      last_success_at: null,
+      row_count: 0,
+      has_data: false,
+      stale: false,
+      needs_capture: true,
+      ...overrides,
+    },
+  };
+}
+
 function renderPanel() {
   render(
     <QueryClientProvider client={new QueryClient()}>
@@ -55,6 +80,8 @@ function renderPanel() {
 beforeEach(() => {
   vi.mocked(getCampusExams).mockResolvedValue(examsFixture());
   vi.mocked(refreshCampusExams).mockResolvedValue(examsFixture());
+  vi.mocked(getCampusTimetable).mockResolvedValue(timetableFixture());
+  vi.mocked(refreshCampusTimetable).mockResolvedValue(timetableFixture());
 });
 
 afterEach(() => {
@@ -145,7 +172,7 @@ it("refresh pulls the newest snapshot into the card", async () => {
   }));
 
   renderPanel();
-  fireEvent.click(await screen.findByRole("button", { name: "刷新" }));
+  fireEvent.click(await screen.findByRole("button", { name: "刷新考试" }));
 
   expect(await screen.findByText("内科学")).toBeInTheDocument();
   expect(refreshCampusExams).toHaveBeenCalledTimes(1);
@@ -162,4 +189,77 @@ it("computes countdowns across month boundaries and same-day", () => {
   expect(examCountdown("2026-12-03 09:00", new Date("2026-11-30T20:00:00Z"))).toBe(2);
   expect(examCountdown("2026-12-01 14:00", new Date("2026-12-01T02:00:00Z"))).toBe(0);
   expect(examCountdown("2026-11-30 09:00", new Date("2026-12-01T02:00:00Z"))).toBe(-1);
+});
+
+it("renders today's courses with their period", async () => {
+  const weekday = todayWeekdayLabel();
+  vi.mocked(getCampusTimetable).mockResolvedValue(timetableFixture({
+    records: [
+      {
+        id: "course_1", source: "https://jiaowu.cqmu.edu.cn:8080", batch_key: "2099-01-01",
+        day: weekday, period: "1-2节", detail: "系统解剖学 张老师 教学楼301",
+        captured_at: "2099-01-01T10:00:00+08:00",
+      },
+      {
+        id: "course_2", source: "https://jiaowu.cqmu.edu.cn:8080", batch_key: "2099-01-01",
+        day: "周日", period: "3-4节", detail: "生理学 李老师 教学楼202",
+        captured_at: "2099-01-01T10:00:00+08:00",
+      },
+    ],
+    row_count: 2, has_data: true, needs_capture: false,
+    captured_at: "2099-01-01T10:00:00+08:00", last_success_at: "2099-01-01T10:00:00+08:00",
+  }));
+
+  renderPanel();
+
+  expect(await screen.findByText("系统解剖学 张老师 教学楼301")).toBeInTheDocument();
+  expect(screen.getByText("1-2节")).toBeInTheDocument();
+  expect(screen.queryByText("生理学 李老师 教学楼202")).not.toBeInTheDocument();
+});
+
+it("shows the no-course-today state only after a confirmed capture", async () => {
+  vi.mocked(getCampusTimetable).mockResolvedValue(timetableFixture({
+    records: [
+      {
+        id: "course_3", source: "https://jiaowu.cqmu.edu.cn:8080", batch_key: "2099-01-01",
+        day: "周日", period: "5-6节", detail: "病理学",
+        captured_at: "2099-01-01T10:00:00+08:00",
+      },
+    ],
+    row_count: 1, has_data: true, needs_capture: false,
+    captured_at: "2099-01-01T10:00:00+08:00", last_success_at: "2099-01-01T10:00:00+08:00",
+  }));
+
+  renderPanel();
+
+  expect(await screen.findByText("今天没有课。")).toBeInTheDocument();
+});
+
+it("prompts to run the host when no timetable has been captured", async () => {
+  vi.mocked(getCampusTimetable).mockResolvedValue(timetableFixture({ needs_capture: true }));
+
+  renderPanel();
+
+  expect(await screen.findByText(/尚未采集课表数据/)).toBeInTheDocument();
+});
+
+it("timetable refresh pulls the newest snapshot", async () => {
+  vi.mocked(refreshCampusTimetable).mockResolvedValue(timetableFixture({
+    records: [
+      {
+        id: "course_4", source: "https://jiaowu.cqmu.edu.cn:8080", batch_key: "2099-01-02",
+        day: todayWeekdayLabel(), period: "7-8节", detail: "药理学 王老师",
+        captured_at: "2099-01-02T10:00:00+08:00",
+      },
+    ],
+    row_count: 1, has_data: true, needs_capture: false,
+    captured_at: "2099-01-02T10:00:00+08:00", last_success_at: "2099-01-02T10:00:00+08:00",
+    result: "updated", imported: 1,
+  }));
+
+  renderPanel();
+  fireEvent.click(await screen.findByRole("button", { name: "刷新课表" }));
+
+  expect(await screen.findByText("药理学 王老师")).toBeInTheDocument();
+  expect(refreshCampusTimetable).toHaveBeenCalledTimes(1);
 });

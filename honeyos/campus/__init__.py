@@ -1,4 +1,4 @@
-from honeyos.campus.service import CampusExamsService
+from honeyos.campus.service import CampusExamsService, CampusTimetableService
 from honeyos.campus.snapshot import (
     CampusSnapshotError,
     InvalidSnapshotError,
@@ -7,6 +7,7 @@ from honeyos.campus.snapshot import (
 
 __all__ = [
     "CampusExamsService",
+    "CampusTimetableService",
     "CampusSnapshotError",
     "InvalidSnapshotError",
     "MissingSnapshotError",
