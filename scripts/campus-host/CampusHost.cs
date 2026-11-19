@@ -83,6 +83,71 @@ internal static class CampusHost
             }
         })();";
 
+    // 仅识别表头含「星期一…星期日」的课表网格；按 colspan 对齐列，
+    // 每格输出「星期|节次|内容」，不读取页面其他内容。
+    private const string ExtractTimetableScript =
+        @"(function(){
+            function clean(t){ t=String(t==null?'':t); return t.replace(/[\|\t\n\r;]/g,' ').replace(/\s+/g,' ').trim(); }
+            function dayOf(text){
+              var t=clean(text).replace(/\s/g,'');
+              var m=t.match(/^(?:星期|周)([一二三四五六日天])/);
+              if(!m){ return null; }
+              return '周'+(m[1]==='天'?'日':m[1]);
+            }
+            function cellsOf(row){
+              var out=[], pos=0;
+              for(var i=0;i<row.cells.length;i++){
+                var cell=row.cells[i], span=cell.colSpan||1;
+                out.push({start:pos,text:clean(cell.textContent)});
+                pos+=span;
+              }
+              return out;
+            }
+            function scan(doc){
+              var tables=doc.getElementsByTagName('table');
+              for(var i=0;i<tables.length;i++){
+                var tb=tables[i];
+                if(tb.rows.length<3){ continue; }
+                for(var h=0;h<3 && h<tb.rows.length;h++){
+                  var head=cellsOf(tb.rows[h]), days={}, hits=0;
+                  for(var c=0;c<head.length;c++){
+                    var d=dayOf(head[c].text);
+                    if(d){ days[head[c].start]=d; hits++; }
+                  }
+                  if(hits<3){ continue; }
+                  var out=[];
+                  for(var r=h+1;r<tb.rows.length;r++){
+                    var rc=cellsOf(tb.rows[r]), label='';
+                    for(var k=0;k<rc.length;k++){
+                      if(dayOf(rc[k].text)===null){ label=rc[k].text; break; }
+                    }
+                    for(var k2=0;k2<rc.length;k2++){
+                      var day=days[rc[k2].start];
+                      if(!day){ continue; }
+                      var detail=rc[k2].text;
+                      if(!detail || detail===label){ continue; }
+                      out.push([day,label,detail].join('|'));
+                    }
+                  }
+                  if(out.length>0){ return out; }
+                }
+              }
+              return null;
+            }
+            var rows=scan(document);
+            if(rows===null){
+              try{
+                for(var f=0;f<window.frames.length;f++){
+                  rows=scan(window.frames[f].document);
+                  if(rows!==null){ break; }
+                }
+              }catch(e){}
+            }
+            if(rows!==null && rows.length>0){
+              window.chrome.webview.postMessage('TIMETABLE'+'\t'+String(rows.length)+'\t'+rows.join('\t'));
+            }
+        })();";
+
     private static string JsonEscape(string value)
     {
         var sb = new StringBuilder();
@@ -117,12 +182,29 @@ internal static class CampusHost
         return sb.Append("]}").ToString();
     }
 
-    private static void WriteSnapshot(string json)
+    private static string BuildTimetableJson(string source, string[][] rows)
+    {
+        var sb = new StringBuilder();
+        sb.Append("{\"schema\":\"campus-timetable-snapshot/1\",\"captured_at\":\"")
+          .Append(DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz"))
+          .Append("\",\"source\":\"").Append(JsonEscape(source))
+          .Append("\",\"row_count\":").Append(rows.Length).Append(",\"rows\":[");
+        for (int i = 0; i < rows.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"day\":\"").Append(JsonEscape(rows[i][0]))
+              .Append("\",\"period\":\"").Append(JsonEscape(rows[i][1]))
+              .Append("\",\"detail\":\"").Append(JsonEscape(rows[i][2])).Append("\"}");
+        }
+        return sb.Append("]}").ToString();
+    }
+
+    private static void WriteSnapshot(string fileName, string json)
     {
         string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "HoneyOS", "campus", "snapshots");
         Directory.CreateDirectory(dir);
-        string target = Path.Combine(dir, "exams.latest.json");
+        string target = Path.Combine(dir, fileName);
         string tmp = target + ".tmp";
         File.WriteAllText(tmp, json, new UTF8Encoding(false));
         if (File.Exists(target)) File.Delete(target);
@@ -140,22 +222,25 @@ internal static class CampusHost
         using (var window = new Form { Text = "HoneyOS · 校园连接验证", Width = 1000, Height = 720 })
         using (var browser = new WebView2 { Dock = DockStyle.Fill })
         using (var status = new Label { Dock = DockStyle.Top, Height = 32,
-            Text = capture ? "请登录并进入 教务系统→考试查询；检测到考试表后自动保存。"
+            Text = capture ? "请登录后分别打开 教务→考试查询 与 教务→我的课表；识别到表格后自动保存。"
                            : "正在启动独立校园窗口…" })
         using (var timeout = new Timer { Interval = 30000 })
         using (var poll = new Timer { Interval = 2000 })
         {
             bool captured = false;
+            bool capturedTimetable = false;
+            int examCount = 0;
+            int timetableCount = 0;
             DateTime captureDeadline = DateTime.UtcNow.AddSeconds(CaptureTimeoutSeconds);
             window.Controls.Add(browser);
             window.Controls.Add(status);
             timeout.Tick += delegate { timeout.Stop(); window.Close(); };
             poll.Tick += async delegate {
-                if (!capture || captured) { poll.Stop(); return; }
+                if (!capture || (captured && capturedTimetable)) { poll.Stop(); return; }
                 if (DateTime.UtcNow > captureDeadline)
                 {
                     poll.Stop();
-                    status.Text = "未检测到考试表；可关闭窗口后重试。";
+                    status.Text = "未检测到完整的考试/课表数据；可关闭窗口后重试。";
                     return;
                 }
                 try
@@ -165,7 +250,8 @@ internal static class CampusHost
                     Uri here;
                     if (!Uri.TryCreate(current.Source, UriKind.Absolute, out here) ||
                         here.IdnHost != "jiaowu.cqmu.edu.cn") return;
-                    await current.ExecuteScriptAsync(ExtractExamsScript);
+                    if (!captured) await current.ExecuteScriptAsync(ExtractExamsScript);
+                    if (!capturedTimetable) await current.ExecuteScriptAsync(ExtractTimetableScript);
                 }
                 catch { }
             };
@@ -204,7 +290,10 @@ internal static class CampusHost
                             {
                                 string message = null;
                                 try { message = e.TryGetWebMessageAsString(); } catch { return; }
-                                if (message == null || !message.StartsWith("EXAMS\t", StringComparison.Ordinal)) return;
+                                if (message == null) return;
+                                bool isExams = message.StartsWith("EXAMS\t", StringComparison.Ordinal);
+                                bool isTimetable = message.StartsWith("TIMETABLE\t", StringComparison.Ordinal);
+                                if (!isExams && !isTimetable) return;
                                 Uri origin;
                                 if (!Uri.TryCreate(core.Source, UriKind.Absolute, out origin) ||
                                     origin.IdnHost != "jiaowu.cqmu.edu.cn") return;
@@ -212,22 +301,36 @@ internal static class CampusHost
                                 int count;
                                 if (parts.Length < 3 || !int.TryParse(parts[1], out count) ||
                                     count <= 0 || count > CaptureMaxRows) return;
+                                int width = isExams ? 4 : 3;
                                 var rows = new string[count][];
                                 for (int i = 0; i < count; i++)
                                 {
                                     string[] cells = (i + 2 < parts.Length ? parts[i + 2] : "").Split('|');
-                                    var row = new string[4];
-                                    for (int cIdx = 0; cIdx < 4; cIdx++)
+                                    var row = new string[width];
+                                    for (int cIdx = 0; cIdx < width; cIdx++)
                                     {
                                         string cell = cIdx < cells.Length ? cells[cIdx] : "";
                                         row[cIdx] = cell.Length > CaptureCellMax ? cell.Substring(0, CaptureCellMax) : cell;
                                     }
                                     rows[i] = row;
                                 }
-                                WriteSnapshot(BuildSnapshotJson("https://jiaowu.cqmu.edu.cn:8080", rows));
-                                captured = true;
-                                poll.Stop();
-                                status.Text = "已捕获 " + count + " 条考试记录并保存；可关闭窗口。";
+                                if (isExams)
+                                {
+                                    WriteSnapshot("exams.latest.json",
+                                        BuildSnapshotJson("https://jiaowu.cqmu.edu.cn:8080", rows));
+                                    captured = true;
+                                    examCount = count;
+                                }
+                                else
+                                {
+                                    WriteSnapshot("timetable.latest.json",
+                                        BuildTimetableJson("https://jiaowu.cqmu.edu.cn:8080", rows));
+                                    capturedTimetable = true;
+                                    timetableCount = count;
+                                }
+                                if (captured && capturedTimetable) poll.Stop();
+                                status.Text = "已保存：考试 " + examCount + " 条、课表 " + timetableCount
+                                    + " 条；可继续切换到另一个查询页，或关闭窗口。";
                             }
                             catch (Exception)
                             {
