@@ -8,12 +8,21 @@ internal static class CampusHost
 {
     private const string Portal = "https://my.cqmu.edu.cn/";
 
+    private static readonly string[] AllowedOrigins =
+    {
+        "https://my.cqmu.edu.cn", "http://my.cqmu.edu.cn",
+        "https://cas.cqmu.edu.cn", "http://cas.cqmu.edu.cn",
+        "https://jiaowu.cqmu.edu.cn", "http://jiaowu.cqmu.edu.cn",
+        "https://jiaowu.cqmu.edu.cn:8080", "http://jiaowu.cqmu.edu.cn:8080",
+    };
+
     private static bool Allowed(string target)
     {
         Uri uri;
-        return Uri.TryCreate(target, UriKind.Absolute, out uri) && (uri.Scheme == "https" || uri.Scheme == "http") &&
-            uri.IsDefaultPort && uri.UserInfo.Length == 0 && (uri.IdnHost == "my.cqmu.edu.cn" ||
-            uri.IdnHost == "cas.cqmu.edu.cn" || uri.IdnHost == "jiaowu.cqmu.edu.cn");
+        return Uri.TryCreate(target, UriKind.Absolute, out uri) &&
+            (uri.Scheme == "https" || uri.Scheme == "http") && uri.UserInfo.Length == 0 &&
+            Array.Exists(AllowedOrigins, allowed => allowed == uri.Scheme + "://" + uri.IdnHost +
+                (uri.IsDefaultPort ? "" : ":" + uri.Port));
     }
 
     private static string Blocked(string target)
