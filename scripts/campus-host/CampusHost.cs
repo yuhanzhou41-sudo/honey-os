@@ -11,7 +11,6 @@ internal static class CampusHost
     private const int CaptureMaxRows = 200;
     private const int CaptureCellMax = 200;
     private const int CaptureTimeoutSeconds = 600;
-    private const int WatchIntervalSeconds = 600;
 
     private static readonly string[] AllowedOrigins =
     {
@@ -225,22 +224,50 @@ internal static class CampusHost
             : stem + "." + profile + ".latest.json";
     }
 
-    // 会话探活：只记录时间、域名与读取结果，不记录任何页面内容。
-    private static void WriteWatch(string result, string host, int exams, int timetable)
+    // 自动化：记住成功捕获过的页面地址，下次直接导航过去。
+    private static string NavPath(string profile, string kind)
+    {
+        string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "HoneyOS", "campus");
+        return Path.Combine(dir, string.IsNullOrEmpty(profile)
+            ? "nav." + kind + ".txt"
+            : "nav." + profile + "." + kind + ".txt");
+    }
+
+    private static void SaveNav(string profile, string kind, string url)
     {
         try
         {
-            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "HoneyOS", "campus");
-            Directory.CreateDirectory(dir);
-            string path = Path.Combine(dir, "session-watch.jsonl");
-            string line = "{\"at\":\"" + DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz")
-                + "\",\"result\":\"" + JsonEscape(result)
-                + "\",\"host\":\"" + JsonEscape(host)
-                + "\",\"exams\":" + exams + ",\"timetable\":" + timetable + "}";
-            File.AppendAllText(path, line + "\n", new UTF8Encoding(false));
+            Uri parsed;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out parsed)) return;
+            if (parsed.IdnHost != "jiaowu.cqmu.edu.cn") return;
+            string path = NavPath(profile, kind);
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllText(path, url, new UTF8Encoding(false));
         }
         catch { }
+    }
+
+    private static string LoadNav(string profile, string kind)
+    {
+        try
+        {
+            string path = NavPath(profile, kind);
+            if (!File.Exists(path)) return "";
+            string url = File.ReadAllText(path).Trim();
+            Uri parsed;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out parsed)) return "";
+            if (!Allowed(url)) return "";
+            return url;
+        }
+        catch { return ""; }
+    }
+
+    private static void CloseLater(Form window, int milliseconds)
+    {
+        var timer = new Timer { Interval = milliseconds };
+        timer.Tick += delegate { timer.Stop(); timer.Dispose(); window.Close(); };
+        timer.Start();
     }
 
     private static void WriteSnapshot(string fileName, string json)
@@ -260,17 +287,18 @@ internal static class CampusHost
     {
         bool smoke = false;
         bool capture = false;
-        bool watch = false;
+        bool auto = false;
         string profile = "";
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
             if (arg == "--smoke") smoke = true;
             else if (arg == "--capture") capture = true;
-            else if (arg == "--watch") { watch = true; capture = true; }
+            else if (arg == "--auto") { auto = true; capture = true; }
             else if (arg == "--profile" && i + 1 < args.Length) profile = SafeProfile(args[++i]);
             else return 2;
-        }        Application.EnableVisualStyles();
+        }
+        Application.EnableVisualStyles();
         int result = 1;
         using (var window = new Form { Text = "HoneyOS · 校园连接验证", Width = 1000, Height = 720 })
         using (var browser = new WebView2 { Dock = DockStyle.Fill })
@@ -279,20 +307,23 @@ internal static class CampusHost
                            : "正在启动独立校园窗口…" })
         using (var timeout = new Timer { Interval = 30000 })
         using (var poll = new Timer { Interval = 2000 })
-        using (var heartbeat = new Timer { Interval = WatchIntervalSeconds * 1000 })
         {
             bool captured = false;
             bool capturedTimetable = false;
             int examCount = 0;
             int timetableCount = 0;
+            int autoAttempts = 0;
+            DateTime autoRetryAt = DateTime.MinValue;
+            string autoExams = auto ? LoadNav(profile, "exams") : "";
+            string autoTimetable = auto ? LoadNav(profile, "timetable") : "";
             DateTime captureDeadline = DateTime.UtcNow.AddSeconds(CaptureTimeoutSeconds);
             window.Controls.Add(browser);
             window.Controls.Add(status);
             timeout.Tick += delegate { timeout.Stop(); window.Close(); };
             poll.Tick += async delegate {
                 if (!capture) { poll.Stop(); return; }
-                if (!watch && captured && capturedTimetable) { poll.Stop(); return; }
-                if (!watch && DateTime.UtcNow > captureDeadline)
+                if (captured && capturedTimetable) { poll.Stop(); return; }
+                if (DateTime.UtcNow > captureDeadline)
                 {
                     poll.Stop();
                     status.Text = "未检测到完整的考试/课表数据；可关闭窗口后重试。";
@@ -303,10 +334,24 @@ internal static class CampusHost
                     var current = browser.CoreWebView2;
                     if (current == null) return;
                     Uri here;
-                    if (!Uri.TryCreate(current.Source, UriKind.Absolute, out here) ||
-                        here.IdnHost != "jiaowu.cqmu.edu.cn") return;
-                    if (!captured) await current.ExecuteScriptAsync(ExtractExamsScript);
-                    if (!capturedTimetable) await current.ExecuteScriptAsync(ExtractTimetableScript);
+                    if (!Uri.TryCreate(current.Source, UriKind.Absolute, out here)) return;
+                    if (here.IdnHost == "jiaowu.cqmu.edu.cn")
+                    {
+                        if (!captured) await current.ExecuteScriptAsync(ExtractExamsScript);
+                        if (!capturedTimetable) await current.ExecuteScriptAsync(ExtractTimetableScript);
+                        return;
+                    }
+                    // 自动模式：落在门户/登录页说明会话失效；登录完成后按记录的地址继续。
+                    if (!auto || autoAttempts >= 3 || DateTime.UtcNow < autoRetryAt) return;
+                    bool onLoginPage = (here.IdnHost == "cas.cqmu.edu.cn")
+                        || here.AbsolutePath.ToLowerInvariant().Contains("login");
+                    if (onLoginPage) return;
+                    string target = !captured && autoExams.Length > 0 ? autoExams : autoTimetable;
+                    if (target.Length == 0) return;
+                    autoAttempts++;
+                    autoRetryAt = DateTime.UtcNow.AddSeconds(20);
+                    status.Text = "已登录，自动前往：" + new Uri(target).AbsolutePath;
+                    current.Navigate(target);
                 }
                 catch { }
             };
@@ -375,6 +420,7 @@ internal static class CampusHost
                                 {
                                     WriteSnapshot(SnapshotName("exams", profile),
                                         BuildSnapshotJson("https://jiaowu.cqmu.edu.cn:8080", profile, rows));
+                                    SaveNav(profile, "exams", core.Source);
                                     captured = true;
                                     examCount = count;
                                 }
@@ -382,12 +428,22 @@ internal static class CampusHost
                                 {
                                     WriteSnapshot(SnapshotName("timetable", profile),
                                         BuildTimetableJson("https://jiaowu.cqmu.edu.cn:8080", profile, rows));
+                                    SaveNav(profile, "timetable", core.Source);
                                     capturedTimetable = true;
                                     timetableCount = count;
                                 }
-                                if (captured && capturedTimetable) poll.Stop();
-                                status.Text = "已保存：考试 " + examCount + " 条、课表 " + timetableCount
-                                    + " 条；可继续切换到另一个查询页，或关闭窗口。";
+                                status.Text = "已保存：考试 " + examCount + " 条、课表 " + timetableCount + " 条。";
+                                if (captured && capturedTimetable)
+                                {
+                                    poll.Stop();
+                                    if (auto) { status.Text += "同步完成，窗口即将关闭。"; CloseLater(window, 1500); }
+                                    else status.Text += "可继续切换到另一个查询页，或关闭窗口。";
+                                }
+                                else if (auto && captured && !capturedTimetable && autoTimetable.Length > 0)
+                                {
+                                    status.Text += " 自动前往课表页…";
+                                    core.Navigate(autoTimetable);
+                                }
                             }
                             catch (Exception)
                             {
@@ -395,35 +451,19 @@ internal static class CampusHost
                             }
                         };
                         poll.Start();
-                        if (watch)
-                        {
-                            heartbeat.Tick += delegate {
-                                try
-                                {
-                                    var live = browser.CoreWebView2;
-                                    if (live == null) return;
-                                    Uri here;
-                                    string host = Uri.TryCreate(live.Source, UriKind.Absolute, out here)
-                                        ? here.IdnHost : "";
-                                    if (host == "jiaowu.cqmu.edu.cn")
-                                    {
-                                        WriteWatch("reload", host, examCount, timetableCount);
-                                        live.Reload();
-                                    }
-                                    else
-                                    {
-                                        WriteWatch("login_required", host, examCount, timetableCount);
-                                        status.Text = "会话可能已过期（当前停留：" + host + "）；请重新登录后继续。";
-                                    }
-                                }
-                                catch { }
-                            };
-                            heartbeat.Start();
-                            status.Text = "会话探活已开启：每 10 分钟记录一次结果，可最小化窗口。";
-                        }
+                        if (auto && autoExams.Length == 0)
+                            status.Text = "首次自动同步：请登录并打开「考试查询」；之后会自动完成。";
                     }
                     if (smoke) { result = 0; window.Close(); return; }
-                    core.Navigate(Portal);
+                    if (auto && autoExams.Length > 0)
+                    {
+                        status.Text = "自动同步中：前往考试查询…";
+                        core.Navigate(autoExams);
+                    }
+                    else
+                    {
+                        core.Navigate(Portal);
+                    }
                     result = 0;
                 } catch (Exception error) {
                     status.Text = "启动失败：" + error.GetType().Name;
