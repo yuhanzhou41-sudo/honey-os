@@ -1,6 +1,6 @@
 # C0 校园抽屉审计与阶段报告
 
-2026-11-19。离线审计完成，真实站点审计待完成。本轮交付本报告、[模块覆盖矩阵](MODULE_COVERAGE.md)、[架构草案](ARCHITECTURE.md)和[安全边界](SECURITY_BOUNDARIES.md)四份文档。
+2026-11-19。离线审计和已登录门户首页观察完成，子系统现场核查待完成。本轮交付本报告、[模块覆盖矩阵](MODULE_COVERAGE.md)、[架构草案](ARCHITECTURE.md)和[安全边界](SECURITY_BOUNDARIES.md)四份文档。
 
 ## 基线和复用清单
 
@@ -24,7 +24,7 @@
 | 在前端运行 `npm.cmd test -- src/features/study/StudyCampusPanel.test.tsx src/features/study/StudyPage.test.tsx` | 2 个文件共 8 项通过。 |
 | 对课表、学期、考试脚本分别运行 `node --check` | 三项语法检查通过。 |
 | `python -m pytest -q -p no:cacheprovider tests/honeyos/study --disable-warnings` | Windows 上观察到失败，交付核查时未获得完整汇总。另用 `-x --tb=short` 复跑，5 项通过后停在跨盘引用测试，实际异常为无法读取原文件，与预期的重复引用提示不匹配。原因尚未定位。 |
-| 校方现场与截图 | 本轮未使用真实登录会话，未采集截图或响应样本。现场过程须由用户在确认过的官方页面登录后进行。 |
+| 校方现场与截图 | 用户自行登录并切换到门户首页。通过 Windows 无障碍视图核对门户域名与可见服务标签。图书馆条目的输入位置不可用，未取得目标页证据。未采集截图或响应样本。 |
 
 ## C1 最小变更与验收
 
