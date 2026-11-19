@@ -33,3 +33,11 @@
 - 原运行包`/home/zyh20/projects/honeyos-releases/campus-714986ef`，服务发布drop-in备份在上述目录`gateway-release.conf`。
 - 发布流程：本地提交→独立git archive包+已验收前端→复核共享运行版本→仅切换既有PYTHONPATH drop-in→重启→HTTP及数据计数复验。失败切回原代码，数据恢复须先备份发布后的新增事实，不盲目覆盖。
 - 发布后补充实际源码SHA、运行包、健康检查与计数。未push、未合并远端PR。
+
+## 正式发布复验（2026-11-20 01:14 北京时间）
+
+- 功能源码`d443b234df9a5238352574741254dd0c7257f53c`，运行包`/home/zyh20/projects/honeyos-releases/study-growth-d443b234`，服务active、PID16057，进程PYTHONPATH已核实。
+- WSL健康、学习、V2能力、成长监督、计划列表、聊天根页面、日记与设置页面均200，JS/CSS资源200。Windows健康和学习页面均200，新JS存在。候选包从准确commit归档，前端哈希见包内study-growth-release.json。
+- 生产学习库2计划、78任务，原始专注/答题/回忆均0不变；完整性ok、外键无错误。成长启用0个计划，监督false。没有补造学习事实、奖励或授权。
+- 切换前即时备份pre-switch-study.db和pre-switch-state.db，原配置、升级恢复演练和复验JSON均在上述备份目录。隔离验收进程已结束。
+- A–J已完成，主计划全部勾选。本地提交，无远端push。文档归档commit只更新证据，运行功能SHA保持d443b234。
