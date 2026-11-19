@@ -13,7 +13,9 @@ from honeyos.campus.snapshot import (
     CampusSnapshotError,
     ExamRow,
     MissingSnapshotError,
+    TimetableRow,
     read_snapshot,
+    read_timetable_snapshot,
 )
 
 STALE_AFTER_HOURS = 24
@@ -75,6 +77,67 @@ class CampusExamsService:
         batch_key = captured_at[:10]
         imported = self.repository.import_snapshot(source, batch_key, captured_at, rows)
         payload = self.get_exams()
+        payload.update({"result": "updated", "imported": imported})
+        return payload
+
+
+class CampusTimetableService:
+    """课表读取服务：与考试同一套快照、过期与迟到判定规则。"""
+
+    def __init__(self, home: Path | str | None = None, snapshot_path: Path | str | None = None):
+        self.repository = CampusRepository(home=home)
+        self.snapshot_path = Path(snapshot_path) if snapshot_path is not None else None
+
+    def get_timetable(self) -> dict:
+        data = self.repository.list_timetable()
+        metas = data["meta"]
+        last_success_at = max((m["last_success_at"] for m in metas), default=None)
+        captured_at = max((m["captured_at"] for m in metas), default=None)
+        source = metas[0]["source"] if metas else None
+        stale = _older_than_hours(captured_at, STALE_AFTER_HOURS) if captured_at else False
+        return {
+            "records": data["records"],
+            "source": source,
+            "captured_at": captured_at,
+            "last_success_at": last_success_at,
+            "row_count": len(data["records"]),
+            "has_data": bool(metas),
+            "stale": stale,
+            "needs_capture": not metas,
+        }
+
+    def refresh(self) -> dict:
+        try:
+            snapshot = read_timetable_snapshot(self.snapshot_path)
+        except MissingSnapshotError:
+            return {
+                "result": "snapshot_missing",
+                "action": "open-host",
+                "message": "尚未发现课表快照：请在宿主中完成官方登录并打开「我的课表」，然后重试。",
+            }
+        except CampusSnapshotError as exc:
+            return {"result": "snapshot_invalid", "action": "open-host", "message": str(exc)}
+
+        source: str = snapshot["source"]
+        captured_at: str = snapshot["captured_at"]
+        rows: list[TimetableRow] = snapshot["rows"]
+
+        stored = self.repository.latest_timetable_captured_at(source)
+        stored_at = _parse_iso(stored)
+        new_at = _parse_iso(captured_at)
+        if stored_at is not None and new_at is not None and stored_at >= new_at:
+            return {
+                "result": "no_new_snapshot",
+                "captured_at": stored,
+                "message": "宿主课表快照未更新；请在宿主中重新捕获后再刷新。",
+            }
+        if new_at is None:
+            return {"result": "snapshot_invalid", "action": "open-host",
+                    "message": "课表快照捕获时间无法解析，已拒绝导入。"}
+
+        batch_key = captured_at[:10]
+        imported = self.repository.import_timetable(source, batch_key, captured_at, rows)
+        payload = self.get_timetable()
         payload.update({"result": "updated", "imported": imported})
         return payload
 

@@ -18,6 +18,10 @@ SNAPSHOT_FILE = "exams.latest.json"
 MAX_ROWS = 500
 MAX_CELL = 200
 
+TIMETABLE_SCHEMA = "campus-timetable-snapshot/1"
+TIMETABLE_FILE = "timetable.latest.json"
+MAX_TIMETABLE_ROWS = 500
+
 
 class CampusSnapshotError(Exception):
     """快照不可用（缺失、损坏或契约不符）。"""
@@ -46,7 +50,19 @@ class ExamRow:
         return hashlib.sha256(joined).hexdigest()
 
 
-def default_snapshot_path() -> Path:
+@dataclass(frozen=True)
+class TimetableRow:
+    day: str
+    period: str
+    detail: str
+
+    @property
+    def fingerprint(self) -> str:
+        joined = "\x1f".join((self.day, self.period, self.detail)).encode("utf-8")
+        return hashlib.sha256(joined).hexdigest()
+
+
+def default_snapshot_path(file_name: str = SNAPSHOT_FILE) -> Path:
     """宿主快照默认位置：Windows 直取 %LOCALAPPDATA%；WSL 侧经 /mnt/c 读取。
 
     可用 ``HONEYOS_CAMPUS_SNAPSHOT`` 覆盖；WSL 下 Windows 用户名可用
@@ -58,7 +74,7 @@ def default_snapshot_path() -> Path:
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA")
         if base:
-            return Path(base) / "HoneyOS" / "campus" / "snapshots" / SNAPSHOT_FILE
+            return Path(base) / "HoneyOS" / "campus" / "snapshots" / file_name
     windows_user = (
         os.environ.get("HONEYOS_WINDOWS_USER")
         or os.environ.get("USER")
@@ -70,7 +86,7 @@ def default_snapshot_path() -> Path:
         )
     return (
         Path("/mnt/c/Users") / windows_user
-        / "AppData" / "Local" / "HoneyOS" / "campus" / "snapshots" / SNAPSHOT_FILE
+        / "AppData" / "Local" / "HoneyOS" / "campus" / "snapshots" / file_name
     )
 
 
@@ -136,3 +152,50 @@ def read_snapshot(path: Path | str | None = None) -> dict:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise InvalidSnapshotError(f"快照文件无法读取：{exc}") from exc
     return normalize_snapshot(payload)
+
+
+def normalize_timetable(payload: object) -> dict:
+    if not isinstance(payload, dict) or payload.get("schema") != TIMETABLE_SCHEMA:
+        raise InvalidSnapshotError("课表快照 schema 不符。")
+    source = payload.get("source")
+    if not isinstance(source, str) or not source:
+        raise InvalidSnapshotError("课表快照缺少来源。")
+    captured_at = _parse_captured_at(payload.get("captured_at"))
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list):
+        raise InvalidSnapshotError("课表快照缺少课程行。")
+    rows: list[TimetableRow] = []
+    seen: set[str] = set()
+    for raw in raw_rows[:MAX_TIMETABLE_ROWS]:
+        if not isinstance(raw, dict):
+            continue
+        row = TimetableRow(
+            day=_cell(raw.get("day")),
+            period=_cell(raw.get("period")),
+            detail=_cell(raw.get("detail")),
+        )
+        if not row.detail:
+            continue
+        if row.fingerprint in seen:
+            continue
+        seen.add(row.fingerprint)
+        rows.append(row)
+    return {
+        "schema": TIMETABLE_SCHEMA,
+        "captured_at": captured_at,
+        "source": source[:128],
+        "rows": rows,
+    }
+
+
+def read_timetable_snapshot(path: Path | str | None = None) -> dict:
+    snapshot_path = (
+        Path(path) if path is not None else default_snapshot_path(TIMETABLE_FILE)
+    )
+    if not snapshot_path.is_file():
+        raise MissingSnapshotError(str(snapshot_path))
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InvalidSnapshotError(f"课表快照文件无法读取：{exc}") from exc
+    return normalize_timetable(payload)
