@@ -69,9 +69,11 @@
 
 - 2026-11-19 C1 现场（一）：用户首次运行宿主即被白名单拦截，状态栏记录「已阻止：http://my.cqmu.edu.cn」。随后仅以响应头探测核实：门户 https 301→`/c` →302→`http://my.cqmu.edu.cn/c/portal/login`（被拦点）→301→https →302→`http://cas.cqmu.edu.cn/cas/login` →301→https 后 200，属校方自身的重定向中转机制。CAS 表单 action 为相对路径，凭据仅经 https 提交。宿主白名单已改为对三个已核实域名放行 http+https（默认端口、无 userinfo、域清单不变），以 `a00fcd9` 提交，并重建至 `C:\Users\Zyh20\Desktop\honeyos-campus-probe\CampusHost.exe`，待用户重跑现场验证。
 
+- 2026-11-19 C1 现场（二）：用户已用新宿主完成门户登录并进入门户页，点击教务系统时被拦，状态栏记录「已阻止：http://jiaowu.cqmu.edu.cn:8080」。探测核实教务（EAMS）部署于 8080 端口：http 302 升级至 `https://jiaowu.cqmu.edu.cn:8080/` →301→ `/eams/manageLogin.action` →200，证书有效，链路无未知第三方域。宿主白名单改为显式 origin 清单（门户/CAS 各 http+https，教务含默认端口与 8080 的 http+https），userinfo 约束不变、清单外一律拦截，以 `1811e69` 提交并重建至桌面目录，待用户继续教务考试页验证。
+
 ## C1 现场验证清单（待执行）
 
-验证宿主：`C:\Users\Zyh20\Desktop\honeyos-campus-probe\CampusHost.exe`（2026-11-19 15:49 重建，含 http 中转放行修复，对应 `scripts/campus-host` 当前源码；旧构建 honeyos-campus-probe-diagnostic 会拦截校方 http 重定向中转，勿再用）。如需重建：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/campus-host/build.ps1 -Package E:\HuaweiMoveData\Users\Zyh20\Documents\ChatGPT\部署本地AI\honeyos-webview2-1.0.4314.35.nupkg -OutputDirectory <仓库外专用构建目录>`。执行者为用户本人，模型与代码不接触账号密码；`--smoke` 仅证明 WebView2 可初始化，不作为会话证据。
+验证宿主：`C:\Users\Zyh20\Desktop\honeyos-campus-probe\CampusHost.exe`（2026-11-19 15:59 重建，含 http 中转与教务 8080 端口放行，对应 `scripts/campus-host` 当前源码；旧构建 honeyos-campus-probe-diagnostic 与 15:49 前构建均缺教务 8080 放行，勿再用）。如需重建：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/campus-host/build.ps1 -Package E:\HuaweiMoveData\Users\Zyh20\Documents\ChatGPT\部署本地AI\honeyos-webview2-1.0.4314.35.nupkg -OutputDirectory <仓库外专用构建目录>`。执行者为用户本人，模型与代码不接触账号密码；`--smoke` 仅证明 WebView2 可初始化，不作为会话证据。
 
 1. 运行宿主（不带参数），确认打开 `my.cqmu.edu.cn`，顶部状态栏只显示允许来源。
 2. 在官方页面本人完成统一认证登录；若状态栏显示「已阻止：来源」，记录该来源并停止，不轮换登录方式反复尝试。
