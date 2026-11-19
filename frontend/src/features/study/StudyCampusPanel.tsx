@@ -1,12 +1,49 @@
-import { useQuery } from "@tanstack/react-query";
-import { CheckSquare } from "@phosphor-icons/react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CalendarBlank, CheckSquare } from "@phosphor-icons/react";
 
+import { getCampusExams, refreshCampusExams } from "../../api/campus";
 import { listStudyPlans } from "../../api/study";
 
 const campusDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai" });
+
+export function extractExamDate(value: string): string | null {
+  const match = value.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (!match) return null;
+  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+}
+
+export function examCountdown(examDate: string, now: Date = new Date()): number | null {
+  const iso = extractExamDate(examDate);
+  if (!iso) return null;
+  const today = campusDate.format(now);
+  return Math.round(
+    (Date.parse(`${iso}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000,
+  );
+}
+
+function countdownLabel(days: number | null): string {
+  if (days === null) return "未排期";
+  if (days < 0) return "已结束";
+  if (days === 0) return "今天";
+  if (days === 1) return "明天";
+  return `${days} 天后`;
+}
+
+function formatCaptured(capturedAt: string | null): string {
+  if (!capturedAt) return "未知时间";
+  return capturedAt.slice(0, 16).replace("T", " ");
+}
+
 export function StudyCampusPanel() {
   const today = campusDate.format(new Date());
+  const queryClient = useQueryClient();
   const plans = useQuery({ queryKey: ["study", "plans"], queryFn: listStudyPlans });
+  const examsQuery = useQuery({ queryKey: ["campus", "exams"], queryFn: getCampusExams });
+  const refresh = useMutation({
+    mutationFn: refreshCampusExams,
+    onSuccess: (data) => queryClient.setQueryData(["campus", "exams"], data),
+  });
+  const exams = examsQuery.data?.exams;
   const agenda = (plans.data?.plans ?? [])
     .filter((plan) => plan.status === "active")
     .flatMap((plan) => plan.tasks.filter((task) =>
@@ -16,6 +53,73 @@ export function StudyCampusPanel() {
 
   return (
     <div className="space-y-4 text-sm">
+      <section aria-labelledby="campus-exams" className="rounded-2xl border border-[var(--border)] bg-[var(--surface-raised)] p-4">
+        <div className="flex items-center justify-between gap-2">
+          <h3 id="campus-exams" className="flex items-center gap-2 text-base font-semibold">
+            <CalendarBlank size={20} aria-hidden /> 近期考试
+          </h3>
+          <button
+            type="button"
+            onClick={() => refresh.mutate()}
+            disabled={refresh.isPending}
+            className="text-xs text-[var(--foreground-muted)] disabled:opacity-50"
+          >
+            {refresh.isPending ? "刷新中…" : "刷新"}
+          </button>
+        </div>
+        {examsQuery.isError ? (
+          <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
+            暂时无法读取校园考试数据。
+          </p>
+        ) : examsQuery.isPending ? (
+          <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
+            正在读取校园考试数据…
+          </p>
+        ) : exams && exams.needs_capture ? (
+          <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
+            尚未采集考试数据：请在宿主中完成官方登录并进入考试查询页捕获，然后点刷新。
+          </p>
+        ) : exams && exams.row_count === 0 ? (
+          <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
+            学校当前没有已安排的考试。
+          </p>
+        ) : exams ? (
+          <>
+            <ul className="mt-3 divide-y divide-[var(--border)]">
+              {exams.records.map((record) => {
+                const days = examCountdown(record.exam_date);
+                return (
+                  <li key={record.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2">
+                    <span className="rounded-full bg-[var(--surface)] px-2 py-0.5 text-xs tabular-nums">
+                      {countdownLabel(days)}
+                    </span>
+                    <strong className="min-w-0 break-words font-medium">{record.course}</strong>
+                    <time className="text-xs tabular-nums text-[var(--foreground-muted)]">
+                      {record.exam_date}
+                    </time>
+                    {record.arrangement && (
+                      <span className="text-xs text-[var(--foreground-muted)]">{record.arrangement}</span>
+                    )}
+                    {record.location && (
+                      <span className="text-xs text-[var(--foreground-muted)]">{record.location}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="mt-2 text-xs text-[var(--foreground-muted)]">
+              来源 {exams.source ?? "未知"} · 采集于 {formatCaptured(exams.captured_at)}
+              {exams.stale ? "（缓存已过期，请刷新）" : ""}
+            </p>
+          </>
+        ) : null}
+        {refresh.data?.exams?.message && (
+          <p role="status" className="mt-2 text-xs text-[var(--foreground-muted)]">
+            {refresh.data.exams.message}
+          </p>
+        )}
+      </section>
+
       <section aria-labelledby="campus-agenda" className="rounded-2xl border border-[var(--border)] bg-[var(--surface-raised)] p-4">
         <h3 id="campus-agenda" className="flex items-center gap-2 text-base font-semibold">
           <CheckSquare size={20} aria-hidden /> 学习日程
