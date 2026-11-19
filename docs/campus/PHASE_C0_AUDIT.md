@@ -24,7 +24,7 @@
 | 在前端运行 `npm.cmd test -- src/features/study/StudyCampusPanel.test.tsx src/features/study/StudyPage.test.tsx` | 2 个文件共 8 项通过。 |
 | 对课表、学期、考试脚本分别运行 `node --check` | 三项语法检查通过。 |
 | `python -m pytest -q -p no:cacheprovider tests/honeyos/study --disable-warnings` | Windows 上观察到失败，交付核查时未获得完整汇总。另用 `-x --tb=short` 复跑，5 项通过后停在跨盘引用测试，实际异常为无法读取原文件，与预期的重复引用提示不匹配。原因尚未定位。 |
-| 校方现场与截图 | 用户自行登录并切换到门户首页。通过 Windows 无障碍视图核对门户域名与可见服务标签。图书馆条目的输入位置不可用，未取得目标页证据。未采集截图或响应样本。 |
+| 校方现场与截图 | 用户自行登录并打开门户首页及图书馆。通过 Windows 无障碍视图核对两个站点及图书馆首页的「座位预约」链接。链接的输入位置不可用，预约子系统未验证。门户「服务大厅」由用户指出，目录待核对。未采集截图或响应样本。 |
 
 ## C1 最小变更与验收
 
