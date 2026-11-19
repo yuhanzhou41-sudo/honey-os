@@ -11,7 +11,6 @@ internal static class CampusHost
     private const int CaptureMaxRows = 200;
     private const int CaptureCellMax = 200;
     private const int CaptureTimeoutSeconds = 600;
-    private const int WatchIntervalSeconds = 600;
 
     private static readonly string[] AllowedOrigins =
     {
@@ -80,7 +79,13 @@ internal static class CampusHost
               }catch(e){}
             }
             if(rows!==null && rows.length>0){
-              window.chrome.webview.postMessage('EXAMS'+'\t'+String(rows.length)+'\t'+rows.join('\t'));
+              window.chrome.webview.postMessage('EXAMS'+'\t'+String(rows.length)+'\t'+rows.join('\t')+'\t'+clicked());
+            }
+            function clicked(){
+              try{
+                var v=localStorage.getItem('__honeyosClick')||'';
+                return clean(v).substring(0,30);
+              }catch(e){ return ''; }
             }
         })();";
 
@@ -145,8 +150,185 @@ internal static class CampusHost
               }catch(e){}
             }
             if(rows!==null && rows.length>0){
-              window.chrome.webview.postMessage('TIMETABLE'+'\t'+String(rows.length)+'\t'+rows.join('\t'));
+              window.chrome.webview.postMessage('TIMETABLE'+'\t'+String(rows.length)+'\t'+rows.join('\t')+'\t'+clicked());
             }
+            function clicked(){
+              try{
+                var v=localStorage.getItem('__honeyosClick')||'';
+                return clean(v).substring(0,30);
+              }catch(e){ return ''; }
+            }
+        })();";
+
+    private const string EamsHome = "https://jiaowu.cqmu.edu.cn:8080/eams/home.action";
+
+    // 仅识别表头含「课程名称/成绩」的成绩表；输出「课程|成绩|学分|学期」。
+    private const string ExtractGradesScript =
+        @"(function(){
+            function clean(t){ t=String(t==null?'':t); return t.replace(/[\|\t\n\r;]/g,' ').replace(/\s+/g,' ').trim(); }
+            function scan(doc){
+              var tables=doc.getElementsByTagName('table');
+              for(var i=0;i<tables.length;i++){
+                var tb=tables[i]; if(tb.rows.length<2) continue;
+                for(var h=0;h<3 && h<tb.rows.length;h++){
+                  var head=tb.rows[h]; var map={};
+                  for(var c=0;c<head.cells.length;c++){
+                    var t=clean(head.cells[c].textContent);
+                    if(t.indexOf('课程名称')>=0||t==='课程'){ if(map.course===undefined) map.course=c; }
+                    else if(t.indexOf('成绩')>=0||t==='分数'){ if(map.score===undefined) map.score=c; }
+                    else if(t.indexOf('学分')>=0){ if(map.credit===undefined) map.credit=c; }
+                    else if(t.indexOf('学期')>=0){ if(map.term===undefined) map.term=c; }
+                  }
+                  if(map.course===undefined||map.score===undefined){ continue; }
+                  var out=[];
+                  for(var r=h+1;r<tb.rows.length;r++){
+                    var tr=tb.rows[r];
+                    function cell(k){ return map[k]===undefined?'':clean(tr.cells[map[k]].textContent); }
+                    var row=[cell('course'),cell('score'),cell('credit'),cell('term')];
+                    if(!row[0]){ continue; }
+                    out.push(row.join('|'));
+                  }
+                  if(out.length>0){ return out; }
+                }
+              }
+              return null;
+            }
+            var rows=scan(document);
+            if(rows===null){
+              try{
+                for(var f=0;f<window.frames.length;f++){
+                  rows=scan(window.frames[f].document);
+                  if(rows!==null){ break; }
+                }
+              }catch(e){}
+            }
+            if(rows!==null && rows.length>0){
+              window.chrome.webview.postMessage('GRADES'+'\t'+String(rows.length)+'\t'+rows.join('\t')+'\t'+clicked());
+            }
+            function clicked(){
+              try{
+                var v=localStorage.getItem('__honeyosClick')||'';
+                return clean(v).substring(0,30);
+              }catch(e){ return ''; }
+            }
+        })();";
+
+    // 记录用户点击的菜单文字（最多两步），用于下次自动回放。
+    // 教务系统地址栏不随页面变化，只能靠点菜单；课表要先点「我的课表」再点「学生课表」。
+    private const string ClickRecorderScript =
+        @"(function(){
+            if(window.__honeyosBound){ return 'BOUND'; }
+            window.__honeyosBound=true;
+            document.addEventListener('click', function(e){
+              var n=e.target;
+              while(n && n!==document.body){
+                var tag=n.tagName;
+                if(tag==='A'||tag==='LI'||tag==='SPAN'||tag==='LABEL'){
+                  var t=String(n.innerText||n.textContent||'').replace(/\s+/g,' ').trim();
+                    if(t && t.length<=30){
+                    try{ localStorage.setItem('__honeyosClick', t); }catch(err){}
+                    return;
+                  }
+                }
+                n=n.parentElement;
+              }
+            }, true);
+            return 'BOUND';
+        })();";
+
+    private static string ReplayScript(string target)
+    {
+        string safe = target.Replace("\\", "\\\\").Replace("'", "\\'");
+        return @"(function(target){
+            function txt(e){ return String(e.innerText||e.textContent||'').replace(/\s+/g,' ').trim(); }
+            function norm(s){ return String(s||'').replace(/\s+/g,''); }
+            var want=norm(target);
+            function ownLabel(r){
+              var n=r.nextSibling, guard=0;
+              while(n && guard++<4){
+                if(n.nodeType===3){ var t=norm(n.nodeValue); if(t){ return t; } }
+                else if(n.nodeType===1){ var t2=norm(txt(n)); if(t2){ return t2.substring(0,20); } }
+                n=n.nextSibling;
+              }
+              n=r.previousSibling; guard=0;
+              while(n && guard++<4){
+                if(n.nodeType===3){ var t3=norm(n.nodeValue); if(t3){ return t3; } }
+                else if(n.nodeType===1){ var t4=norm(txt(n)); if(t4){ return t4.substring(0,20); } }
+                n=n.previousSibling;
+              }
+              return '';
+            }
+            function byRadio(doc){
+              var rs=[].slice.call(doc.querySelectorAll('input[type=radio]'));
+              for(var i=0;i<rs.length;i++){
+                var own=ownLabel(rs[i]);
+                if(!own || own.length>16){ continue; }
+                if(own.indexOf(want)!==0){ continue; }
+                if(!rs[i].checked){ rs[i].click(); }
+                return rs[i].checked ? 'RADIO:'+own : 'UNCHECKED:'+own;
+              }
+              return null;
+            }
+            function hitIn(doc){
+              var nodes=[].slice.call(doc.querySelectorAll('a,label'));
+              for(var i=0;i<nodes.length;i++){
+                var t=txt(nodes[i]);
+                if(t && t.length<=40 && t.indexOf(target)>=0){ return nodes[i]; }
+              }
+              nodes=[].slice.call(doc.querySelectorAll('li,span,td,div'));
+              for(var j=0;j<nodes.length;j++){
+                var t2=txt(nodes[j]);
+                if(t2 && t2.length<=30 && t2.indexOf(target)>=0){ return nodes[j]; }
+              }
+              return null;
+            }
+            function attempt(doc){
+              var r=byRadio(doc);
+              if(r){ return r; }
+              var hit=hitIn(doc);
+              if(!hit){ return null; }
+              var radio=hit.querySelector ? hit.querySelector('input[type=radio]') : null;
+              if(radio){
+                if(!radio.checked){ radio.click(); }
+                return radio.checked ? 'RADIO:'+txt(hit) : 'UNCHECKED:'+txt(hit);
+              }
+              hit.click();
+              return 'CLICKED:'+txt(hit);
+            }
+            var res=attempt(document);
+            if(res){ return res; }
+            for(var f=0;f<window.frames.length;f++){
+              try{
+                var fr=attempt(window.frames[f].document);
+                if(fr){ return fr; }
+              }catch(e){}
+            }
+            return 'NOTFOUND';
+        })('" + safe + @"');";
+    }
+
+    // 诊断：只导出表格结构（表头文字与行列数），不导出任何课程内容。
+    private const string DiagnoseScript =
+        @"(function(){
+            function clean(t){ return String(t==null?'':t).replace(/[\|\t\n\r;]/g,' ').replace(/\s+/g,' ').trim(); }
+            function head(tb){
+              var out=[];
+              for(var r=0;r<tb.rows.length && r<2;r++){
+                var cells=[];
+                for(var c=0;c<tb.rows[r].cells.length && c<12;c++){
+                  cells.push(clean(tb.rows[r].cells[c].textContent).substring(0,12));
+                }
+                out.push(cells.join('/'));
+              }
+              return out.join(' || ');
+            }
+            var parts=[];
+            var tables=document.getElementsByTagName('table');
+            parts.push('tables='+tables.length+' frames='+window.frames.length);
+            for(var i=0;i<tables.length && parts.length<7;i++){
+              parts.push('['+i+'] rows='+tables[i].rows.length+' head='+head(tables[i]));
+            }
+            return parts.join(' ;; ');
         })();";
 
     private static string JsonEscape(string value)
@@ -204,7 +386,25 @@ internal static class CampusHost
         return sb.Append("]}").ToString();
     }
 
-    // 账号标识只保留 ASCII 安全字符，同时作为 WebView2 profile 与快照文件名的一部分。
+    private static string BuildGradesJson(string source, string account, string[][] rows)
+    {
+        var sb = new StringBuilder();
+        sb.Append("{\"schema\":\"campus-grades-snapshot/1\",\"account\":\"")
+          .Append(JsonEscape(account))
+          .Append("\",\"captured_at\":\"")
+          .Append(DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz"))
+          .Append("\",\"source\":\"").Append(JsonEscape(source))
+          .Append("\",\"row_count\":").Append(rows.Length).Append(",\"rows\":[");
+        for (int i = 0; i < rows.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"course\":\"").Append(JsonEscape(rows[i][0]))
+              .Append("\",\"score\":\"").Append(JsonEscape(rows[i][1]))
+              .Append("\",\"credit\":\"").Append(JsonEscape(rows[i][2]))
+              .Append("\",\"term\":\"").Append(JsonEscape(rows[i][3])).Append("\"}");
+        }
+        return sb.Append("]}").ToString();
+    }
     private static string SafeProfile(string value)
     {
         var sb = new StringBuilder();
@@ -225,22 +425,70 @@ internal static class CampusHost
             : stem + "." + profile + ".latest.json";
     }
 
-    // 会话探活：只记录时间、域名与读取结果，不记录任何页面内容。
-    private static void WriteWatch(string result, string host, int exams, int timetable)
+    // 自动化：记住成功捕获过的页面地址，下次直接导航过去。
+    private static string NavPath(string profile, string kind)
+    {
+        string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "HoneyOS", "campus");
+        return Path.Combine(dir, string.IsNullOrEmpty(profile)
+            ? "nav." + kind + ".txt"
+            : "nav." + profile + "." + kind + ".txt");
+    }
+
+    private static void SaveNav(string profile, string kind, string value)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            string path = NavPath(profile, kind);
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllText(path, value.Trim(), new UTF8Encoding(false));
+        }
+        catch { }
+    }
+
+    private static string LoadNav(string profile, string kind)
+    {
+        try
+        {
+            string path = NavPath(profile, kind);
+            if (!File.Exists(path)) return "";
+            return File.ReadAllText(path).Trim();
+        }
+        catch { return ""; }
+    }
+
+    private static bool NavExists(string profile, string kind)
+    {
+        try { return File.Exists(NavPath(profile, kind)); }
+        catch { return false; }
+    }
+
+    private static bool IsUrlNav(string value)
+    {
+        Uri parsed;
+        return Uri.TryCreate(value, UriKind.Absolute, out parsed) && Allowed(value);
+    }
+
+    private static void Trace(string message)
     {
         try
         {
             string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "HoneyOS", "campus");
             Directory.CreateDirectory(dir);
-            string path = Path.Combine(dir, "session-watch.jsonl");
-            string line = "{\"at\":\"" + DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz")
-                + "\",\"result\":\"" + JsonEscape(result)
-                + "\",\"host\":\"" + JsonEscape(host)
-                + "\",\"exams\":" + exams + ",\"timetable\":" + timetable + "}";
-            File.AppendAllText(path, line + "\n", new UTF8Encoding(false));
+            File.AppendAllText(Path.Combine(dir, "host.log"),
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + message + "\n",
+                new UTF8Encoding(false));
         }
         catch { }
+    }
+
+    private static void CloseLater(Form window, int milliseconds)
+    {
+        var timer = new Timer { Interval = milliseconds };
+        timer.Tick += delegate { timer.Stop(); timer.Dispose(); window.Close(); };
+        timer.Start();
     }
 
     private static void WriteSnapshot(string fileName, string json)
@@ -260,17 +508,21 @@ internal static class CampusHost
     {
         bool smoke = false;
         bool capture = false;
-        bool watch = false;
+        bool auto = false;
         string profile = "";
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
             if (arg == "--smoke") smoke = true;
             else if (arg == "--capture") capture = true;
-            else if (arg == "--watch") { watch = true; capture = true; }
+            else if (arg == "--auto") { auto = true; capture = true; }
             else if (arg == "--profile" && i + 1 < args.Length) profile = SafeProfile(args[++i]);
             else return 2;
-        }        Application.EnableVisualStyles();
+        }
+        Application.EnableVisualStyles();
+        Trace("main args=" + string.Join(",", args));
+        AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+            Trace("unhandled " + e.ExceptionObject);
         int result = 1;
         using (var window = new Form { Text = "HoneyOS · 校园连接验证", Width = 1000, Height = 720 })
         using (var browser = new WebView2 { Dock = DockStyle.Fill })
@@ -279,23 +531,41 @@ internal static class CampusHost
                            : "正在启动独立校园窗口…" })
         using (var timeout = new Timer { Interval = 30000 })
         using (var poll = new Timer { Interval = 2000 })
-        using (var heartbeat = new Timer { Interval = WatchIntervalSeconds * 1000 })
         {
             bool captured = false;
             bool capturedTimetable = false;
+            bool capturedGrades = false;
             int examCount = 0;
             int timetableCount = 0;
+            int gradeCount = 0;
+            int autoAttempts = 0;
+            DateTime autoRetryAt = DateTime.MinValue;
+            int clickAttempts = 0;
+            DateTime clickRetryAt = DateTime.MinValue;
+            int examClickStep = 0;
+            int timetableClickStep = 0;
+            int gradesClickStep = 0;
+            bool diagnoseDone = false;
+            DateTime diagnoseAt = DateTime.MinValue;
+            string autoExams = auto ? LoadNav(profile, "exams") : "";
+            string autoTimetable = auto ? LoadNav(profile, "timetable") : "";
+            string autoGrades = auto ? LoadNav(profile, "grades") : "";
             DateTime captureDeadline = DateTime.UtcNow.AddSeconds(CaptureTimeoutSeconds);
+            Func<bool> allDone = delegate {
+                return (!(autoExams.Length > 0) || captured)
+                    && (!(autoTimetable.Length > 0) || capturedTimetable)
+                    && (!(autoGrades.Length > 0) || capturedGrades);
+            };
             window.Controls.Add(browser);
             window.Controls.Add(status);
             timeout.Tick += delegate { timeout.Stop(); window.Close(); };
             poll.Tick += async delegate {
                 if (!capture) { poll.Stop(); return; }
-                if (!watch && captured && capturedTimetable) { poll.Stop(); return; }
-                if (!watch && DateTime.UtcNow > captureDeadline)
+                if (allDone()) { poll.Stop(); return; }
+                if (DateTime.UtcNow > captureDeadline)
                 {
                     poll.Stop();
-                    status.Text = "未检测到完整的考试/课表数据；可关闭窗口后重试。";
+                    status.Text = "未检测到完整数据；可关闭窗口后重试。";
                     return;
                 }
                 try
@@ -303,16 +573,67 @@ internal static class CampusHost
                     var current = browser.CoreWebView2;
                     if (current == null) return;
                     Uri here;
-                    if (!Uri.TryCreate(current.Source, UriKind.Absolute, out here) ||
-                        here.IdnHost != "jiaowu.cqmu.edu.cn") return;
-                    if (!captured) await current.ExecuteScriptAsync(ExtractExamsScript);
-                    if (!capturedTimetable) await current.ExecuteScriptAsync(ExtractTimetableScript);
+                    if (!Uri.TryCreate(current.Source, UriKind.Absolute, out here)) return;
+                    if (here.IdnHost == "jiaowu.cqmu.edu.cn")
+                    {
+                        string pendingNav = !captured ? autoExams
+                            : (!capturedTimetable ? autoTimetable : autoGrades);
+                        int clickStep = !captured ? examClickStep
+                            : (!capturedTimetable ? timetableClickStep : gradesClickStep);
+                        string[] clickChain = pendingNav.StartsWith("click:")
+                            ? pendingNav.Substring(6).Split('>')
+                            : new string[0];
+                        if (auto && clickChain.Length > clickStep
+                            && DateTime.UtcNow >= clickRetryAt && clickAttempts < 10)
+                        {
+                            clickAttempts++;
+                            clickRetryAt = DateTime.UtcNow.AddSeconds(6);
+                            string label = clickChain[clickStep].Trim();
+                            string clicked = await current.ExecuteScriptAsync(ReplayScript(label));
+                            Trace("replay click[" + clickStep + "] '" + label + "' -> " + clicked);
+                            bool ok = clicked != null
+                                && (clicked.Contains("CLICKED") || clicked.Contains("RADIO:"));
+                            if (ok)
+                            {
+                                if (!captured) examClickStep++;
+                                else if (!capturedTimetable) timetableClickStep++;
+                                else gradesClickStep++;
+                                status.Text = "已自动打开：" + label;
+                                return;
+                            }
+                        }
+                        if (!captured) await current.ExecuteScriptAsync(ExtractExamsScript);
+                        if (!capturedTimetable) await current.ExecuteScriptAsync(ExtractTimetableScript);
+                        if (!capturedGrades) await current.ExecuteScriptAsync(ExtractGradesScript);
+                        if (auto && captured && !capturedTimetable && !diagnoseDone
+                            && DateTime.UtcNow >= diagnoseAt)
+                        {
+                            diagnoseDone = true;
+                            Trace("diagnose " + await current.ExecuteScriptAsync(DiagnoseScript));
+                        }
+                        return;
+                    }
+                    // 自动模式：落在门户/登录页说明会话失效；登录完成后按记录的地址继续。
+                    if (!auto || autoAttempts >= 3 || DateTime.UtcNow < autoRetryAt) return;
+                    bool onLoginPage = (here.IdnHost == "cas.cqmu.edu.cn")
+                        || here.AbsolutePath.ToLowerInvariant().Contains("login");
+                    if (onLoginPage) return;
+                    string target = !captured && autoExams.Length > 0 ? autoExams
+                        : (!capturedTimetable && autoTimetable.Length > 0 ? autoTimetable : autoGrades);
+                    if (target.Length == 0 || !IsUrlNav(target)) return;
+                    autoAttempts++;
+                    autoRetryAt = DateTime.UtcNow.AddSeconds(20);
+                    status.Text = "已登录，自动前往：" + new Uri(target).AbsolutePath;
+                    current.Navigate(target);
                 }
                 catch { }
             };
+            window.FormClosed += delegate { Trace("window closed"); };
             window.Shown += async delegate {
                 try {
                     if (smoke) timeout.Start();
+                    Trace("start profile=" + (profile.Length == 0 ? "default" : profile)
+                        + " mode=" + (auto ? "auto" : capture ? "capture" : "manual"));
                     string profileDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                         "HoneyOS", "CampusHostProbe",
                         (smoke ? "runtime-check" : "official-login")
@@ -331,9 +652,20 @@ internal static class CampusHost
                     core.ServerCertificateErrorDetected += (sender, request) => { request.Action = CoreWebView2ServerCertificateErrorAction.Cancel; };
                     core.NavigationStarting += (sender, request) => {
                         request.Cancel = !Allowed(request.Uri);
+                        Trace((request.Cancel ? "blocked " : "navigate ") + request.Uri);
                         status.Text = request.Cancel ? Blocked(request.Uri) : new Uri(request.Uri).GetLeftPart(UriPartial.Authority);
                     };
                     core.FrameNavigationStarting += (sender, request) => { request.Cancel = !Allowed(request.Uri); };
+                    core.NavigationCompleted += async (sender, completedArgs) => {
+                        try
+                        {
+                            Uri done;
+                            if (!Uri.TryCreate(core.Source, UriKind.Absolute, out done)) return;
+                            if (done.IdnHost != "jiaowu.cqmu.edu.cn") return;
+                            await core.ExecuteScriptAsync(ClickRecorderScript);
+                        }
+                        catch { }
+                    };
                     core.NewWindowRequested += (sender, request) => {
                         request.Handled = true;
                         if (Allowed(request.Uri)) core.Navigate(request.Uri);
@@ -350,7 +682,8 @@ internal static class CampusHost
                                 if (message == null) return;
                                 bool isExams = message.StartsWith("EXAMS\t", StringComparison.Ordinal);
                                 bool isTimetable = message.StartsWith("TIMETABLE\t", StringComparison.Ordinal);
-                                if (!isExams && !isTimetable) return;
+                                bool isGrades = message.StartsWith("GRADES\t", StringComparison.Ordinal);
+                                if (!isExams && !isTimetable && !isGrades) return;
                                 Uri origin;
                                 if (!Uri.TryCreate(core.Source, UriKind.Absolute, out origin) ||
                                     origin.IdnHost != "jiaowu.cqmu.edu.cn") return;
@@ -358,7 +691,7 @@ internal static class CampusHost
                                 int count;
                                 if (parts.Length < 3 || !int.TryParse(parts[1], out count) ||
                                     count <= 0 || count > CaptureMaxRows) return;
-                                int width = isExams ? 4 : 3;
+                                int width = isTimetable ? 3 : 4;
                                 var rows = new string[count][];
                                 for (int i = 0; i < count; i++)
                                 {
@@ -371,23 +704,52 @@ internal static class CampusHost
                                     }
                                     rows[i] = row;
                                 }
+                                string clicked = parts.Length > count + 2 ? (parts[count + 2] ?? "").Trim() : "";
+                                string kindName = isExams ? "exams" : (isTimetable ? "timetable" : "grades");
+                                Trace("captured " + kindName + " rows=" + count + " click=" + clicked);
+                                // 导航配置只做首次引导，已存在则不被覆盖（课表需要两步链路）。
+                                string lastClick = clicked.Contains(">")
+                                    ? clicked.Substring(clicked.LastIndexOf('>') + 1).Trim()
+                                    : clicked.Trim();
                                 if (isExams)
                                 {
                                     WriteSnapshot(SnapshotName("exams", profile),
                                         BuildSnapshotJson("https://jiaowu.cqmu.edu.cn:8080", profile, rows));
+                                    if (!NavExists(profile, "exams"))
+                                        SaveNav(profile, "exams",
+                                            lastClick.Length > 0 ? "click:" + lastClick : core.Source);
                                     captured = true;
                                     examCount = count;
+                                    diagnoseAt = DateTime.UtcNow.AddSeconds(20);
                                 }
-                                else
+                                else if (isTimetable)
                                 {
                                     WriteSnapshot(SnapshotName("timetable", profile),
                                         BuildTimetableJson("https://jiaowu.cqmu.edu.cn:8080", profile, rows));
+                                    if (!NavExists(profile, "timetable"))
+                                        SaveNav(profile, "timetable",
+                                            lastClick.Length > 0 ? "click:" + lastClick : core.Source);
                                     capturedTimetable = true;
                                     timetableCount = count;
                                 }
-                                if (captured && capturedTimetable) poll.Stop();
+                                else
+                                {
+                                    WriteSnapshot(SnapshotName("grades", profile),
+                                        BuildGradesJson("https://jiaowu.cqmu.edu.cn:8080", profile, rows));
+                                    if (!NavExists(profile, "grades"))
+                                        SaveNav(profile, "grades",
+                                            lastClick.Length > 0 ? "click:" + lastClick : core.Source);
+                                    capturedGrades = true;
+                                    gradeCount = count;
+                                }
                                 status.Text = "已保存：考试 " + examCount + " 条、课表 " + timetableCount
-                                    + " 条；可继续切换到另一个查询页，或关闭窗口。";
+                                    + " 条、成绩 " + gradeCount + " 条。";
+                                if (allDone())
+                                {
+                                    poll.Stop();
+                                    if (auto) { status.Text += "同步完成，窗口即将关闭。"; CloseLater(window, 1500); }
+                                    else status.Text += "可继续切换到其他查询页，或关闭窗口。";
+                                }
                             }
                             catch (Exception)
                             {
@@ -395,37 +757,25 @@ internal static class CampusHost
                             }
                         };
                         poll.Start();
-                        if (watch)
-                        {
-                            heartbeat.Tick += delegate {
-                                try
-                                {
-                                    var live = browser.CoreWebView2;
-                                    if (live == null) return;
-                                    Uri here;
-                                    string host = Uri.TryCreate(live.Source, UriKind.Absolute, out here)
-                                        ? here.IdnHost : "";
-                                    if (host == "jiaowu.cqmu.edu.cn")
-                                    {
-                                        WriteWatch("reload", host, examCount, timetableCount);
-                                        live.Reload();
-                                    }
-                                    else
-                                    {
-                                        WriteWatch("login_required", host, examCount, timetableCount);
-                                        status.Text = "会话可能已过期（当前停留：" + host + "）；请重新登录后继续。";
-                                    }
-                                }
-                                catch { }
-                            };
-                            heartbeat.Start();
-                            status.Text = "会话探活已开启：每 10 分钟记录一次结果，可最小化窗口。";
-                        }
+                        if (auto && autoExams.Length == 0)
+                            status.Text = "首次自动同步：请登录并打开「考试查询」；之后会自动完成。";
                     }
                     if (smoke) { result = 0; window.Close(); return; }
-                    core.Navigate(Portal);
+                    if (auto)
+                    {
+                        string first = IsUrlNav(autoExams) ? autoExams : EamsHome;
+                        status.Text = "自动同步中…";
+                        Trace("auto goto " + first);
+                        core.Navigate(first);
+                    }
+                    else
+                    {
+                        Trace("open portal (no saved nav)");
+                        core.Navigate(Portal);
+                    }
                     result = 0;
                 } catch (Exception error) {
+                    Trace("startup error " + error);
                     status.Text = "启动失败：" + error.GetType().Name;
                     if (smoke) window.Close();
                 }

@@ -21,6 +21,11 @@ MAX_CELL = 200
 TIMETABLE_SCHEMA = "campus-timetable-snapshot/1"
 TIMETABLE_FILE = "timetable.latest.json"
 MAX_TIMETABLE_ROWS = 500
+
+GRADES_SCHEMA = "campus-grades-snapshot/1"
+GRADES_FILE = "grades.latest.json"
+MAX_GRADES_ROWS = 500
+
 DEFAULT_ACCOUNT = "default"
 MAX_ACCOUNT_LEN = 32
 
@@ -61,6 +66,21 @@ class TimetableRow:
     @property
     def fingerprint(self) -> str:
         joined = "\x1f".join((self.day, self.period, self.detail)).encode("utf-8")
+        return hashlib.sha256(joined).hexdigest()
+
+
+@dataclass(frozen=True)
+class GradeRow:
+    course: str
+    score: str
+    credit: str
+    term: str
+
+    @property
+    def fingerprint(self) -> str:
+        joined = "\x1f".join(
+            (self.course, self.score, self.credit, self.term)
+        ).encode("utf-8")
         return hashlib.sha256(joined).hexdigest()
 
 
@@ -229,3 +249,54 @@ def read_timetable_snapshot(path: Path | str | None = None,
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise InvalidSnapshotError(f"课表快照文件无法读取：{exc}") from exc
     return normalize_timetable(payload)
+
+
+def normalize_grades(payload: object) -> dict:
+    if not isinstance(payload, dict) or payload.get("schema") != GRADES_SCHEMA:
+        raise InvalidSnapshotError("成绩快照 schema 不符。")
+    source = payload.get("source")
+    if not isinstance(source, str) or not source:
+        raise InvalidSnapshotError("成绩快照缺少来源。")
+    captured_at = _parse_captured_at(payload.get("captured_at"))
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list):
+        raise InvalidSnapshotError("成绩快照缺少成绩行。")
+    rows: list[GradeRow] = []
+    seen: set[str] = set()
+    for raw in raw_rows[:MAX_GRADES_ROWS]:
+        if not isinstance(raw, dict):
+            continue
+        row = GradeRow(
+            course=_cell(raw.get("course")),
+            score=_cell(raw.get("score")),
+            credit=_cell(raw.get("credit")),
+            term=_cell(raw.get("term")),
+        )
+        if not row.course:
+            continue
+        if row.fingerprint in seen:
+            continue
+        seen.add(row.fingerprint)
+        rows.append(row)
+    return {
+        "schema": GRADES_SCHEMA,
+        "account": normalize_account(payload.get("account")),
+        "captured_at": captured_at,
+        "source": source[:128],
+        "rows": rows,
+    }
+
+
+def read_grades_snapshot(path: Path | str | None = None,
+                         account: str = DEFAULT_ACCOUNT) -> dict:
+    snapshot_path = (
+        Path(path) if path is not None
+        else default_snapshot_path(snapshot_file(account, GRADES_FILE))
+    )
+    if not snapshot_path.is_file():
+        raise MissingSnapshotError(str(snapshot_path))
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InvalidSnapshotError(f"成绩快照文件无法读取：{exc}") from exc
+    return normalize_grades(payload)

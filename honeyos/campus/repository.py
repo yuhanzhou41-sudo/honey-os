@@ -10,7 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from honeyos.campus.snapshot import DEFAULT_ACCOUNT, ExamRow, TimetableRow
+from honeyos.campus.snapshot import (
+    DEFAULT_ACCOUNT,
+    ExamRow,
+    GradeRow,
+    TimetableRow,
+)
 
 
 def _utc_now() -> str:
@@ -64,6 +69,19 @@ class CampusRepository:
                     captured_at TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS campus_grade_records (
+                    id TEXT PRIMARY KEY,
+                    account TEXT NOT NULL DEFAULT 'default',
+                    source TEXT NOT NULL,
+                    batch_key TEXT NOT NULL,
+                    course TEXT NOT NULL,
+                    score TEXT NOT NULL,
+                    credit TEXT NOT NULL,
+                    term TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS campus_meta (
                     account TEXT NOT NULL,
                     source TEXT NOT NULL,
@@ -89,12 +107,15 @@ class CampusRepository:
             # 必须先补 account 列，再建依赖该列的索引。
             self._ensure_account_column(conn, "campus_exam_records")
             self._ensure_account_column(conn, "campus_timetable_records")
+            self._ensure_account_column(conn, "campus_grade_records")
             conn.executescript(
                 """
                 CREATE INDEX IF NOT EXISTS idx_campus_exams_account
                     ON campus_exam_records(account, source, captured_at);
                 CREATE INDEX IF NOT EXISTS idx_campus_timetable_account
                     ON campus_timetable_records(account, source, captured_at);
+                CREATE INDEX IF NOT EXISTS idx_campus_grades_account
+                    ON campus_grade_records(account, source, captured_at);
                 """
             )
             self._migrate_legacy_meta(conn)
@@ -242,6 +263,26 @@ class CampusRepository:
             rows,
         )
 
+    def import_grades(
+        self,
+        source: str,
+        batch_key: str,
+        captured_at: str,
+        rows: list[GradeRow],
+        account: str = DEFAULT_ACCOUNT,
+    ) -> int:
+        """整批事务替换该账号的成绩记录。"""
+        return self._import_rows(
+            "campus_grade_records",
+            "grades",
+            ["course", "score", "credit", "term"],
+            account,
+            source,
+            batch_key,
+            captured_at,
+            rows,
+        )
+
     def _list(
         self,
         table: str,
@@ -285,6 +326,15 @@ class CampusRepository:
             "timetable",
             ["day", "period", "detail"],
             "day, period, detail",
+            account,
+        )
+
+    def list_grades(self, account: str | None = None) -> dict:
+        return self._list(
+            "campus_grade_records",
+            "grades",
+            ["course", "score", "credit", "term"],
+            "term, course",
             account,
         )
 

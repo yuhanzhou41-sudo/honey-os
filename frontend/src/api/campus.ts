@@ -64,3 +64,36 @@ export const refreshCampusTimetable = () =>
   requestJson<{ timetable: CampusTimetable }>("/api/campus/timetable/refresh", {
     method: "POST",
   });
+
+export type CampusGradeRecord = {
+  id: string;
+  source: string;
+  batch_key: string;
+  course: string;
+  score: string;
+  credit: string;
+  term: string;
+  captured_at: string;
+};
+
+export type CampusGrades = {
+  account: string;
+  records: CampusGradeRecord[];
+  source: string | null;
+  captured_at: string | null;
+  last_success_at: string | null;
+  row_count: number;
+  has_data: boolean;
+  stale: boolean;
+  needs_capture: boolean;
+  result?: string;
+  action?: string;
+  imported?: number;
+  message?: string;
+};
+
+export const getCampusGrades = () =>
+  requestJson<{ grades: CampusGrades }>("/api/campus/grades");
+
+export const refreshCampusGrades = () =>
+  requestJson<{ grades: CampusGrades }>("/api/campus/grades/refresh", { method: "POST" });
