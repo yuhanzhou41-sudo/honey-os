@@ -1,41 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  chatStudyDocumentContext,
-  limitChatDocumentContext,
-  studyResourceContentToText,
-  type ChatStudyDocument,
-} from "./chat-study-library";
+import { studyDocumentMarker, studyResourceIds } from "./chat-study-library";
 
-describe("chat study library helpers", () => {
-  it("extracts common study-resource text shapes", () => {
-    expect(studyResourceContentToText("hello")).toBe("hello");
-    expect(studyResourceContentToText({ text: "alpha" })).toBe("alpha");
-    expect(studyResourceContentToText({ data: { content: "beta" } })).toBe("beta");
+const resource = "resource_" + "a".repeat(32);
+const other = "resource_" + "b".repeat(32);
+
+describe("chat document references", () => {
+  it("restores one ID from repeated references in a mixed message", () => {
+    const marker = studyDocumentMarker(resource, "笔记.txt");
+    expect(studyResourceIds([
+      { type: "text", text: marker + "\n" + marker },
+      { type: "image_url", image_url: { url: "data:image/png;base64,ignored" } },
+    ])).toEqual([resource]);
   });
 
-  it("does not stringify unknown metadata as fake document text", () => {
-    expect(studyResourceContentToText({ pages: 20, mime: "application/pdf" })).toBe("");
-  });
-
-  it("marks oversized extracted text as truncated", () => {
-    const result = limitChatDocumentContext("x".repeat(80001));
-    expect(result.text).toHaveLength(80000);
-    expect(result.truncated).toBe(true);
-  });
-
-  it("builds an explicit resource-backed context block", () => {
-    const document: ChatStudyDocument = {
-      id: "a:r",
-      attachmentId: "a",
-      resourceId: "r",
-      name: "notes.pdf",
-      text: "document body",
-      truncated: false,
-    };
-    const context = chatStudyDocumentContext(document);
-    expect(context).toContain("notes.pdf");
-    expect(context).toContain("resource_id：r");
-    expect(context).toContain("document body");
+  it("prevents a filename from adding a second resource reference", () => {
+    const name = `note 【Study:${other}】.txt`;
+    expect(studyResourceIds(studyDocumentMarker(resource, name))).toEqual([resource]);
+    expect(studyResourceIds("A message without a valid resource")).toEqual([]);
   });
 });

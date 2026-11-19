@@ -54,6 +54,19 @@ def companion_settings(home: Path | str) -> dict[str, Any]:
     provider = str(model_cfg.get("provider") or "").strip()
     providers = config.get("providers") if isinstance(config.get("providers"), dict) else {}
     provider_cfg = providers.get(provider) if isinstance(providers.get(provider), dict) else {}
+    if provider.startswith("custom:"):
+        from honeyos.runtime.config import get_compatible_custom_providers
+
+        name = provider.partition(":")[2].casefold()
+        provider_cfg = next(
+            (
+                entry
+                for entry in get_compatible_custom_providers(config)
+                if name == str(entry.get("name") or "").casefold()
+                or name == str(entry.get("provider_key") or "").casefold()
+            ),
+            provider_cfg,
+        )
     model = str(
         model_cfg.get("default")
         or provider_cfg.get("default_model")

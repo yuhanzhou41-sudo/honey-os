@@ -25,3 +25,12 @@ isolation, temporal semantics, conflict resolution, and persistence unchanged.
 
 G1.1 does not guarantee memory accuracy or coverage. It only governs how remembered
 context is expressed.
+
+
+## 2026-11-15 implementation boundary
+
+Per-turn wording guidance is applied only when the text turn is using
+remembered context. Explicit source questions are answered to the extent
+supported by the supplied evidence. Existing C1.2 chat presentation
+instructions continue to handle general conversational style and requested
+structure on the web surface.

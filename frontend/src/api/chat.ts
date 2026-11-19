@@ -1,3 +1,4 @@
+import { studyResourceIds } from "./chat-study-library";
 import type { HoneyEvent, PermissionChoice } from "../runtime/honey-events";
 import { apiPath, fetchWithLocalSessionRecovery } from "./client";
 
@@ -7,7 +8,6 @@ export type ChatInput = string | Array<
 >;
 
 export const userMessageBreak = "<honeyos-user-message-break/>";
-export const assistantMessageBreak = "<honeyos-message-break/>";
 
 export const naturalReplyInstructions = `
 You are replying on HoneyOS's private instant-message surface.
@@ -34,23 +34,6 @@ export function splitUserMessages(content: string): string[] {
     : [String(content || "").trim()].filter(Boolean);
 }
 
-export function splitAssistantReply(content: string, maximum = 5): string[] {
-  const source = String(content || "").trim();
-  if (!source) return [];
-
-  const messages = source
-    .split(assistantMessageBreak)
-    .map((message) => message.trim())
-    .filter(Boolean);
-
-  if (!messages.length) return [source];
-  if (messages.length <= maximum) return messages;
-  return [
-    ...messages.slice(0, maximum - 1),
-    messages.slice(maximum - 1).join("\n\n"),
-  ];
-}
-
 export function parseEventBlock(block: string): HoneyEvent | null {
   let name = "message";
   const data: string[] = [];
@@ -67,15 +50,23 @@ export function parseEventBlock(block: string): HoneyEvent | null {
   }
 }
 
+export class ChatRequestError extends Error {
+  constructor(message: string, public readonly code?: string) {
+    super(message);
+  }
+}
+
 async function responseError(response: Response): Promise<Error> {
   let message = "chat_unavailable";
+  let code: string | undefined;
   try {
-    const data = await response.json() as { error?: { message?: string }; message?: string };
+    const data = await response.json() as { error?: { message?: string; code?: string }; message?: string };
     message = data.error?.message || data.message || message;
+    code = data.error?.code;
   } catch {
     // A restarting local service may close without a JSON body.
   }
-  return new Error(message);
+  return new ChatRequestError(message, code);
 }
 
 export async function streamChat(options: {
@@ -87,6 +78,7 @@ export async function streamChat(options: {
   signal?: AbortSignal;
   onEvent: (event: HoneyEvent) => void;
 }): Promise<void> {
+  const resourceIds = studyResourceIds(options.message);
   const response = await fetchWithLocalSessionRecovery(
     apiPath(`/api/sessions/${encodeURIComponent(options.sessionId)}/chat/stream`),
     {
@@ -100,6 +92,7 @@ export async function streamChat(options: {
       },
       body: JSON.stringify({
         message: options.message,
+        ...(resourceIds.length ? { study_resource_ids: resourceIds } : {}),
         ...(options.reuseUserMessageId ? { reuse_user_message_id: options.reuseUserMessageId } : {}),
         ...(options.instructions ? { system_message: options.instructions } : {}),
       }),
@@ -129,6 +122,7 @@ export async function answerApproval(options: {
   sessionId: string;
   sessionKey: string;
   choice: PermissionChoice;
+  approvalId?: string;
 }): Promise<void> {
   const response = await fetchWithLocalSessionRecovery(
     apiPath(`/api/sessions/${encodeURIComponent(options.sessionId)}/approval`),
@@ -136,7 +130,7 @@ export async function answerApproval(options: {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-HoneyOS-Session-Key": options.sessionKey },
-      body: JSON.stringify({ choice: options.choice }),
+      body: JSON.stringify({ choice: options.choice, approval_id: options.approvalId }),
     },
   );
   if (!response.ok) throw await responseError(response);
@@ -199,7 +193,7 @@ export async function fetchChatRunStatus(options: {
 
 export type ChatSessionModelState = {
   model?: string | null;
-  model_config?: Record<string, unknown> | null;
+  modelProvider?: string | null;
 };
 
 
@@ -228,10 +222,7 @@ export async function fetchChatSessionModel(options: {
 
   return {
     model: typeof session.model === "string" ? session.model : null,
-    model_config:
-      session.model_config && typeof session.model_config === "object"
-        ? session.model_config as Record<string, unknown>
-        : null,
+    modelProvider: typeof session.model_provider === "string" ? session.model_provider : null,
   };
 }
 

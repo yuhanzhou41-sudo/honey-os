@@ -12,6 +12,8 @@ const STRUCTURED_TURN_PATTERNS = [
   /\breport\b/iu, /\btable\b/iu,
 ];
 
+const STRUCTURED_REPLY = /^[ \t]*(?:#{1,6}[ \t]|[-+*>][ \t]|[0-9]+[.)][ \t]|[|]|~{3,}|-{3,}$|={3,}$)|^(?: {4}|\t)\S|\x60{3,}|\$|\\(?:\[|\()|https?:\/\/|www\.|\]\(/imu;
+
 const STRONG_BOUNDARIES = new Set(["。", "！", "？", "!", "?"]);
 const WEAK_BOUNDARIES = new Set(["，", ",", "；", ";"]);
 const OPEN_TO_CLOSE: Record<string, string> = {
@@ -38,7 +40,6 @@ const TRAILING_DEPENDENCY = /(?:因为|如果|虽然|尽管|除非|只要|为了
 export type BubbleSegmentation = {
   sealed: string[];
   partial: string;
-  capped: boolean;
 };
 
 export function isStructuredChatTurn(userText: string): boolean {
@@ -77,17 +78,15 @@ function looksLikeUrlTail(text: string): boolean {
 
 export function segmentCasualAssistantText(
   sourceText: string,
-  maximumBubbles = 6,
 ): BubbleSegmentation {
   const source = String(sourceText || "");
-  if (!source.trim()) return { sealed: [], partial: "", capped: false };
+  if (!source.trim()) return { sealed: [], partial: "" };
 
   const sealed: string[] = [];
   const stack: string[] = [];
   let cursor = 0;
   let inFence = false;
   let inInlineCode = false;
-  let capped = false;
 
   for (let index = 0; index < source.length; index += 1) {
     if (source.startsWith("```", index)) {
@@ -114,7 +113,10 @@ export function segmentCasualAssistantText(
     if (stack.length) continue;
 
     let boundary = "";
-    if (STRONG_BOUNDARIES.has(char)) {
+    if (char === "\n" && /^[ \t\r]*\n/u.test(source.slice(index + 1))) {
+      boundary = "\n";
+    } else if (STRONG_BOUNDARIES.has(char)) {
+      if (STRONG_BOUNDARIES.has(source[index + 1])) continue;
       if (looksLikeUrlTail(source.slice(cursor, index + 1))) continue;
       boundary = char;
     } else if (char === "…") {
@@ -128,52 +130,39 @@ export function segmentCasualAssistantText(
     if (!boundary) continue;
 
     const raw = source.slice(cursor, index + 1);
-    const shouldSeal = STRONG_BOUNDARIES.has(boundary) || boundary === "…"
+    const shouldSeal = STRONG_BOUNDARIES.has(boundary) || boundary === "\n" || boundary === "…"
       ? Boolean(raw.trim())
       : weakBoundaryIsComplete(raw, boundary);
     if (!shouldSeal) continue;
 
-    if (sealed.length >= Math.max(1, maximumBubbles) - 1) {
-      capped = true;
-      break;
-    }
-
-    const normalized = normalizeBoundaryText(raw, boundary);
-    if (normalized) sealed.push(normalized);
+    if (raw.trim()) sealed.push(raw.trim());
     cursor = index + 1;
   }
 
   const partial = source.slice(cursor).trim();
-  return { sealed, partial, capped };
+  return { sealed, partial };
 }
 
-function splitLegacyAssistantReply(source: string, maximumBubbles: number): string[] {
-  const messages = source
+function splitLegacyAssistantReply(source: string): string[] {
+  return source
     .split(legacyAssistantMessageBreak)
     .map((message) => message.trim())
     .filter(Boolean);
-
-  if (messages.length <= maximumBubbles) return messages;
-  return [
-    ...messages.slice(0, maximumBubbles - 1),
-    messages.slice(maximumBubbles - 1).join("\n\n"),
-  ];
 }
 
 export function assistantBubblesForDisplay(
   content: string,
   userText: string,
-  maximumBubbles = 6,
 ): string[] {
   const source = String(content || "").trim();
   if (!source) return [];
 
   if (source.includes(legacyAssistantMessageBreak)) {
-    return splitLegacyAssistantReply(source, maximumBubbles);
+    return splitLegacyAssistantReply(source);
   }
-  if (isStructuredChatTurn(userText)) return [source];
+  if (isStructuredChatTurn(userText) || STRUCTURED_REPLY.test(source)) return [source];
 
-  const result = segmentCasualAssistantText(source, maximumBubbles);
+  const result = segmentCasualAssistantText(source);
   const bubbles = [...result.sealed];
   if (result.partial) bubbles.push(result.partial);
   return bubbles.length ? bubbles : [source];

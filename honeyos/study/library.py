@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import re
 import sqlite3
@@ -10,6 +11,26 @@ from typing import Any
 
 class StudyLibraryIndexError(RuntimeError):
     pass
+
+
+_CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+|[^\s\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+
+
+def segment_cjk(text: str) -> str:
+    """Split CJK runs into single characters so short queries can match."""
+    parts: list[str] = []
+    for match in _RUN.finditer(str(text or "")):
+        value = match.group(0)
+        if _CJK.match(value):
+            parts.extend(value)
+        else:
+            parts.append(value)
+    return " ".join(parts)
+
+
+def _despace_cjk(text: str) -> str:
+    return re.sub(r"(?<=[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]) (?=[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])", "", text or "")
 
 
 class StudyLibraryIndex:
@@ -49,15 +70,21 @@ class StudyLibraryIndex:
 
     @classmethod
     def _fts_query(cls, query: str) -> str:
-        raw=(query or "")[:cls.MAX_QUERY_CHARS].strip()
+        raw = (query or "")[: cls.MAX_QUERY_CHARS].strip()
         if not raw:
             return ""
-        tokens=[t for t in re.split(r"\s+", raw) if t]
-        return " OR ".join('"'+t.replace('"','""')+'"' for t in tokens)
+        tokens: list[str] = []
+        for match in _RUN.finditer(raw):
+            value = match.group(0)
+            if _CJK.match(value):
+                tokens.append('"' + " ".join(value) + '"')
+            else:
+                tokens.append('"' + value.replace('"', '""') + '"')
+        return " OR ".join(tokens)
 
-    def index_resource(self, *, resource_id: str, title: str, course_or_subject: str, content: str, extraction_kind: str='utf8_text') -> None:
+    def index_resource(self, *, resource_id: str, title: str, course_or_subject: str, content: str, extraction_kind: str='utf8_text', connection=None) -> None:
         stamp=datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
             conn.execute("""
                 INSERT INTO study_resource_content(resource_id, extracted_text, extraction_kind, indexed_at)
                 VALUES (?, ?, ?, ?)
@@ -70,7 +97,23 @@ class StudyLibraryIndex:
             conn.execute("""
                 INSERT INTO study_resource_fts(resource_id, title, course_or_subject, content)
                 VALUES (?, ?, ?, ?)
-            """, (resource_id, title, course_or_subject, content))
+            """, (resource_id, segment_cjk(title), segment_cjk(course_or_subject), segment_cjk(content)))
+
+    def reindex_all(self) -> int:
+        """Rebuild FTS rows (needed once after switching to CJK segmentation)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT c.resource_id, c.extracted_text, r.title, r.course_or_subject "
+                "FROM study_resource_content c JOIN study_resources r ON r.id = c.resource_id"
+            ).fetchall()
+        for row in rows:
+            self.index_resource(
+                resource_id=row["resource_id"],
+                title=row["title"],
+                course_or_subject=row["course_or_subject"],
+                content=row["extracted_text"],
+            )
+        return len(rows)
 
     def update_resource_metadata(self, *, resource_id: str, title: str, course_or_subject: str) -> None:
         with self._connect() as conn:
@@ -78,8 +121,8 @@ class StudyLibraryIndex:
         if row is not None:
             self.index_resource(resource_id=resource_id, title=title, course_or_subject=course_or_subject, content=row['extracted_text'])
 
-    def delete_resource(self, resource_id: str) -> None:
-        with self._connect() as conn:
+    def delete_resource(self, resource_id: str, *, connection=None) -> None:
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
             conn.execute("DELETE FROM study_resource_fts WHERE resource_id = ?", (resource_id,))
             conn.execute("DELETE FROM study_resource_content WHERE resource_id = ?", (resource_id,))
 
@@ -116,5 +159,5 @@ class StudyLibraryIndex:
         return [{
             'resource_id':r['resource_id'], 'attachment_id':r['attachment_id'], 'title':r['title'],
             'resource_type':r['resource_type'], 'course_or_subject':r['course_or_subject'],
-            'metadata':json.loads(r['metadata_json'] or '{}'), 'snippet':r['snippet'] or ''
+            'metadata':json.loads(r['metadata_json'] or '{}'), 'snippet':_despace_cjk(r['snippet'] or '')
         } for r in rows]

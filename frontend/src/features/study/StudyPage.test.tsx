@@ -3,6 +3,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StudyPlan } from "../../api/study";
+import { studyReview } from "../../api/study-review";
+import StudyReviewPanel from "./StudyReviewPanel";
+import QuestionIntakePanel from "./QuestionIntakePanel";
 import { StudyPage } from "./StudyPage";
 
 const {
@@ -80,6 +83,40 @@ function renderStudyPage() {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+});
+
+it("requires a recall response before revealing the evidence and records mastery", async () => {
+  const card = {
+    id: "card", front: "Carrier?", back: "ATP", excerpt: "ATP carries energy.",
+    source_title: "Biology", resource_id: "bio", question_id: null,
+  };
+  const recall = {
+    id: "recall", card_id: card.id, response: "ATP", created_at: "2026-11-17T00:00:00Z",
+    rating: null, due_at: null,
+  };
+  vi.spyOn(studyReview, "questions").mockResolvedValue({ questions: [] });
+  vi.spyOn(studyReview, "cards").mockResolvedValue({ cards: [] });
+  vi.spyOn(studyReview, "draw").mockResolvedValue({ card: { id: card.id, front: card.front }, matched: 1 });
+  const submit = vi.spyOn(studyReview, "recall").mockResolvedValue({ card, recall });
+  const rate = vi.spyOn(studyReview, "rate").mockResolvedValue({
+    ...recall, rating: 2, due_at: "2026-11-20T00:00:00Z",
+  });
+  render(<StudyReviewPanel todayTasks={plan.tasks} />);
+  fireEvent.click(screen.getByRole("button", { name: "今日复习" }));
+  fireEvent.change(screen.getByLabelText("从今日任务填写知识点"), { target: { value: plan.tasks[0].id } });
+  expect(screen.getByLabelText("知识点", { exact: true })).toHaveValue(plan.tasks[0].title);
+  fireEvent.click(screen.getByRole("button", { name: "抽背到期闪卡" }));
+  expect(await screen.findByText("Carrier?")).toBeInTheDocument();
+  expect(screen.queryByText("ATP carries energy.")).toBeNull();
+  expect(screen.getByRole("button", { name: "提交复述并核对" })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("先复述你的答案"), { target: { value: "ATP" } });
+  fireEvent.click(screen.getByRole("button", { name: "提交复述并核对" }));
+  expect(await screen.findByText("ATP carries energy.")).toBeInTheDocument();
+  expect(submit).toHaveBeenCalledWith(card.id, expect.any(String), "ATP");
+  fireEvent.click(screen.getByRole("button", { name: "已掌握" }));
+  expect(await screen.findByText(/下次复习/)).toBeInTheDocument();
+  expect(rate).toHaveBeenCalledWith(recall.id, 2);
 });
 
 beforeEach(() => {
@@ -106,6 +143,55 @@ beforeEach(() => {
       tasks: [{ ...plan.tasks[0], title: "Edited task", review_required: true }],
     },
   });
+});
+
+it("asks for permission before generating after an empty search and supports direct generation", async () => {
+  const draft = {
+    source: { id: "mock", kind: "mock" as const, title: "Cell biology", url: null },
+    text: "Cell biology", segments: 1,
+    questions: [{ prompt: "Carrier?", options: ["ATP", "DNA"], correct: 0, excerpt: "Cell biology", explanation: "" }],
+  };
+  vi.spyOn(studyReview, "searchExams").mockResolvedValue({ sources: [] });
+  const generate = vi.spyOn(studyReview, "practiceDrafts").mockResolvedValue(draft);
+  render(<QuestionIntakePanel planId={plan.id} tasks={plan.tasks} onSaved={async () => {}} />);
+  fireEvent.click(screen.getByText("添加练习题"));
+  fireEvent.click(screen.getByRole("button", { name: "联网找真题" }));
+  fireEvent.change(screen.getByLabelText("真题主题"), { target: { value: "细胞生物学" } });
+  fireEvent.click(screen.getByRole("button", { name: "搜索真题" }));
+  const consent = await screen.findByRole("button", { name: "同意并生成模拟题" });
+  expect(generate).not.toHaveBeenCalled();
+  fireEvent.click(consent);
+  expect(await screen.findByText("模拟题草稿")).toBeInTheDocument();
+  expect(generate).toHaveBeenLastCalledWith("细胞生物学", plan.id, [plan.tasks[0].id]);
+  fireEvent.click(screen.getByRole("button", { name: "AI 出模拟题" }));
+  fireEvent.click(screen.getByRole("button", { name: "生成模拟题" }));
+  expect(await screen.findByText("模拟题草稿")).toBeInTheDocument();
+  expect(generate).toHaveBeenCalledTimes(2);
+});
+
+it("accepts a pasted screenshot and requires an answer before saving the extracted exercise", async () => {
+  const draft = {
+    source: { id: "upload", kind: "upload" as const, title: "capture.png", url: null },
+    text: "Carrier? A. ATP B. DNA", segments: 1,
+    questions: [{ prompt: "Carrier?", options: ["ATP", "DNA"], correct: null,
+      excerpt: "Carrier? A. ATP B. DNA", explanation: "" }],
+  };
+  const upload = vi.spyOn(studyReview, "uploadDrafts").mockResolvedValue(draft);
+  const save = vi.spyOn(studyReview, "saveIntake").mockResolvedValue({ imported: 1 });
+  render(<QuestionIntakePanel tasks={[]} onSaved={async () => {}} />);
+  fireEvent.click(screen.getByText("添加练习题"));
+  const screenshot = new File(["fake"], "capture.png", { type: "image/png" });
+  fireEvent.paste(screen.getByLabelText("粘贴截图"), { clipboardData: {
+    items: [{ type: "image/png", getAsFile: () => screenshot }],
+  } });
+  fireEvent.click(screen.getByRole("button", { name: "提取题目" }));
+  const confirm = await screen.findByRole("button", { name: "确认入库" });
+  expect(upload).toHaveBeenCalledWith("capture.png", expect.any(String), 1);
+  expect(confirm).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("正确选项"), { target: { value: "0" } });
+  fireEvent.click(confirm);
+  expect(await screen.findByText("已入库 1 道题。")).toBeInTheDocument();
+  expect(save).toHaveBeenCalledWith("upload", [{ ...draft.questions[0], correct: 0 }]);
 });
 
 describe("StudyPage Phase 5.1 manual editor", () => {
@@ -194,6 +280,8 @@ describe("StudyPage Phase 5.3B adaptive workspace", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("阳光点")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "资料" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "教材" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "校园" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "复习" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "答疑" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "番茄钟" })).toBeInTheDocument();

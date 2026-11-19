@@ -1,11 +1,40 @@
 import { apiPath, requestJson } from "./client";
 
+export type PersonalityTrait = { layer: string; key: string; statement: string };
+
+export const fetchPersonalityTraits = () =>
+  requestJson<{ traits: PersonalityTrait[] }>("/api/companion/personality");
+
+export const savePersonalityTrait = (trait: Omit<PersonalityTrait, "statement"> & { statement: string | null }) =>
+  requestJson<{ traits: PersonalityTrait[] }>("/api/companion/personality", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(trait),
+  });
+
+export type ReplyFeedback = { rating: "like" | "dislike"; note: string };
+
 export type ChatMessage = {
   id?: number;
   role: "user" | "assistant";
   content: string;
   timeline_editable?: boolean;
+  feedback?: ReplyFeedback | null;
 };
+
+export const saveReplyFeedback = (
+  sessionId: string,
+  sessionKey: string,
+  messageId: number,
+  feedback: ReplyFeedback | null,
+) => requestJson<{ feedback: ReplyFeedback | null }>(
+  `/api/sessions/${encodeURIComponent(sessionId)}/messages/${messageId}/feedback`,
+  {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-HoneyOS-Session-Key": sessionKey },
+    body: JSON.stringify(feedback ?? { rating: null }),
+  },
+);
 
 export const fetchCompanionMessages = (
   sessionId: string,
@@ -34,6 +63,8 @@ export type MemoryItem = {
   created_at?: string | null;
   expires_at?: string | null;
   updated_at?: string | null;
+  unavailable_source_count?: number;
+  can_edit?: boolean;
 };
 
 export type HistoricalMemoryItem = {
@@ -131,6 +162,7 @@ export type RecentChapter = {
   source_session_id: string;
   source_message_ids: number[];
   created_at: string;
+  unavailable_source_count?: number;
 };
 
 export type HistoryItem = {
@@ -317,13 +349,13 @@ export const fetchHistoricalMemories = (options: {
   return requestJson<HistoricalMemoryPage>(`/api/memory/library?${params.toString()}`);
 };
 
-export const updateCompanionMemory = (memoryId: string, action: "resolve" | "forget") =>
+export const updateCompanionMemory = (memoryId: string, action: "resolve" | "forget" | "edit", content?: string) =>
   requestJson<{ success: true; id: string; action: string }>(
     `/api/companion/memories/${encodeURIComponent(memoryId)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ action, content }),
     },
   );
 

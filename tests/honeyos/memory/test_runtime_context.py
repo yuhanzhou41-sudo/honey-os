@@ -43,6 +43,12 @@ def test_external_deepseek_defaults_to_historical():
     assert "Status: historical" in result.text
 
 
+def test_wider_recall_has_a_separate_budget():
+    candidates = [Candidate(f"m{index}", f"用户以前记录了项目事件 {index}。") for index in range(10)]
+    assert len(_build(candidates).included) == 3
+    assert len(_build(candidates, max_items=64, max_memory_chars=8000).included) == 10
+
+
 def test_model_visible_text_hides_provenance_and_ids():
     result = _build([
         Candidate(
@@ -631,3 +637,11 @@ def test_f2_4_replacement_parser_uses_new_value_not_old_mentioned_value():
 
     assert values == {("25", "分钟")}
     assert ("40", "分钟") not in values
+
+
+def test_structured_memory_duplicate_leaves_space_for_a_distinct_cognitive_hit():
+    duplicate = Candidate("same", "用户明早要带蓝色文件夹")
+    distinct = Candidate("different", "另有一份纸质材料需要签字")
+    result = _build([duplicate, distinct], exclude_summaries=["用户明早要带蓝色文件夹"])
+    assert [item.memory_id for item in result.included] == ["different"]
+    assert result.rejected[0].reason == "duplicate_context"

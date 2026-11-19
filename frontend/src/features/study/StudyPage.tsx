@@ -1,3 +1,6 @@
+import { fetchCompanionBootstrap } from "../../api/companion";
+import { listStudyReminders, planExportUrl, planTemplateUrl, setStudyReminder } from "../../api/study-planning";
+import StudyReviewPanel, { StudyQuestionDialog } from "./StudyReviewPanel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
@@ -29,6 +32,8 @@ import {
 import { PageHeader } from "../../components/honey/PageHeader";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
 import { StudyLibraryPanel } from "./StudyLibraryPanel";
+import { StudyCampusPanel } from "./StudyCampusPanel";
+import { StudyTextbookPanel } from "./StudyTextbookPanel";
 
 const plansKey = ["study", "plans"] as const;
 
@@ -54,7 +59,7 @@ type TaskDraft = {
   status: StudyTaskStatus;
 };
 
-type DrawerKind = "library" | "review" | "qa" | null;
+type DrawerKind = "library" | "review" | "qa" | "textbook" | "campus" | null;
 
 function planDraftOf(plan: StudyPlan): PlanDraft {
   return {
@@ -282,7 +287,7 @@ export function StudyPage() {
 
   const deletePlanMutation = useMutation({
     mutationFn: (id: string) => deleteStudyPlan(id),
-    onSuccess: refreshPlans,
+    onSuccess: () => { setSelectedPlanId(""); refreshPlans(); },
   });
 
   const setPlanStatus = useMutation({
@@ -346,7 +351,7 @@ export function StudyPage() {
     <Frame>
       <PageHeader
         title="学习"
-        description="今天只看今天要完成的内容；资料、复习、答疑和番茄钟需要时再展开。"
+        description="今天只看今天要完成的内容；资料、教材、复习、答疑、校园入口和番茄钟需要时再展开。"
       />
 
       <GrowthStrip />
@@ -384,7 +389,14 @@ export function StudyPage() {
               <SecondaryButton onClick={() => createPlan.mutate()}>
                 ＋ 新建
               </SecondaryButton>
+              {selectedPlan && <SecondaryButton danger disabled={deletePlanMutation.isPending} onClick={() => {
+                if (window.confirm("删除整个计划「" + selectedPlan.title + "」以及其中的任务和提醒？")) {
+                  deletePlanMutation.mutate(selectedPlan.id);
+                }
+              }}>删除整个计划</SecondaryButton>}
             </div>
+            {selectedPlan && <a className="mt-2 block text-sm underline" download href={planExportUrl(selectedPlan.id)}>下载当前计划 Markdown</a>}
+            {deletePlanMutation.error && <p role="alert" className="mt-2 text-sm text-red-600">{messageOf(deletePlanMutation.error)}</p>}
             {createPlan.error ? (
               <p className="mt-2 text-xs text-red-500">
                 {messageOf(createPlan.error)}
@@ -395,6 +407,7 @@ export function StudyPage() {
           <div>
             <p className="text-xs text-[var(--foreground-muted)]">
               导入 StudyPlan Markdown
+              {" · "}<a className="underline" href={planTemplateUrl()} download>下载计划模板</a>
             </p>
             <label className="mt-1 flex cursor-pointer items-center justify-between gap-3 rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-3 py-3 text-sm">
               <span className="truncate">
@@ -474,7 +487,12 @@ export function StudyPage() {
             onPlanStatus={(status) =>
               setPlanStatus.mutate({ id: selectedPlan.id, status })
             }
-            onDeletePlan={() => deletePlanMutation.mutate(selectedPlan.id)}
+            onDeletePlan={() => {
+              if (!deletePlanMutation.isPending &&
+                  window.confirm("删除整个计划「" + selectedPlan.title + "」以及其中的任务和提醒？")) {
+                deletePlanMutation.mutate(selectedPlan.id);
+              }
+            }}
             onTaskStatus={(taskId, status) =>
               setTaskStatus.mutate({
                 planId: selectedPlan.id,
@@ -499,7 +517,8 @@ export function StudyPage() {
       <ToolRail drawer={drawer} onDrawer={setDrawer} />
 
       {drawer ? (
-        <UtilityDrawer kind={drawer} onClose={() => setDrawer(null)} />
+        <UtilityDrawer kind={drawer} onClose={() => setDrawer(null)} planId={selectedPlan?.id}
+          todayTasks={selectedPlan?.tasks.filter(task => task.scheduled_date === localDate()) ?? []} />
       ) : null}
 
       {selectedPlan ? (
@@ -672,7 +691,7 @@ function PlanWorkspace({
               </SecondaryButton>
             )}
             <SecondaryButton danger onClick={onDeletePlan}>
-              删除
+              删除整个计划
             </SecondaryButton>
           </div>
         </div>
@@ -915,6 +934,7 @@ function PlanWorkspace({
             <DayTaskCard
               key={task.id}
               task={task}
+              planId={plan.id}
               editing={taskEditingId === task.id}
               draft={taskEditingId === task.id ? taskDraft : null}
               onEdit={() => onStartTaskEdit(task)}
@@ -946,6 +966,7 @@ function PlanWorkspace({
 
 function DayTaskCard({
   task,
+  planId,
   editing,
   draft,
   onEdit,
@@ -959,6 +980,7 @@ function DayTaskCard({
   onFocus,
 }: {
   task: StudyTask;
+  planId: string;
   editing: boolean;
   draft: TaskDraft | null;
   onEdit: () => void;
@@ -1128,6 +1150,7 @@ function DayTaskCard({
           ) : null}
         </div>
       </div>
+      <TaskReminderControl planId={planId} task={task} />
     </article>
   );
 }
@@ -1145,7 +1168,9 @@ function ToolRail({
     label: string;
   }> = [
     { key: "library", icon: "📚", label: "资料" },
+    { key: "textbook", icon: "📖", label: "教材" },
     { key: "review", icon: "🧠", label: "复习" },
+    { key: "campus", icon: "🎓", label: "校园" },
     { key: "qa", icon: "❓", label: "答疑" },
   ];
 
@@ -1179,10 +1204,16 @@ function ToolRail({
 function UtilityDrawer({
   kind,
   onClose,
+  todayTasks,
+  planId,
 }: {
   kind: Exclude<DrawerKind, null>;
   onClose: () => void;
+  todayTasks: StudyTask[];
+  planId?: string;
 }) {
+  if (kind === "qa") return <StudyQuestionDialog onClose={onClose} />;
+
   return (
     <div
       className="fixed inset-0 z-40 flex justify-end bg-black/10"
@@ -1196,9 +1227,11 @@ function UtilityDrawer({
           <h2 className="text-lg font-semibold">
             {kind === "library"
               ? "学习资料"
-              : kind === "review"
-                ? "复习"
-                : "问 HoneyOS"}
+              : kind === "textbook"
+                ? "教材采集"
+                : kind === "campus"
+                  ? "校园服务"
+                  : "复习"}
           </h2>
           <button
             type="button"
@@ -1211,40 +1244,14 @@ function UtilityDrawer({
 
         {kind === "library" ? (
           <StudyLibraryPanel />
-        ) : kind === "review" ? (
-          <ReservedTool
-            icon="🧠"
-            title="复习中心"
-            text="这里已经为闪卡、10 题练习和错题本留好位置。下一阶段接入 Study Review Core。"
-          />
+        ) : kind === "textbook" ? (
+          <StudyTextbookPanel />
+        ) : kind === "campus" ? (
+          <StudyCampusPanel />
         ) : (
-          <ReservedTool
-            icon="❓"
-            title="HoneyOS 答疑"
-            text="后续会自动带入当前计划、当前任务和 Study Library 检索结果；现在先保留干净入口。"
-          />
+          <StudyReviewPanel todayTasks={todayTasks} planId={planId} />
         )}
       </aside>
-    </div>
-  );
-}
-
-function ReservedTool({
-  icon,
-  title,
-  text,
-}: {
-  icon: string;
-  title: string;
-  text: string;
-}) {
-  return (
-    <div className="rounded-[var(--radius-lg)] border border-dashed border-[var(--border-strong)] px-6 py-14 text-center">
-      <div className="text-4xl">{icon}</div>
-      <h3 className="mt-4 font-semibold">{title}</h3>
-      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--foreground-muted)]">
-        {text}
-      </p>
     </div>
   );
 }
@@ -1772,16 +1779,19 @@ function SecondaryButton({
   children,
   onClick,
   danger = false,
+  disabled = false,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   danger?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-[var(--radius-md)] border px-3 py-2 text-sm ${
+      disabled={disabled}
+      className={`rounded-[var(--radius-md)] border px-3 py-2 text-sm disabled:opacity-50 ${
         danger
           ? "border-red-400/50 text-red-500"
           : "border-[var(--border-strong)]"
@@ -1904,4 +1914,39 @@ function Frame({ children }: { children: React.ReactNode }) {
       {children}
     </section>
   );
+}
+
+
+function TaskReminderControl({ planId, task }: { planId: string; task: StudyTask }) {
+  const cache = useQueryClient();
+  const queryKey = ["study-reminders", planId];
+  const saved = useQuery({
+    queryKey,
+    queryFn: () => listStudyReminders(planId),
+  });
+  const value = saved.data?.reminders[task.id] || "";
+  const [draft, setDraft] = useState<string>();
+  const mutation = useMutation({
+    mutationFn: async (time: string | null) => {
+      const sessionId = time ? (await fetchCompanionBootstrap()).session_id : undefined;
+      return setStudyReminder(planId, task.id, time, sessionId);
+    },
+    onSuccess: ({ time }) => {
+      cache.setQueryData<{ reminders: Record<string, string> }>(queryKey, previous => ({
+        reminders: { ...previous?.reminders, [task.id]: time || "" },
+      }));
+      setDraft(undefined);
+    },
+  });
+  return <details className="mt-2 text-sm">
+    <summary>{value ? "学习提醒 · " + value : "设置学习提醒"}</summary>
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <label>任务当天 <input type="time" aria-label="学习提醒时刻" value={draft ?? value}
+        disabled={mutation.isPending} onChange={event => setDraft(event.target.value)} /></label>
+      <SecondaryButton disabled={!(draft ?? value) || mutation.isPending}
+        onClick={() => mutation.mutate(draft ?? value)}>保存提醒</SecondaryButton>
+      {value && <SecondaryButton disabled={mutation.isPending} onClick={() => mutation.mutate(null)}>取消提醒</SecondaryButton>}
+    </div>
+    {(mutation.error || saved.error) && <p role="alert">{messageOf(mutation.error || saved.error)}</p>}
+  </details>;
 }

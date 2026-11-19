@@ -16,6 +16,15 @@ from .models import (
 )
 from .pomodoro import StudyPomodoroScheduler
 from .library import StudyLibraryIndex
+from .local_source import (
+    DOCUMENT_FORMATS,
+    TEXT_FORMATS,
+    extract_local_source,
+    local_source_metadata,
+    local_source_status,
+    resolve_local_source,
+    source_signature,
+)
 from honeyos.files.models import AttachmentStatus
 from honeyos.files.service import AttachmentService
 from .repository import (
@@ -52,12 +61,14 @@ class StudyService:
         *,
         session_store: StudySessionStore | None = None,
         pomodoro_scheduler: StudyPomodoroScheduler | None = None,
+        local_mount_root: Path | str = "/mnt",
     ):
         self.repository = repository or StudyRepository()
         self.sessions = session_store or StudySessionStore(self.repository.db_path)
         self.pomodoro_scheduler = pomodoro_scheduler or StudyPomodoroScheduler()
         self.library = StudyLibraryIndex(self.repository.db_path)
         self.attachments = AttachmentService(self.repository.study_dir.parent / "files")
+        self.local_mount_root = Path(local_mount_root)
 
     @staticmethod
     def _now() -> datetime:
@@ -118,9 +129,17 @@ class StudyService:
         raw = plan.model_dump()
         raw.update(patch)
         raw["updated_at"] = self._now()
-        return self.repository.save_plan(validate_study_plan(raw))
+        from .reminders import sync_plan_reminders
+
+        saved = self.repository.save_plan(validate_study_plan(raw))
+        sync_plan_reminders(self, saved, plan)
+        return saved
 
     def delete_plan(self, plan_id: str) -> None:
+        from .reminders import cancel_task_reminders
+
+        plan = self.get_plan(plan_id)
+        cancel_task_reminders(self, [task.id for task in plan.tasks])
         self.repository.delete_plan(plan_id)
 
     def create_task(self, plan_id: str, payload: dict[str, Any]) -> StudyPlan:
@@ -153,9 +172,14 @@ class StudyService:
             raw.update(patch)
             raw["plan_id"] = plan.id
             raw["updated_at"] = self._now()
+            from .reminders import sync_plan_reminders
+
+            before = plan.model_copy(deep=True)
             plan.tasks[index] = StudyTask.model_validate(raw)
             plan.updated_at = self._now()
-            return self.repository.save_plan(validate_study_plan(plan))
+            saved = self.repository.save_plan(validate_study_plan(plan))
+            sync_plan_reminders(self, saved, before)
+            return saved
         raise StudyTaskNotFoundError(task_id)
 
     def set_task_status(self, plan_id: str, task_id: str, status: str) -> StudyPlan:
@@ -166,6 +190,9 @@ class StudyService:
         remaining = [task for task in plan.tasks if task.id != task_id]
         if len(remaining) == len(plan.tasks):
             raise StudyTaskNotFoundError(task_id)
+        from .reminders import cancel_task_reminders
+
+        cancel_task_reminders(self, [task_id])
         plan.tasks = remaining
         plan.updated_at = self._now()
         return self.repository.save_plan(validate_study_plan(plan))
@@ -516,11 +543,114 @@ class StudyService:
     def get_resource(self, resource_id: str) -> StudyResource:
         return self.repository.get_resource(resource_id)
 
+    def reference_local_file(self, filename: str, *, resource_id: str = "") -> tuple[StudyResource, bool]:
+        path = resolve_local_source(filename, self.local_mount_root)
+        if path.suffix.lower() not in TEXT_FORMATS | DOCUMENT_FORMATS:
+            raise ValueError("不支持此文档格式")
+        signature = source_signature(path)
+        source = local_source_metadata(path, self.attachments.max_attachment_bytes)
+        digest = source["sha256"]
+        if resource_id:
+            with self.repository.resource_transaction() as conn:
+                if signature != source_signature(path):
+                    raise ValueError("原文件发生变化，请重试")
+                resource = self.repository.get_resource(resource_id, connection=conn)
+                previous = resource.metadata.get("local_source")
+                if not previous or previous.get("sha256") != digest:
+                    raise ValueError("重新定位时请选择与原资料内容一致的文件")
+                return self._save_local_location(resource, source, conn), True
+
+        matching_attachments = [
+            item.id for item in self.attachments.repository.find_by_sha256(digest)
+            if item.status is AttachmentStatus.READY
+        ]
+
+        def existing(conn):
+            resource = self.repository.find_resource_by_local_digest(digest, connection=conn)
+            if resource is not None:
+                if local_source_status(resource.metadata["local_source"]) != "online":
+                    resource = self._save_local_location(resource, source, conn)
+                return resource
+            legacy = self.repository.find_indexed_resource_by_attachments(matching_attachments, connection=conn)
+            return self._save_local_location(legacy, source, conn) if legacy is not None else None
+
+        # Repeated references hash the selected file but skip extraction.
+        with self.repository.resource_transaction() as conn:
+            if signature != source_signature(path):
+                raise ValueError("原文件发生变化，请重试")
+            match = existing(conn)
+            if match is not None:
+                return match, True
+
+        text = extract_local_source(path)
+        if not text.strip():
+            raise ValueError("没有可引用的正文")
+        if signature != source_signature(path):
+            raise ValueError("提取过程中原文件发生变化，请重试")
+
+        # The second lookup and all writes share one transaction across workers.
+        with self.repository.resource_transaction() as conn:
+            if signature != source_signature(path):
+                raise ValueError("原文件发生变化，请重试")
+            match = existing(conn)
+            if match is not None:
+                return match, True
+            resource = StudyResource(
+                attachment_id="",
+                title=path.name,
+                resource_type="document",
+                metadata={"local_source": source},
+            )
+            self.repository.save_resource(resource, connection=conn)
+            self.library.index_resource(
+                resource_id=resource.id, title=resource.title, course_or_subject="",
+                content=text, connection=conn,
+            )
+        return resource, False
+
+    def _save_local_location(self, resource: StudyResource, source: dict, connection) -> StudyResource:
+        updated = resource.model_copy(update={
+            "metadata": {**resource.metadata, "local_source": source},
+            "updated_at": self._now(),
+        })
+        return self.repository.save_resource(updated, connection=connection)
+
+    def describe_resource_storage(self, resource: StudyResource) -> dict[str, Any]:
+        source = resource.metadata.get("local_source")
+        content = self.library.get_content(resource.id)
+        return {
+            "source_path": source["path"] if source else None,
+            "source_status": local_source_status(source) if source else "managed",
+            "original_bytes": source["size_bytes"] if source else None,
+            "indexed_text_bytes": len(content["extracted_text"].encode("utf-8")) if content else 0,
+            "has_managed_attachment": bool(resource.attachment_id),
+        }
+
+    def chat_resource_texts(self, resource_ids: list[str]) -> list[tuple[str, str, str]]:
+        documents = []
+        for resource_id in dict.fromkeys(resource_ids):
+            resource = self.get_resource(resource_id)
+            source = resource.metadata.get("local_source")
+            if source and local_source_status(source) != "online":
+                raise ValueError(f"原文件已更改或暂不可访问：{resource.title}。请在资料库重新定位。")
+            content = self.get_resource_content(resource_id)["extracted_text"].strip()
+            if not content:
+                raise ValueError(f"资料没有可引用的正文：{resource.title}")
+            documents.append((resource.id, resource.title, content))
+        return documents
+
+    def build_chat_resource_context(self, resource_ids: list[str], *, query: str = "") -> str:
+        from .chat_reading import prepare_chat_documents
+
+        return prepare_chat_documents(self.chat_resource_texts(resource_ids), query)
+
     def create_resource(self, payload: dict[str, Any]) -> StudyResource:
         allowed={"attachment_id","title","resource_type","course_or_subject","metadata"}
         unknown=set(payload)-allowed
         if unknown:
             raise ValueError(f"unsupported resource fields: {', '.join(sorted(unknown))}")
+        if isinstance(payload.get("metadata"), dict) and "local_source" in payload["metadata"]:
+            raise ValueError("local_source is managed by Study")
         attachment_id=str(payload.get("attachment_id") or "").strip()
         if not attachment_id:
             raise ValueError("attachment_id is required")
@@ -548,14 +678,20 @@ class StudyService:
         if unknown:
             raise ValueError(f"unsupported resource fields: {', '.join(sorted(unknown))}")
         resource=self.repository.get_resource(resource_id)
+        if "metadata" in patch:
+            if not isinstance(patch["metadata"], dict) or "local_source" in patch["metadata"]:
+                raise ValueError("local_source is managed by Study")
+            if "local_source" in resource.metadata:
+                patch = {**patch, "metadata": {**patch["metadata"], "local_source": resource.metadata["local_source"]}}
         raw=resource.model_dump(); raw.update(patch); raw["updated_at"]=self._now()
         saved=self.repository.save_resource(StudyResource.model_validate(raw))
         self.library.update_resource_metadata(resource_id=saved.id, title=saved.title, course_or_subject=saved.course_or_subject)
         return saved
 
     def delete_resource(self, resource_id: str) -> None:
-        self.library.delete_resource(resource_id)
-        self.repository.delete_resource(resource_id)
+        with self.repository.resource_transaction() as conn:
+            self.library.delete_resource(resource_id, connection=conn)
+            self.repository.delete_resource(resource_id, connection=conn)
 
     def get_resource_content(self, resource_id: str) -> dict[str, Any]:
         self.repository.get_resource(resource_id)

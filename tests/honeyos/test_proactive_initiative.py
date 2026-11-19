@@ -56,6 +56,23 @@ def test_consent_is_mandatory(tmp_path):
     assert decision.reason == "not_consented"
 
 
+def test_validated_own_pressure_reduces_existing_initiative_score(tmp_path):
+    from honeyos.companion.physiology_shadow import PhysiologyShadow, TurnEvidence
+    from honeyos.companion.proactive_initiative import _score_from_momentary_state
+
+    _curious_state(tmp_path)
+    neutral = _score_from_momentary_state(tmp_path, NOW)
+    store = PhysiologyShadow(tmp_path)
+    store.enqueue("s", 1, now=NOW)
+    reply = "I am worried that the project notes might be lost."
+    store.process_one(
+        lambda *_: TurnEvidence(reply, reply),
+        lambda _: {"event": "unresolved_loss", "strength": 1, "quote": reply},
+        now=NOW,
+    )
+    assert _score_from_momentary_state(tmp_path, NOW) < neutral
+
+
 def test_owner_must_be_idle(tmp_path):
     _curious_state(tmp_path)
     store = FakeStore(idle_hours=2)

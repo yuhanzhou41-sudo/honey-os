@@ -33,8 +33,44 @@ from honeyos.gateway.platforms.api_server import (
     _run_completed_event_payload,
     _runtime_provider_identity,
     _security_headers_for_path,
+    security_headers_middleware,
 )
 from honeyos.gateway.session import SessionSource, build_session_key
+
+
+@pytest.mark.asyncio
+async def test_event_permissions_require_local_cookie_and_revoke_immediately(tmp_path, monkeypatch):
+    from contextlib import closing
+    from honeyos.core.state import SessionDB
+
+    monkeypatch.setenv("HONEYOS_HOME", str(tmp_path))
+    adapter = _api_adapter()
+    request = SimpleNamespace(
+        remote="127.0.0.1", cookies={}, headers={}, scheme="http", host="127.0.0.1:8642",
+        query={"source": "chat", "session_id": "session"}, match_info={"source": "chat"}, method="POST",
+    )
+    assert (await adapter._handle_companion_event_grant(request)).status == 401
+    request.cookies["honeyos_local"] = adapter._local_web_token
+    request.headers["Origin"] = "http://127.0.0.1:9999"
+    assert (await adapter._handle_companion_event_grant(request)).status == 403
+    request.headers["Origin"] = "http://127.0.0.1:8642"
+    with closing(SessionDB(tmp_path / "state.db")) as db:
+        db.create_session("session", "api_server")
+        db.append_message("session", "user", "private message")
+        adapter._ensure_session_db = MagicMock(return_value=db)
+        adapter._get_existing_session_or_404 = AsyncMock(return_value=({"id": "session"}, None))
+        assert (await adapter._handle_companion_events(request)).status == 403
+        adapter._ensure_session_db.assert_not_called()
+        assert (await adapter._handle_companion_event_grant(request)).status == 200
+        response = await adapter._handle_companion_events(request)
+        assert response.status == 200
+        rows = json.loads(response.text)["events"]
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "message.user"
+        assert "private message" not in response.text
+        request.method = "DELETE"
+        assert (await adapter._handle_companion_event_grant(request)).status == 200
+        assert (await adapter._handle_companion_events(request)).status == 403
 
 
 def test_companion_multimodal_message_is_visible_and_displayable():
@@ -969,6 +1005,26 @@ async def test_companion_react_index_establishes_session_and_supports_spa_routes
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path,remote,allowed", [
+    ("/study", "127.0.0.1", True),
+    ("/new-ui/study", "::1", True),
+    ("/p/local/study", "127.0.0.1", True),
+    ("/p/local/new-ui/study", "127.0.0.1", True),
+    ("/new-ui/study", "192.168.1.20", False),
+    ("/new-ui/", "127.0.0.1", False),
+])
+async def test_camera_permission_is_limited_to_local_study_documents(path, remote, allowed):
+    adapter = _api_adapter()
+    request = SimpleNamespace(path=path, remote=remote, match_info={})
+    response = await security_headers_middleware(request, adapter._handle_companion_react)
+    policy = response.headers["Permissions-Policy"]
+    assert policy == ("camera=(self), microphone=(), geolocation=()" if allowed else
+                      "camera=(), microphone=(), geolocation=()")
+    if allowed:
+        assert "script-src 'self'" in response.headers["Content-Security-Policy"]
+
+
+@pytest.mark.asyncio
 async def test_companion_react_rejects_path_traversal():
     adapter = _api_adapter()
     request = SimpleNamespace(remote="127.0.0.1", match_info={"asset_path": "../secret.txt"})
@@ -1066,7 +1122,8 @@ async def test_companion_bootstrap_returns_only_safe_shared_chat_messages(
 
 
 @pytest.mark.asyncio
-async def test_session_messages_companion_view_hides_internal_runtime_rows():
+@pytest.mark.parametrize("has_session_key", [False, True])
+async def test_session_messages_companion_view_hides_internal_runtime_rows(has_session_key):
     adapter = _api_adapter()
     adapter._get_existing_session_or_404 = AsyncMock(
         return_value=({"id": "shared-session"}, None)
@@ -1074,8 +1131,8 @@ async def test_session_messages_companion_view_hides_internal_runtime_rows():
     db = MagicMock()
     db.resolve_resume_session_id.return_value = "shared-session"
     db.get_messages.return_value = [
-        {"role": "user", "content": "在吗"},
-        {"role": "assistant", "content": "在呢。"},
+        {"id": 1, "role": "user", "content": "在吗"},
+        {"id": 2, "role": "assistant", "content": "在呢。"},
         {
             "role": "assistant",
             "content": "[This response was interrupted by a user correction.]",
@@ -1107,17 +1164,26 @@ async def test_session_messages_companion_view_hides_internal_runtime_rows():
     request = SimpleNamespace(
         cookies={"honeyos_local": adapter._local_web_token},
         remote="127.0.0.1",
-        headers={},
+        headers={"X-HoneyOS-Session-Key": "agent:main:api_server:dm:local-owner"}
+        if has_session_key else {},
         match_info={"session_id": "shared-session"},
         query={"view": "companion"},
     )
 
-    response = await adapter._handle_session_messages(request)
+    with patch(
+        "honeyos.companion.distillation.MemoryDistiller.timeline_edit_state",
+        return_value={"cursor": 1},
+    ):
+        response = await adapter._handle_session_messages(request)
 
-    assert json.loads(response.text)["data"] == [
-        {"role": "user", "content": "在吗"},
-        {"role": "assistant", "content": "在呢。"},
+    expected = [
+        {"id": 1, "role": "user", "content": "在吗"},
+        {"id": 2, "role": "assistant", "content": "在呢。"},
     ]
+    if has_session_key:
+        expected[0]["timeline_editable"] = False
+        expected[1]["timeline_editable"] = True
+    assert json.loads(response.text)["data"] == expected
 
 
 @pytest.mark.asyncio
@@ -1150,6 +1216,47 @@ async def test_companion_memory_action_updates_only_the_owner_lane(monkeypatch, 
 
     assert response.status == 200
     assert StructuredMemoryStore(tmp_path).list_active(lane_key=lane_key) == ()
+
+
+@pytest.mark.asyncio
+async def test_deleted_chat_marks_native_memory_without_removing_or_rewriting_it(monkeypatch, tmp_path):
+    from honeyos.companion.continuity import StructuredMemoryStore
+    from honeyos.core.state import SessionDB
+
+    monkeypatch.setenv("HONEYOS_RUNTIME_ID", "honeyos-companion-v0.3")
+    monkeypatch.setattr("honeyos.core.constants.get_honeyos_home", lambda: tmp_path)
+    lane = "agent:main:companion:dm:owner"
+    store = StructuredMemoryStore(tmp_path)
+    options = dict(lane_key=lane, kind="open_loop", content="核对项目备份", evidence="user_stated")
+    first = store.record(**options, source_session_id="one", source_message_ids=(1,))
+    second = store.record(**options, source_session_id="two", source_message_ids=(2,))
+    assert first and second and first.id == second.id
+    adapter = _api_adapter()
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session("one", "api_server")
+        db.create_session("two", "api_server")
+        adapter._ensure_session_db_async = AsyncMock(return_value=db)
+        request = SimpleNamespace(
+            cookies={"honeyos_local": adapter._local_web_token}, remote="127.0.0.1", headers={},
+            match_info={"memory_id": second.id},
+        )
+        assert db.delete_session("one")
+        response = await adapter._handle_companion_memories(request)
+        card = json.loads(response.text)["memories"][0]
+        assert card["unavailable_source_count"] == 1
+        assert card["content"] == "核对项目备份" and card["status"] == "active"
+        assert "核对项目备份" in store.context_for_lane(lane_key=lane)
+        assert card["can_edit"]
+
+        adapter._read_json_body = AsyncMock(return_value=({"action": "edit", "content": "改为核对共享备份"}, None))
+        assert (await adapter._handle_companion_memory_action(request)).status == 200
+        assert not store.update_content(lane_key=lane, item_id=second.id, content="自动覆盖")
+        response = await adapter._handle_companion_memories(request)
+        card = json.loads(response.text)["memories"][0]
+        assert card["content"] == "改为核对共享备份" and card["unavailable_source_count"] == 1
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio
@@ -1458,7 +1565,13 @@ async def test_companion_web_does_not_claim_topic_for_another_recent_channel(
 
 
 @pytest.mark.asyncio
-async def test_companion_session_chat_schedules_background_memory_distillation():
+@pytest.mark.parametrize(
+    ("stored_model", "expected_model"),
+    [("deepseek-v4-flash", "deepseek-v4-flash"), ("honeyos-agent", None)],
+)
+async def test_companion_session_chat_schedules_background_memory_distillation(
+    stored_model, expected_model,
+):
     adapter = _api_adapter()
     scheduler = MagicMock(return_value=True)
     adapter.gateway_runner = SimpleNamespace(
@@ -1468,7 +1581,7 @@ async def test_companion_session_chat_schedules_background_memory_distillation()
         return_value=("agent:main:api_server:dm:local-owner", None)
     )
     adapter._get_existing_session_or_404 = AsyncMock(
-        return_value=({"id": "shared-session", "model": "deepseek-v4-flash"}, None)
+        return_value=({"id": "shared-session", "model": stored_model}, None)
     )
     adapter._read_json_body = AsyncMock(return_value=({"message": "在吗"}, None))
     adapter._effective_session_runtime_request = MagicMock(
@@ -1507,6 +1620,7 @@ async def test_companion_session_chat_schedules_background_memory_distillation()
     await asyncio.sleep(0)
 
     assert response.status == 200
+    assert adapter._run_agent.await_args.kwargs["session_model"] == expected_model
     scheduler.assert_called_once()
     call = scheduler.call_args.kwargs
     assert call["lane_key"] == "agent:main:api_server:dm:local-owner"
@@ -1596,3 +1710,41 @@ async def test_companion_stream_chat_schedules_background_memory_distillation(
     scheduler.assert_called_once()
     assert delivery_order == ["reply_completed", "memory"]
     assert scheduler.call_args.kwargs["session_id"] == "shared-session"
+
+
+def test_named_custom_reply_retains_provider_only_for_resolved_endpoint():
+    from honeyos.gateway.platforms.api_server import _actual_api_runtime_provider
+
+    agent = SimpleNamespace(
+        provider="custom",
+        requested_provider="custom:qwen-local",
+        base_url="http://127.0.0.1:8080/v1/",
+        _honeyos_api_custom_route=("custom:qwen-local", "http://127.0.0.1:8080/v1"),
+    )
+    assert _actual_api_runtime_provider(agent) == "custom:qwen-local"
+
+    agent.base_url = "http://127.0.0.1:8081/v1"
+    assert _actual_api_runtime_provider(agent) == "custom"
+
+    agent.base_url = "http://127.0.0.1:8080/v1"
+    agent.requested_provider = "custom:alternate"
+    assert _actual_api_runtime_provider(agent) == "custom"
+
+
+def test_historical_user_images_leave_only_text_in_model_context():
+    from honeyos.agent.message_sanitization import historical_user_image_reference
+
+    text = {"type": "text", "text": "看看这张图"}
+    image = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+    content = [text, image]
+
+    result = historical_user_image_reference(content)
+
+    assert historical_user_image_reference([text]) == [text]
+    assert content == [text, image]
+    assert result[0] == text
+    assert len(result) == 2
+    assert result[1]["type"] == "text"
+    assert "1 image attachment" in result[1]["text"]
+    assert "base64" not in repr(result)
+    assert historical_user_image_reference([image]) == result[1:]

@@ -81,6 +81,8 @@ class StructuredMemoryItem:
     importance: str = "medium"
     created_by: str = "foreground"
     distillation_run_id: str | None = None
+    source_refs: tuple[tuple[str, int], ...] = ()
+    user_edited: bool = False
 
 
 @dataclass(frozen=True)
@@ -166,6 +168,8 @@ class StructuredMemoryStore:
             "importance": "TEXT NOT NULL DEFAULT 'medium'",
             "created_by": "TEXT NOT NULL DEFAULT 'foreground'",
             "distillation_run_id": "TEXT",
+            "source_refs": "TEXT NOT NULL DEFAULT '[]'",
+            "user_edited": "INTEGER NOT NULL DEFAULT 0",
         }
         for column, declaration in migrations.items():
             if column not in existing_columns:
@@ -176,6 +180,14 @@ class StructuredMemoryStore:
             """
             CREATE INDEX IF NOT EXISTS idx_structured_memories_active
             ON structured_memories (lane_key, status, updated_at DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS structured_memory_reinforcements (
+                item_id TEXT NOT NULL, session_id TEXT NOT NULL, message_id INTEGER NOT NULL,
+                PRIMARY KEY(item_id, session_id, message_id)
+            )
             """
         )
         try:
@@ -191,14 +203,28 @@ class StructuredMemoryStore:
         return " ".join(content.replace("\x00", "").split()).strip()[:500]
 
     @staticmethod
-    def _row_to_item(row: sqlite3.Row) -> StructuredMemoryItem:
-        expires_at = datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None
+    def _source_refs(row: sqlite3.Row) -> tuple[tuple[str, int], ...]:
         try:
-            source_message_ids = tuple(
+            return tuple(
+                (session_id, message_id)
+                for session_id, message_id in json.loads(row["source_refs"] or "[]")
+                if isinstance(session_id, str) and session_id and type(message_id) is int and message_id > 0
+            )
+        except (TypeError, ValueError):
+            return ()
+
+    @staticmethod
+    def _source_ids(row: sqlite3.Row) -> tuple[int, ...]:
+        try:
+            return tuple(
                 int(value) for value in json.loads(row["source_message_ids"] or "[]")
             )
         except (TypeError, ValueError, json.JSONDecodeError):
-            source_message_ids = ()
+            return ()
+
+    @staticmethod
+    def _row_to_item(row: sqlite3.Row) -> StructuredMemoryItem:
+        expires_at = datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None
         return StructuredMemoryItem(
             id=row["id"],
             lane_key=row["lane_key"],
@@ -210,10 +236,12 @@ class StructuredMemoryStore:
             created_at=_as_utc(datetime.fromisoformat(row["created_at"])),
             updated_at=_as_utc(datetime.fromisoformat(row["updated_at"])),
             expires_at=_as_utc(expires_at) if expires_at else None,
-            source_message_ids=source_message_ids,
+            source_message_ids=StructuredMemoryStore._source_ids(row),
             importance=row["importance"],
             created_by=row["created_by"],
             distillation_run_id=row["distillation_run_id"],
+            source_refs=StructuredMemoryStore._source_refs(row),
+            user_edited=bool(row["user_edited"]),
         )
 
     def _expiry_for(
@@ -308,15 +336,34 @@ class StructuredMemoryStore:
                 return None
             with self._connect() as connection:
                 self._purge_expired(connection, timestamp)
-                existing = connection.execute(
+                matches = connection.execute(
                     """
                     SELECT * FROM structured_memories
                     WHERE lane_key = ? AND kind = ? AND normalized_content = ?
-                          AND status = 'active'
-                    LIMIT 1
+                          AND status IN ('active','archived','forgotten')
+                    ORDER BY updated_at DESC, id
                     """,
                     (lane_key, normalized_kind, normalized_content),
-                ).fetchone()
+                ).fetchall()
+                source_refs = tuple((source_session_id, value) for value in normalized_source_ids if value > 0)
+                # Equal wording alone does not identify an event. Two walks
+                # described the same way can still be separate experiences.
+                if normalized_kind == "episode":
+                    references = set(source_refs)
+                    matches = [
+                        row for row in matches
+                        if references.intersection(self._source_refs(row))
+                        or (
+                            not self._source_refs(row)
+                            and row["source_session_id"] == source_session_id
+                            and references.intersection(
+                                (source_session_id, value) for value in self._source_ids(row)
+                            )
+                        )
+                    ]
+                if normalized_created_by == "background" and any(row["status"] == "forgotten" for row in matches):
+                    return None
+                existing = next((row for row in matches if row["status"] in {"active", "archived"}), None)
                 item_id = existing["id"] if existing is not None else uuid.uuid4().hex[:12]
                 created_at = (
                     existing["created_at"] if existing is not None else timestamp.isoformat()
@@ -326,13 +373,10 @@ class StructuredMemoryStore:
                 effective_created_by = normalized_created_by
                 effective_run_id = distillation_run_id
                 if existing is not None:
-                    try:
-                        previous_ids = tuple(
-                            int(value)
-                            for value in json.loads(existing["source_message_ids"] or "[]")
-                        )
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        previous_ids = ()
+                    source_refs = tuple(dict.fromkeys((*self._source_refs(existing), *source_refs)))
+                    if existing["user_edited"]:
+                        cleaned = existing["content"]
+                    previous_ids = self._source_ids(existing)
                     effective_source_ids = tuple(
                         dict.fromkeys((*previous_ids, *normalized_source_ids))
                     )
@@ -358,8 +402,8 @@ class StructuredMemoryStore:
                     INSERT OR REPLACE INTO structured_memories (
                         id, lane_key, kind, content, normalized_content, status,
                         evidence, source_session_id, created_at, updated_at, expires_at,
-                        source_message_ids, importance, created_by, distillation_run_id
-                    ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source_message_ids, importance, created_by, distillation_run_id, source_refs, user_edited
+                    ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         item_id,
@@ -376,6 +420,8 @@ class StructuredMemoryStore:
                         effective_importance,
                         effective_created_by,
                         effective_run_id,
+                        json.dumps(source_refs, separators=(",", ":")),
+                        int(existing["user_edited"]) if existing is not None else 0,
                     ),
                 )
                 row = connection.execute(
@@ -402,6 +448,25 @@ class StructuredMemoryStore:
                     LIMIT ?
                     """,
                     (lane_key, self.max_items),
+                ).fetchall()
+            return tuple(self._row_to_item(row) for row in rows)
+        except (OSError, sqlite3.Error, ValueError, TypeError):
+            return ()
+
+    def list_managed(self, *, lane_key: str) -> tuple[StructuredMemoryItem, ...]:
+        """Return the user's editable active and archived memories."""
+        if not lane_key:
+            return ()
+        try:
+            with self._connect() as connection:
+                self._purge_expired(connection, _utc_now())
+                rows = connection.execute(
+                    """
+                    SELECT * FROM structured_memories
+                    WHERE lane_key=? AND status IN ('active','archived')
+                    ORDER BY updated_at DESC
+                    """,
+                    (lane_key,),
                 ).fetchall()
             return tuple(self._row_to_item(row) for row in rows)
         except (OSError, sqlite3.Error, ValueError, TypeError):
@@ -529,47 +594,58 @@ class StructuredMemoryStore:
         except (OSError, sqlite3.Error, ValueError, TypeError):
             return ()
 
-    def prune_background(self, *, lane_key: str, max_items: int = 50) -> int:
-        """Remove oldest low-priority automatic items, never foreground ones."""
+    def archive_background(self, *, lane_key: str, now: datetime) -> int:
+        """Retire stale, low-priority automatic episodes without losing their sources."""
 
         if not lane_key:
             return 0
-        limit = max(1, int(max_items))
+        cutoff = (_as_utc(now) - timedelta(days=90)).isoformat()
         try:
             with self._connect() as connection:
-                count = int(
-                    connection.execute(
-                        """
-                        SELECT COUNT(*) FROM structured_memories
-                        WHERE lane_key = ? AND status = 'active'
-                              AND created_by = 'background'
-                        """,
-                        (lane_key,),
-                    ).fetchone()[0]
-                )
-                excess = max(0, count - limit)
-                if excess == 0:
-                    return 0
-                rows = connection.execute(
+                cursor = connection.execute(
                     """
-                    SELECT id FROM structured_memories
+                    UPDATE structured_memories SET status='archived'
                     WHERE lane_key = ? AND status = 'active'
-                          AND created_by = 'background'
-                    ORDER BY
-                        CASE importance WHEN 'low' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
-                        updated_at ASC
-                    LIMIT ?
+                      AND kind='episode' AND created_by='background'
+                      AND user_edited=0 AND importance='low' AND updated_at < ?
                     """,
-                    (lane_key, excess),
-                ).fetchall()
-                ids = [row["id"] for row in rows]
-                connection.executemany(
-                    "DELETE FROM structured_memories WHERE id = ?",
-                    ((item_id,) for item_id in ids),
+                    (lane_key, cutoff),
                 )
-            return len(ids)
+            return cursor.rowcount
         except (OSError, sqlite3.Error, ValueError, TypeError):
             return 0
+
+    def reinforce_episode(
+        self, *, lane_key: str, item_id: str, session_id: str, message_id: int, now: datetime,
+    ) -> bool:
+        """Refresh a grounded recall once for each observed confirmation."""
+        if not lane_key or not item_id or not session_id or message_id <= 0:
+            return False
+        timestamp = _as_utc(now).isoformat()
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                item = connection.execute(
+                    """
+                    SELECT * FROM structured_memories WHERE id=? AND lane_key=?
+                    AND kind='episode' AND status IN ('active','archived')
+                    """,
+                    (item_id, lane_key),
+                ).fetchone()
+                if item is None or (session_id, message_id) in self._source_refs(item):
+                    return False
+                added = connection.execute(
+                    "INSERT OR IGNORE INTO structured_memory_reinforcements VALUES (?, ?, ?)",
+                    (item_id, session_id, message_id),
+                )
+                if added.rowcount:
+                    connection.execute(
+                        "UPDATE structured_memories SET status='active', updated_at=MAX(updated_at, ?) WHERE id=?",
+                        (timestamp, item_id),
+                    )
+                return True
+        except (OSError, sqlite3.Error):
+            return False
 
     def change_status(
         self,
@@ -591,9 +667,10 @@ class StructuredMemoryStore:
                     """
                     UPDATE structured_memories
                     SET status = ?, updated_at = ?
-                    WHERE id = ? AND lane_key = ? AND status = 'active'
+                    WHERE id = ? AND lane_key = ?
+                      AND (status = 'active' OR (? = 'forgotten' AND status = 'archived'))
                     """,
-                    (status, timestamp.isoformat(), item_id, lane_key),
+                    (status, timestamp.isoformat(), item_id, lane_key, status),
                 )
             return cursor.rowcount == 1
         except (OSError, sqlite3.Error):
@@ -607,7 +684,10 @@ class StructuredMemoryStore:
         content: str,
         expires_at: datetime | str | None = None,
         source_message_ids: Iterable[int] = (),
+        source_session_id: str | None = None,
         distillation_run_id: str | None = None,
+        user_edit: bool = False,
+        expected_updated_at: datetime | None = None,
         now: datetime | None = None,
     ) -> bool:
         cleaned = self._clean_content(content)
@@ -619,13 +699,16 @@ class StructuredMemoryStore:
                 existing = connection.execute(
                     """
                     SELECT kind, expires_at, source_message_ids, created_by,
-                           distillation_run_id
+                           distillation_run_id, source_refs, user_edited, updated_at
                     FROM structured_memories
-                    WHERE id = ? AND lane_key = ? AND status = 'active'
+                    WHERE id = ? AND lane_key = ?
+                      AND (status = 'active' OR (? AND status = 'archived'))
                     """,
-                    (item_id, lane_key),
+                    (item_id, lane_key, user_edit),
                 ).fetchone()
-                if existing is None:
+                if existing is None or (existing["user_edited"] and not user_edit):
+                    return False
+                if expected_updated_at is not None and existing["updated_at"] != expected_updated_at.isoformat():
                     return False
                 resolved_expires_at = existing["expires_at"]
                 if expires_at is not None:
@@ -649,6 +732,11 @@ class StructuredMemoryStore:
                 merged_source_ids = tuple(
                     dict.fromkeys((*previous_source_ids, *new_source_ids))
                 )
+                source_refs = self._source_refs(existing)
+                if source_session_id:
+                    source_refs = tuple(dict.fromkeys((
+                        *source_refs, *((source_session_id, value) for value in new_source_ids if value > 0),
+                    )))
                 effective_run_id = existing["distillation_run_id"]
                 if existing["created_by"] == "background" and distillation_run_id:
                     effective_run_id = distillation_run_id
@@ -656,8 +744,10 @@ class StructuredMemoryStore:
                     """
                     UPDATE structured_memories
                     SET content = ?, normalized_content = ?, updated_at = ?, expires_at = ?,
-                        source_message_ids = ?, distillation_run_id = ?
-                    WHERE id = ? AND lane_key = ? AND status = 'active'
+                        source_message_ids = ?, distillation_run_id = ?, source_refs = ?, user_edited = ?
+                    WHERE id = ? AND lane_key = ? AND updated_at = ?
+                      AND (status = 'active' OR (? AND status = 'archived'))
+                      AND (user_edited=0 OR ?)
                     """,
                     (
                         cleaned,
@@ -666,8 +756,13 @@ class StructuredMemoryStore:
                         resolved_expires_at,
                         json.dumps(merged_source_ids, separators=(",", ":")),
                         effective_run_id,
+                        json.dumps(source_refs, separators=(",", ":")),
+                        int(user_edit or existing["user_edited"]),
                         item_id,
                         lane_key,
+                        existing["updated_at"],
+                        user_edit,
+                        user_edit,
                     ),
                 )
             return cursor.rowcount == 1
@@ -675,9 +770,36 @@ class StructuredMemoryStore:
             return False
 
     def context_for_lane(
-        self, *, lane_key: str, now: datetime | None = None
+        self, *, lane_key: str, now: datetime | None = None, query: str = "",
     ) -> str | None:
         items = self.list_active(lane_key=lane_key, now=now)
+        if query:
+            from honeyos.memory.runtime_shadow import _query_terms, _score, requests_broad_recall
+
+            terms = _query_terms(query)
+            if not terms:
+                return None
+            explicit_recall = requests_broad_recall(query)
+            if explicit_recall:
+                items = self.list_managed(lane_key=lane_key)
+            direct = sorted(
+                ((score, item) for item in items if (score := _score(item.content, terms)[0]) >= 3),
+                key=lambda pair: (-pair[0], -pair[1].updated_at.timestamp()),
+            )
+            if not direct:
+                return None
+            matched = [item for _, item in direct]
+            anchor = matched[0]
+            sources = set(anchor.source_refs)
+            if sources and anchor.kind == "episode" and not explicit_recall:
+                used = {item.id for item in matched}
+                linked = next((
+                    item for item in items if item.kind == "episode" and item.id not in used
+                    and sources.intersection(item.source_refs)
+                ), None)
+                if linked is not None:
+                    matched.append(linked)
+            items = tuple(matched)
         if not items:
             return None
         labels = {

@@ -9,6 +9,7 @@ import { PageHeader } from "../../components/honey/PageHeader";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
 import { Button } from "../../components/ui/Button";
 import { useHoneyStore } from "../../runtime/honey-store";
+import { PersonalityTraits } from "./PersonalityTraits";
 
 const emptyProfile: Required<CompanionProfileDetails> = {
   companion_name: "",
@@ -132,6 +133,7 @@ export function RelationshipPage() {
           </div>
         </form>
       </div>
+      <PersonalityTraits />
     </PageFrame>
   );
 }

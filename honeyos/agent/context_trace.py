@@ -8,10 +8,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
-DEFAULT_TRACE_PATH = Path.home() / ".honeyos" / "memory" / "runtime_context_sources.jsonl"
+from honeyos.core.constants import get_honeyos_home
+
+
+def context_trace_enabled() -> bool:
+    return os.environ.get("HONEYOS_CONTEXT_TRACE") == "1"
+
+
+def append_context_trace(filename: str, row: dict[str, Any], path: Path | None) -> None:
+    target = path if path is not None else get_honeyos_home() / "memory" / filename
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(target, flags, 0o600), "a", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+
 
 
 def _chars(value: Any) -> int:
@@ -40,7 +54,9 @@ def _history_stats(messages: Any) -> dict[str, Any]:
     for msg in messages:
         if not isinstance(msg, dict):
             continue
-        role = str(msg.get("role") or "unknown")
+        role = msg.get("role")
+        if role not in ("system", "developer", "user", "assistant", "tool", "function"):
+            role = "unknown"
         role_counts[role] = role_counts.get(role, 0) + 1
         content_chars += _chars(msg.get("content"))
 
@@ -68,18 +84,17 @@ def write_context_source_trace(
     path: Path | None = None,
 ) -> None:
     """Append one metadata-only row. Any trace failure is fail-open."""
+    if path is None and not context_trace_enabled():
+        return
     try:
-        target = path or DEFAULT_TRACE_PATH
-        target.parent.mkdir(parents=True, exist_ok=True)
-
         clean_chars = _chars(clean_user_message)
         api_chars = _chars(api_content)
         row = {
             "phase": "G0.3",
             "mode": "metadata_only_runtime_context_trace",
-            "session_id": str(session_id or ""),
-            "turn_id": str(turn_id or ""),
-            "query_namespace": str(query_namespace or ""),
+            "session_sha256": _sha256_text(session_id),
+            "turn_sha256": _sha256_text(turn_id),
+            "query_namespace": query_namespace if query_namespace in ("general", "roleplay", "fiction") else "",
             "system_prompt": {
                 "chars": _chars(system_prompt),
                 "sha256": _sha256_text(system_prompt),
@@ -97,7 +112,6 @@ def write_context_source_trace(
             },
         }
 
-        with target.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        append_context_trace("runtime_context_sources.jsonl", row, path)
     except Exception:
         return

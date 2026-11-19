@@ -488,6 +488,10 @@ def _run_agent_tool_execution_middleware(
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before HoneyOS policy and dispatch exactly once."""
+    if getattr(agent, "_work_mode_enabled", False) is True and function_name not in {
+        "work_action", "todo", "clarify",
+    }:
+        scope_block = "This tool is outside the active work-mode permissions."
     from honeyos.agent import relay_tools
     from honeyos.runtime.middleware import (
         apply_tool_request_middleware,

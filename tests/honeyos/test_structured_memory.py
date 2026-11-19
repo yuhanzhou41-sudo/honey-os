@@ -243,7 +243,7 @@ def test_background_duplicate_never_downgrades_foreground_memory(tmp_path):
         content="双方一起完成了第一版原型",
         evidence="conversation_event",
         source_session_id="session-a",
-        source_message_ids=(3,),
+        source_message_ids=(1, 3),
         importance="low",
         created_by="background",
         distillation_run_id="run-a",
@@ -258,7 +258,7 @@ def test_background_duplicate_never_downgrades_foreground_memory(tmp_path):
     assert duplicate.distillation_run_id is None
 
 
-def test_background_memory_cap_prunes_old_low_priority_items_only(tmp_path):
+def test_archives_old_low_priority_background_episodes_without_deleting_them(tmp_path):
     store = StructuredMemoryStore(tmp_path, max_items=100)
     protected = store.record(
         lane_key=LANE,
@@ -273,7 +273,7 @@ def test_background_memory_cap_prunes_old_low_priority_items_only(tmp_path):
         store.record(
             lane_key=LANE,
             kind="episode",
-            content=f"后台共同经历 {index}",
+            content=f"后台共同经历 {index}" if index else "在桔梗花园散步",
             evidence="conversation_event",
             source_session_id="session-a",
             importance="low",
@@ -281,11 +281,19 @@ def test_background_memory_cap_prunes_old_low_priority_items_only(tmp_path):
             now=NOW + timedelta(minutes=index + 1),
         )
 
-    assert store.prune_background(lane_key=LANE, max_items=50) == 1
-    items = store.list_active(lane_key=LANE, now=NOW + timedelta(hours=2))
+    now = NOW + timedelta(days=90, minutes=2)
+    assert store.archive_background(lane_key=LANE, now=now) == 1
+    items = store.list_active(lane_key=LANE, now=now)
     assert len(items) == 51
     assert any(item.id == protected.id for item in items if protected is not None)
-    assert all(item.content != "后台共同经历 0" for item in items)
+    assert all(item.content != "在桔梗花园散步" for item in items)
+    archived = next(item for item in store.list_managed(lane_key=LANE) if item.status == "archived")
+    assert archived.content == "在桔梗花园散步"
+    assert archived.id not in (store.context_for_lane(lane_key=LANE, query="桔梗花园") or "")
+    assert archived.id in (store.context_for_lane(lane_key=LANE, query="回顾桔梗花园的经历") or "")
+    assert store.update_content(lane_key=LANE, item_id=archived.id, content="Edited", user_edit=True)
+    assert store.change_status(lane_key=LANE, item_id=archived.id, action="forget")
+    assert all(item.id != archived.id for item in store.list_managed(lane_key=LANE))
 
 
 def test_companion_memory_tool_uses_current_private_lane(tmp_path, monkeypatch):

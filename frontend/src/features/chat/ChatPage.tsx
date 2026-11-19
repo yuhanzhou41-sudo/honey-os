@@ -1,11 +1,13 @@
-import { fetchStickerStatus, markStickerUsed, stickerChatMessage, type StickerItem, type StickerStatus } from "../../api/stickers";
+import StudyPlanDraft, { splitStudyPlanDraft } from "./StudyPlanDraft";
 import { ArrowClockwiseIcon, ArrowDownIcon, ArrowUpIcon, ClockCounterClockwiseIcon, ImageIcon, PaperPlaneTiltIcon, PlusIcon, StopIcon, TrashIcon, XIcon, SmileyIcon } from "@phosphor-icons/react";
-import { useMutation } from "@tanstack/react-query";
+import { fetchStickerStatus, markStickerUsed, stickerChatMessage, type StickerItem, type StickerStatus } from "../../api/stickers";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import {
   answerApproval,
+  ChatRequestError,
   fetchChatRunStatus,
   naturalReplyInstructions,
   splitUserMessages,
@@ -19,24 +21,36 @@ import {
   type ChatRunStatus,
 } from "../../api/chat";
 import { fetchModelOptions, type ModelOptions } from "../../api/models";
-import { CHAT_DOCUMENT_ACCEPT, chatStudyDocumentContext, uploadChatStudyDocument, type ChatStudyDocument } from "../../api/chat-study-library";
+import { referenceChatStudyDocument, studyDocumentMarker } from "../../api/chat-study-library";
+import type { StudyResource } from "../../api/study";
 import { deleteCompanionConversation, fetchCompanionMessages, rollbackCompanionTimeline, startNewCompanionConversation, switchCompanionConversation, type ChatMessage, type HistoryItem } from "../../api/companion";
 import { HoneyAvatar } from "../../components/honey/HoneyAvatar";
 import { HoneyMessage } from "../../components/honey/HoneyMessage";
 import { StickerDrawer } from "../../components/honey/StickerDrawer";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
 import { Button } from "../../components/ui/Button";
-import type { PermissionChoice } from "../../runtime/honey-events";
+import type { HoneyEvent, PermissionChoice } from "../../runtime/honey-events";
+import { requestJson } from "../../api/client";
 import { assistantBubblesForDisplay } from "../../runtime/chat-bubble-segmenter";
 import { useHoneyStore } from "../../runtime/honey-store";
 import { HoneyRun } from "./HoneyRun";
+import { ReplyFeedback } from "./ReplyFeedback";
 
 type ChatAttachment = { id: string; name: string; dataUrl: string };
 type PendingChatDocument = ChatStudyDocument;
 type QueuedMessage = { id: string; display: string; input: ChatInput };
+type WorkMode = { enabled: boolean; work_id: string | null; session_id: string | null };
+type WorkQuestion = { id: string; runId: string; text: string; choices: string[] };
 
 const draftKey = (sessionId: string) => `honeyos-chat-draft:${sessionId}`;
 const queueKey = (sessionId: string) => `honeyos-chat-pending:${sessionId}`;
+
+function historicalImageUrls(content: string): string[] {
+  return Array.from(
+    content.matchAll(/^!\[[^\r\n]*?\]\((data:image\/[\w.+-]+;base64,[A-Za-z0-9+/=]+)\)\r?$/gm),
+    (match) => match[1],
+  ).slice(0, 4);
+}
 
 function historyTime(item: HistoryItem, field: "last_active" | "started_at") {
   const value = Date.parse(String(item[field] || ""));
@@ -123,6 +137,46 @@ function combineQueuedInputs(messages: QueuedMessage[]): ChatInput {
 }
 
 export function ChatPage() {
+  const queryClient = useQueryClient();
+  const work = useQuery({
+    queryKey: ["companion-work"],
+    queryFn: () => requestJson<WorkMode>("/api/companion/work"),
+    refetchOnWindowFocus: true,
+  });
+  const switchWork = useMutation({
+    mutationFn: ({ enabled, sessionId }: { enabled: boolean; sessionId: string }) =>
+      requestJson<WorkMode>("/api/companion/work", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, session_id: sessionId }),
+      }),
+    onSuccess: (state) => queryClient.setQueryData(["companion-work"], state),
+  });
+  const [workQuestion, setWorkQuestion] = useState<WorkQuestion>();
+  const [workAnswer, setWorkAnswer] = useState("");
+  const answerWork = useMutation({
+    mutationFn: async ({ question, answer }: { question: WorkQuestion; answer: string }) =>
+      requestJson<{ answered: boolean }>("/api/companion/work/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: question.runId, question_id: question.id, answer }),
+      }),
+    onSuccess: () => setWorkQuestion(undefined),
+  });
+
+  function handleWorkEvent(event: HoneyEvent) {
+    if (event.name === "work.question") {
+      setWorkAnswer("");
+      setWorkQuestion({
+        id: String(event.payload.question_id),
+        runId: String(event.payload.run_id),
+        text: String(event.payload.question),
+        choices: Array.isArray(event.payload.choices) ? event.payload.choices.map(String) : [],
+      });
+    } else if (event.name === "work.question.closed") {
+      setWorkQuestion((current) => current?.id === event.payload.question_id ? undefined : current);
+    }
+  }
   const {
     loading, error, messages, name, status, sessionId, sessionKey, run, sending, history,
     queueUserMessage, beginReply, applyRunEvent, finishTurn, finishStoppedTurn, finishStoppedEmpty,
@@ -131,9 +185,40 @@ export function ChatPage() {
   } = useHoneyStore();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
-  const [documents, setDocuments] = useState<PendingChatDocument[]>([]);
-  const [documentUploading, setDocumentUploading] = useState(false);
+  const [studyDocuments, setStudyDocuments] = useState<StudyResource[]>([]);
+  const [documentOpen, setDocumentOpen] = useState(false);
+  const [documentPath, setDocumentPath] = useState("");
+  const [documentNotice, setDocumentNotice] = useState("");
+
+  useEffect(() => {
+    setStudyDocuments([]);
+    setDocumentPath("");
+    setDocumentNotice("");
+    setDocumentOpen(false);
+  }, [sessionId]);
+
+  const documentReference = useMutation({
+    mutationFn: ({ path }: { path: string; session: string }) => referenceChatStudyDocument(path),
+    onSuccess: ({ resource, reused }, { session }) => {
+      if (useHoneyStore.getState().sessionId !== session) return;
+      setStudyDocuments((current) =>
+        current.some(({ id }) => id === resource.id) ? current : [...current, resource],
+      );
+      setDocumentPath("");
+      setDocumentNotice(reused ? "已引用资料库中的相同文档" : "已在资料库引用原文件");
+    },
+    onError: (error: Error, { session }) => {
+      if (useHoneyStore.getState().sessionId === session) setDocumentNotice(error.message);
+    },
+  });
+
+  function referenceDocument() {
+    if (!documentPath.trim() || !sessionId || studyDocuments.length >= 4 || documentReference.isPending) return;
+    setDocumentNotice("");
+    documentReference.mutate({ path: documentPath, session: sessionId });
+  }
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const [documentScopeRequired, setDocumentScopeRequired] = useState(false);
   const [submittedMessages, setSubmittedMessages] = useState<QueuedMessage[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [approvalPending, setApprovalPending] = useState(false);
@@ -223,6 +308,79 @@ export function ChatPage() {
   const [stoppedUserMessageId, setStoppedUserMessageId] = useState<number | null>(null);
   const [recoverRunId, setRecoverRunId] = useState<string | null>(null);
   const [retryUserMessageId, setRetryUserMessageId] = useState<number | null>(null);
+  const [chatModelOptions, setChatModelOptions] = useState<ModelOptions | null>(null);
+  const [chatModelSelection, setChatModelSelection] = useState("");
+  const [chatModelBusy, setChatModelBusy] = useState(false);
+  const [chatModelError, setChatModelError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchModelOptions()
+      .then((payload) => {
+        if (!cancelled) setChatModelOptions(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setChatModelError("模型列表暂时无法读取");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionId || !sessionKey || !chatModelOptions) return;
+    let cancelled = false;
+    setChatModelError("");
+    void fetchChatSessionModel({ sessionId, sessionKey })
+      .then((session) => {
+        if (cancelled) return;
+        const model = String((session.modelProvider && session.model) || chatModelOptions.model || "");
+        const preferredProvider = String(session.modelProvider || chatModelOptions.provider || "");
+        const providers = chatModelOptions.providers.filter(
+          (provider) => provider.authenticated && provider.models.includes(model),
+        );
+        const preferred = providers.find((item) => item.slug === preferredProvider);
+        const provider = session.modelProvider
+          ? preferred
+          : preferred || providers.find((item) => item.is_current) || providers[0];
+        setChatModelSelection(
+          provider && model ? `${provider.slug}::${model}` : "",
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setChatModelError("当前会话模型状态暂时无法读取");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, sessionKey, chatModelOptions]);
+
+  async function handleChatModelChange(value: string) {
+    if (!sessionId || !sessionKey || !value || sending || chatModelBusy) return;
+    const splitAt = value.indexOf("::");
+    if (splitAt <= 0) return;
+    const provider = value.slice(0, splitAt);
+    const model = value.slice(splitAt + 2);
+    if (!provider || !model) return;
+
+    const previous = chatModelSelection;
+    setChatModelSelection(value);
+    setChatModelBusy(true);
+    setChatModelError("");
+    try {
+      await setChatSessionModel({ sessionId, sessionKey, provider, model });
+    } catch (modelError) {
+      setChatModelSelection(previous);
+      setChatModelError(
+        modelError instanceof Error ? modelError.message : "模型切换失败",
+      );
+    } finally {
+      setChatModelBusy(false);
+    }
+  }
+
+  const authenticatedChatModelProviders = (chatModelOptions?.providers || [])
+    .filter((provider) => provider.authenticated && provider.models.length > 0);
   const [timelineError, setTimelineError] = useState("");
   const [stickerOpen, setStickerOpen] = useState(false);
   const [stickerStatus, setStickerStatus] = useState<StickerStatus | null>(null);
@@ -353,7 +511,8 @@ export function ChatPage() {
     else localStorage.removeItem(queueKey(sessionId));
   }, [queuedMessages, sessionId]);
 
-  function finishWithStatus(status: ChatRunStatus): boolean {
+  async function finishWithStatus(status: ChatRunStatus): Promise<boolean> {
+    if (useHoneyStore.getState().sessionId !== sessionId) return true;
     if (status.content) {
       applyRunEvent({
         name: "assistant.completed",
@@ -361,7 +520,24 @@ export function ChatPage() {
       });
     }
     if (status.state === "completed") {
-      finishTurn();
+      const beforeSync = useHoneyStore.getState().run;
+      let saved: ChatMessage[] = [];
+      if (sessionId && sessionKey) {
+        try {
+          const timeline = await fetchCompanionMessages(sessionId, sessionKey, AbortSignal.timeout(2500));
+          saved = timeline.data;
+        } catch {
+          // Keep the reply in the UI when the saved timeline cannot be fetched.
+        }
+      }
+      const current = useHoneyStore.getState();
+      if (current.sessionId !== sessionId || current.run !== beforeSync) return true;
+      if (status.content && saved.at(-1)?.role === "assistant"
+          && saved.at(-1)?.content.trim() === status.content.trim()) {
+        replaceTimelineMessages(saved);
+      } else {
+        finishTurn();
+      }
       setQueuedMessages([]);
       setSubmittedMessages([]);
       setRecoverRunId(null);
@@ -416,7 +592,7 @@ export function ChatPage() {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       try {
         const status = await fetchChatRunStatus({ sessionId, sessionKey, runId });
-        if (finishWithStatus(status)) return;
+        if (await finishWithStatus(status)) return;
       } catch {
         break;
       }
@@ -425,14 +601,16 @@ export function ChatPage() {
     failTurn("连接中断，尚未取回原回复；重新连接不会重复发送你的消息");
   }
 
-  async function generateReply() {
-    if (!queuedMessages.length || sending || !sessionId || !sessionKey) return;
-    const submitted = [...queuedMessages];
+  async function generateReply(pending = queuedMessages) {
+    if (!pending.length || sending || chatModelBusy || !sessionId || !sessionKey) return;
+    const submitted = [...pending];
+    setDocumentScopeRequired(false);
     followRef.current = true;
     setStoppedReply(false);
     setStoppedUserMessageId(null);
     setRecoverRunId(null);
     setRetryUserMessageId(null);
+    setWorkQuestion(undefined);
     beginReply();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -441,10 +619,11 @@ export function ChatPage() {
       await streamChat({
         sessionId,
         sessionKey,
-        message: combineQueuedInputs(queuedMessages),
-        instructions: naturalReplyInstructions,
+        message: combineQueuedInputs(submitted),
+        instructions: work.data?.enabled ? undefined : naturalReplyInstructions,
         signal: controller.signal,
         onEvent: (event) => {
+          handleWorkEvent(event);
           if (event.name === "run.started") {
             setSubmittedMessages(submitted);
             setQueuedMessages([]);
@@ -461,7 +640,7 @@ export function ChatPage() {
           applyRunEvent(event);
         },
       });
-      if (terminalStatus && finishWithStatus(terminalStatus)) return;
+      if (terminalStatus && await finishWithStatus(terminalStatus)) return;
       finishTurn();
       setQueuedMessages([]);
       setSubmittedMessages([]);
@@ -480,6 +659,9 @@ export function ChatPage() {
           failTurn("已停止这次回复");
         }
       } else {
+        if (streamError instanceof ChatRequestError && streamError.code === "study_scope_required") {
+          setDocumentScopeRequired(true);
+        }
         const runId = useHoneyStore.getState().run.runId;
         if (runId) await recoverInterruptedRun(runId);
         else failTurn(streamError instanceof Error ? streamError.message : "connection_failed");
@@ -491,20 +673,13 @@ export function ChatPage() {
 
   function send(event: FormEvent) {
     event.preventDefault();
-    if (sending || documentUploading) return;
-    const text = draft.trim();
-    if (!text && !attachments.length && !documents.length) return;
-
-    const documentDisplay = documents.map((item) => `📄 ${item.name} · 已加入学习资料库`);
-    const message = [
-      text,
-      ...documentDisplay,
-      ...attachments.map((item) => `![${item.name}](${item.dataUrl})`),
+    if (sending || chatModelBusy || documentReference.isPending) return;
+    const text = [
+      draft.trim(),
+      ...studyDocuments.map((resource) => studyDocumentMarker(resource.id, resource.title)),
     ].filter(Boolean).join("\n\n");
-
-    const documentContext = documents.map(chatStudyDocumentContext).join("\n\n");
-    const combinedText = [text, documentContext].filter(Boolean).join("\n\n");
-
+    if (!text && !attachments.length) return;
+    const message = [text, ...attachments.map((item) => `![${item.name}](${item.dataUrl})`)].filter(Boolean).join("\n\n");
     const input: ChatInput = attachments.length ? [
       ...(combinedText ? [{ type: "text" as const, text: combinedText }] : []),
       ...attachments.map((item) => ({ type: "image_url" as const, image_url: { url: item.dataUrl, detail: "auto" as const } })),
@@ -513,7 +688,9 @@ export function ChatPage() {
     setDraft("");
     if (sessionId) localStorage.removeItem(draftKey(sessionId));
     setAttachments([]);
-    setDocuments([]);
+    setStudyDocuments([]);
+    setDocumentNotice("");
+    setDocumentOpen(false);
     setAttachmentError("");
     setStoppedReply(false);
     queueUserMessage(message);
@@ -531,7 +708,7 @@ export function ChatPage() {
       }
       try {
         const status = await stopChat({ sessionId, sessionKey, runId: run.runId });
-        if (status.state === "cancel_failed") finishWithStatus(status);
+        if (status.state === "cancel_failed") await finishWithStatus(status);
       } catch {
         failTurn("停止请求失败；不会自动重新发送你的消息");
       }
@@ -625,6 +802,7 @@ export function ChatPage() {
     if (!pending.length || sending || !sessionId || !sessionKey) return;
     setQueuedMessages(pending);
     followRef.current = true;
+    setWorkQuestion(undefined);
     beginReply();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -632,10 +810,11 @@ export function ChatPage() {
       let terminalStatus: ChatRunStatus | null = null;
       await streamChat({
         sessionId, sessionKey, message: combineQueuedInputs(pending),
-        instructions: naturalReplyInstructions,
+        instructions: work.data?.enabled ? undefined : naturalReplyInstructions,
         reuseUserMessageId,
         signal: controller.signal,
         onEvent: (event) => {
+          handleWorkEvent(event);
           if (event.name === "run.started") {
             setSubmittedMessages(pending);
             setQueuedMessages([]);
@@ -652,7 +831,7 @@ export function ChatPage() {
           applyRunEvent(event);
         },
       });
-      if (terminalStatus && finishWithStatus(terminalStatus)) return;
+      if (terminalStatus && await finishWithStatus(terminalStatus)) return;
       finishTurn();
       setQueuedMessages([]);
       setSubmittedMessages([]);
@@ -718,6 +897,14 @@ export function ChatPage() {
     }
   }
 
+  function reattachImage(id: string, dataUrl: string) {
+    setAttachmentError("");
+    setAttachments((current) => {
+      if (current.length >= 4 || current.some((item) => item.dataUrl === dataUrl)) return current;
+      return [...current, { id, dataUrl, name: "历史图片" }];
+    });
+  }
+
   function sendSticker(item: StickerItem) {
     if (sending) return;
     const message = stickerChatMessage(item);
@@ -751,12 +938,12 @@ export function ChatPage() {
     deleteConversationMutation.mutate(item.id);
   }
 
-  async function respondToApproval(choice: PermissionChoice) {
+  async function respondToApproval(choice: PermissionChoice, approvalId: string) {
     if (!sessionId || !sessionKey || approvalPending) return;
     setApprovalPending(true);
     try {
-      await answerApproval({ sessionId, sessionKey, choice });
-      applyRunEvent({ name: "approval.responded", payload: { choice } });
+      await answerApproval({ sessionId, sessionKey, choice, approvalId });
+      applyRunEvent({ name: "approval.responded", payload: { choice, approval_id: approvalId } });
     } catch (approvalError) {
       failTurn(approvalError instanceof Error ? approvalError.message : "approval_unavailable");
     } finally {
@@ -775,13 +962,15 @@ export function ChatPage() {
       ? messages.slice(0, sourceIndex).reverse().find((item) => item.role === "user")?.content || ""
       : "";
     const parts = message.role === "assistant"
-      ? assistantBubblesForDisplay(message.content, previousUserText)
+      ? (splitStudyPlanDraft(message.content).draft
+        ? [message.content] : assistantBubblesForDisplay(message.content, previousUserText))
       : splitUserMessages(message.content);
     return parts.map((content, partIndex) => ({
       ...message,
       content,
       displayKey: `${message.role}-${messageIndex}-${partIndex}`,
       partIndex,
+      lastPart: partIndex === parts.length - 1,
       sourceIndex,
     }));
   });
@@ -810,8 +999,12 @@ export function ChatPage() {
       <header className="mx-auto flex min-h-[4.75rem] w-full max-w-[56rem] shrink-0 items-center gap-3 border-b border-[var(--border)] px-1">
         <div className="min-w-0">
           <h1 className="truncate text-lg font-semibold tracking-[-0.02em]">{name}</h1>
-          <p className="truncate text-xs text-[var(--foreground-muted)]">{replyBusy ? "正在陪你聊" : status}</p>
+          <p className="truncate text-xs text-[var(--foreground-muted)]">{work.data?.enabled ? "工作模式" : replyBusy ? "正在陪你聊" : status}</p>
         </div>
+        {work.data ? <Button type="button" variant="secondary" disabled={!sessionId || replyBusy || switchWork.isPending}
+          onClick={() => sessionId && switchWork.mutate({ enabled: !work.data?.enabled, sessionId })}>
+          {work.data.enabled ? "结束工作" : "开始工作"}
+        </Button> : null}
         <Button className="ml-auto" type="button" size="icon" variant="ghost" aria-label="历史聊天" title="历史聊天" onClick={() => setHistoryOpen((open) => !open)}>
           <ClockCounterClockwiseIcon size={20} />
         </Button>
@@ -858,7 +1051,60 @@ export function ChatPage() {
         >
           <HoneyAvatar name={name} className="size-10 rounded-full shadow-none" />
         </Link>
+        {authenticatedChatModelProviders.length ? (
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <label className="sr-only" htmlFor="honeyos-chat-model">当前会话模型</label>
+            <select
+              id="honeyos-chat-model"
+              aria-label="聊天模型"
+              title="当前会话模型覆盖（优先于全局默认）"
+              className="h-8 w-[6.75rem] max-w-[24vw] shrink-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-raised)] px-2 text-[11px] text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] disabled:opacity-50 sm:w-[8.5rem]"
+              value={chatModelSelection}
+              disabled={sending || chatModelBusy || !sessionId || !sessionKey}
+              onChange={(event) => void handleChatModelChange(event.target.value)}
+            >
+              {!chatModelSelection ? <option value="">选择模型</option> : null}
+              {authenticatedChatModelProviders.map((provider) => (
+                <optgroup key={provider.slug} label={provider.name}>
+                  {provider.models.map((model) => (
+                    <option key={`${provider.slug}::${model}`} value={`${provider.slug}::${model}`}>
+                      {model}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            {chatModelError ? (
+              <span
+                className="max-w-[14rem] truncate text-[10px] text-[var(--danger)]"
+                title={chatModelError}
+              >
+                {chatModelError}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </header>
+      {switchWork.error ? <p className="mx-auto my-2 w-full max-w-[56rem] text-sm" role="alert">{switchWork.error.message}</p> : null}
+      {sending && workQuestion ? (
+        <form className="mx-auto my-3 grid w-full max-w-[56rem] gap-2 rounded-xl border border-[var(--border)] p-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (workAnswer.trim()) answerWork.mutate({ question: workQuestion, answer: workAnswer.trim() });
+          }}>
+          <label htmlFor="work-answer" className="text-sm font-semibold">{workQuestion.text}</label>
+          {workQuestion.choices.length ? <div className="flex flex-wrap gap-2">
+            {workQuestion.choices.map((choice) => <Button type="button" variant="secondary" key={choice}
+              disabled={answerWork.isPending} onClick={() => answerWork.mutate({ question: workQuestion, answer: choice })}>{choice}</Button>)}
+          </div> : null}
+          <div className="flex gap-2">
+            <input id="work-answer" className="honey-setting-control min-w-0 flex-1" placeholder="输入回答"
+              maxLength={2000} value={workAnswer} onChange={(event) => setWorkAnswer(event.target.value)} />
+            <Button type="submit" disabled={answerWork.isPending || !workAnswer.trim()}>回答</Button>
+          </div>
+          {answerWork.error ? <p role="alert" className="text-sm">{answerWork.error.message}</p> : null}
+        </form>
+      ) : null}
 
       {historyOpen ? (
         <>
@@ -914,11 +1160,11 @@ export function ChatPage() {
                     );
                   }}
                 >
-                  <HoneyMessage
-                    content={message.content}
-                    role={message.role}
-                    messageId={message.displayKey}
-                  />
+                  <StudyAssistantContent content={message.content} messageId={message.displayKey} />
+                  {sessionId && sessionKey && message.id && message.lastPart ? (
+                    <ReplyFeedback key={`${sessionId}:${message.id}`} sessionId={sessionId} sessionKey={sessionKey}
+                      messageId={message.id} initial={message.feedback} />
+                  ) : null}
                   {message.timeline_editable && message.id ? (
                     <div
                       className={[
@@ -963,6 +1209,20 @@ export function ChatPage() {
                     role={message.role}
                     messageId={message.displayKey}
                   />
+                  {historicalImageUrls(message.content).map((url, index) => (
+                    <button
+                      key={index}
+                      type="button"
+                      disabled={attachments.length >= 4 || attachments.some((item) => item.dataUrl === url)}
+                      className="mr-2 text-xs text-[var(--foreground-muted)] underline disabled:opacity-50"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        reattachImage(["history", message.displayKey, index].join("-"), url);
+                      }}
+                    >
+                      重看图片 {index + 1}
+                    </button>
+                  ))}
                   {message.timeline_editable && message.id ? (
                     <div
                       className={[
@@ -1081,6 +1341,15 @@ export function ChatPage() {
       </div>
 
       <form className="relative mx-auto w-full max-w-[56rem] shrink-0 pb-[calc(14px+env(safe-area-inset-bottom))] pt-2" onSubmit={send}>
+        {documentScopeRequired && queuedMessages.length > 0 && !replyBusy ? (
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="text-sm">可在下方输入范围，也可以让 Honey 帮你分批读取。</span>
+            <Button type="button" variant="secondary" onClick={() => {
+              const consent = "不清楚，自动分批读取";
+              void generateReply([...queuedMessages, { id: `reading-${Date.now()}`, input: consent, display: consent }]);
+            }}>不清楚，自动分批读取</Button>
+          </div>
+        ) : null}
         {stoppedReply && queuedMessages.length && !replyBusy ? (
           <div className="mb-2 flex justify-center">
             <Button type="button" variant="secondary" onClick={regenerateStoppedReply}>
@@ -1114,6 +1383,35 @@ export function ChatPage() {
             onStatusChange={setStickerStatus}
           />
         ) : null}
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+          <Button type="button" variant="ghost" aria-expanded={documentOpen} disabled={replyBusy} onClick={() => setDocumentOpen((value) => !value)}>
+            引用本机文档
+          </Button>
+          {studyDocuments.map((resource) => (
+            <div key={resource.id} className="flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] px-2 py-1">
+              <span className="max-w-52 truncate" title={resource.title}>{resource.title}</span>
+              <button type="button" aria-label={`移除引用 ${resource.title}`} onClick={() => setStudyDocuments((current) => current.filter(({ id }) => id !== resource.id))}>
+                <XIcon size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        {documentOpen ? (
+          <div className="mb-2 space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-2">
+            <p className="text-xs text-[var(--foreground-muted)]">使用原文件，资料库只保存引用和索引。发送后，所选聊天模型会收到引用的正文片段。</p>
+            <div className="flex gap-2">
+              <input aria-label="聊天文档路径" placeholder="粘贴原文件的完整 Windows 路径" value={documentPath}
+                className="min-w-0 flex-1 rounded border border-[var(--border)] px-2 text-sm"
+                onChange={(event) => setDocumentPath(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); referenceDocument(); } }} />
+              <Button type="button" variant="secondary" onClick={referenceDocument}
+                disabled={!documentPath.trim() || !sessionId || studyDocuments.length >= 4 || documentReference.isPending}>
+                {documentReference.isPending ? "正在引用…" : "加入并引用"}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        {documentNotice ? <p className="mb-2 text-xs" role="status">{documentNotice}</p> : null}
         {attachments.length ? (
           <div className="mb-2 flex gap-2 overflow-x-auto" aria-label="待发送图片">
             {attachments.map((item) => (
@@ -1179,7 +1477,7 @@ export function ChatPage() {
             disabled={replyBusy}
             className="max-h-40 min-h-11 flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2.5 text-[15px] leading-6 outline-none placeholder:text-[var(--foreground-faint)] [field-sizing:content]"
           />
-          <Button type="submit" size="icon" aria-label="发送消息" title="发送消息" disabled={replyBusy || documentUploading || (!draft.trim() && !attachments.length && !documents.length) || !sessionId || !sessionKey}>
+          <Button type="submit" size="icon" aria-label="发送消息" title="发送消息" disabled={replyBusy || chatModelBusy || documentReference.isPending || (!draft.trim() && !attachments.length && !studyDocuments.length) || !sessionId || !sessionKey}>
             <ArrowUpIcon size={20} weight="bold" />
           </Button>
           {replyBusy ? (
@@ -1187,7 +1485,7 @@ export function ChatPage() {
               <StopIcon size={18} weight="fill" />
             </Button>
           ) : (
-            <Button type="button" size="icon" variant="secondary" aria-label="让 AI 回复" title="让 AI 回复" disabled={!queuedMessages.length || !sessionId || !sessionKey} onClick={() => void generateReply()}>
+            <Button type="button" size="icon" variant="secondary" aria-label="让 AI 回复" title="让 AI 回复" disabled={chatModelBusy || !queuedMessages.length || !sessionId || !sessionKey} onClick={() => void generateReply()}>
               <PaperPlaneTiltIcon size={20} weight="fill" />
             </Button>
           )}
@@ -1198,4 +1496,13 @@ export function ChatPage() {
       </form>
     </section>
   );
+}
+
+
+function StudyAssistantContent({ content, messageId }: { content: string; messageId: string }) {
+  const { text, draft } = splitStudyPlanDraft(content);
+  return <>
+    {text && <HoneyMessage content={text} role="assistant" messageId={messageId} />}
+    {draft && <StudyPlanDraft key={draft.markdown} draft={draft} />}
+  </>;
 }

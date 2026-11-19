@@ -74,6 +74,22 @@ def test_user_state_is_not_inferred_from_user_message(tmp_path):
     assert max(state["axes"].values()) == 0
 
 
+def test_reported_user_feeling_does_not_become_companion_feeling(tmp_path):
+    state = update_momentary_state_from_turn(
+        tmp_path,
+        assistant_response="你说「我很开心」。我觉得你很高兴。",
+        turn_id="reported",
+    )
+    assert state["axes"]["positive_valence"] == state["axes"]["warmth"] == 0
+    state = update_momentary_state_from_turn(
+        tmp_path,
+        assistant_response="你说「我很开心」，但我有点烦，旧稿也许找不回来了。",
+        turn_id="own",
+    )
+    assert state["axes"]["negative_valence"] > 0
+    assert state["axes"]["positive_valence"] == 0
+
+
 def test_positive_and_negative_state_counterbalance(tmp_path):
     now = datetime(2026, 9, 27, 10, 0, tzinfo=timezone.utc)
     positive = update_momentary_state_from_turn(

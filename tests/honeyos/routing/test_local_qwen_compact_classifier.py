@@ -21,6 +21,6 @@ def test_compact_parser_enriches_research():
     assert d.source == "local_qwen"
 
 def test_default_budget():
-    c = build_default_router().local_classifier
+    c = build_default_router(config={}).local_classifier
     assert c.max_tokens == 64
     assert c.timeout_seconds == 12.0

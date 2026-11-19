@@ -130,7 +130,8 @@ export function reduceHoneyRun(state: HoneyRunState, event: HoneyEvent): HoneyRu
       ...state,
       phase: "acting",
       parts: state.parts.map((part) =>
-        part.kind === "approval" && part.status === "waiting"
+        part.kind === "approval" && part.status === "waiting" &&
+          (!payload.approval_id || part.permission.approval_id === payload.approval_id)
           ? { ...part, status: choice === "deny" ? "denied" : "completed", choice }
           : part,
       ),

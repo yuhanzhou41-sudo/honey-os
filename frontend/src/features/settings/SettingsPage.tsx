@@ -15,6 +15,9 @@ import { RecoveryActions } from "../../components/honey/RecoveryActions";
 import { Button } from "../../components/ui/Button";
 import { applyHoneyTheme, readHoneyTheme, type HoneyTheme } from "../../design-system/theme";
 import { useHoneyStore } from "../../runtime/honey-store";
+import { EventPermissions } from "./EventPermissions";
+import { WebInitiative } from "./WebInitiative";
+import { StudySkillReview } from "./StudySkillReview";
 
 import { fetchModelOptions, setGlobalDefaultModel } from "../../api/models";
 const providers = [
@@ -66,6 +69,63 @@ export function SettingsPage() {
     },
     onError: (error) => setStatus(error instanceof Error ? error.message : "刚才没有保存成功"),
   });
+
+  const authenticatedModelProviders = (modelOptions.data?.providers || [])
+    .filter((item) => item.authenticated && item.models.length > 0);
+  const [globalProvider, setGlobalProvider] = useState("");
+  const [globalModel, setGlobalModel] = useState("");
+  const [globalStatus, setGlobalStatus] = useState("");
+
+  useEffect(() => {
+    if (!modelOptions.data) return;
+    const providerFromServer = modelOptions.data.provider || "";
+    const providerOption = authenticatedModelProviders.find((item) => item.slug === providerFromServer)
+      || authenticatedModelProviders[0];
+    if (!providerOption) return;
+    setGlobalProvider(providerOption.slug);
+    const modelFromServer = modelOptions.data.model || "";
+    setGlobalModel(
+      providerOption.models.includes(modelFromServer)
+        ? modelFromServer
+        : (providerOption.models[0] || ""),
+    );
+  }, [modelOptions.data]);
+
+  const saveGlobal = useMutation({
+    mutationFn: setGlobalDefaultModel,
+    onSuccess: async (data) => {
+      setGlobalProvider(data.provider);
+      setGlobalModel(data.model);
+      setGlobalStatus(`全局默认模型已切换为 ${data.model}`);
+      await modelOptions.refetch();
+      await settings.refetch();
+    },
+    onError: (error) => setGlobalStatus(
+      error instanceof Error ? error.message : "全局默认模型保存失败",
+    ),
+  });
+
+  function chooseGlobalProvider(next: string) {
+    setGlobalProvider(next);
+    const option = authenticatedModelProviders.find((item) => item.slug === next);
+    setGlobalModel(option?.models[0] || "");
+    setGlobalStatus("");
+  }
+
+  function saveGlobalModel(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!globalProvider || !globalModel) {
+      setGlobalStatus("请先选择模型服务和模型");
+      return;
+    }
+    setGlobalStatus("正在切换全局默认模型");
+    saveGlobal.mutate({ provider: globalProvider, model: globalModel });
+  }
+
+  const globalProviderOption = authenticatedModelProviders.find(
+    (item) => item.slug === globalProvider,
+  );
+
 
   if (runtimeLoading || settings.isLoading) return <PageFrame><LoadingState /></PageFrame>;
   if (runtimeError || settings.isError || !settings.data) return <PageFrame><ErrorState /></PageFrame>;
@@ -285,6 +345,9 @@ export function SettingsPage() {
           </Link>
           <p className="mt-4 text-xs text-[var(--foreground-faint)]">对话模型：{summary.conversation_model || "跟随当前配置"}。记忆整理模型：{summary.distillation_model || "自动"}。</p>
         </section>
+        <EventPermissions />
+        <WebInitiative />
+        <StudySkillReview />
       </div>
     </PageFrame>
   );

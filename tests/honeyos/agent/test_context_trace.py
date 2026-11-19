@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 from honeyos.agent.context_trace import write_context_source_trace
@@ -41,6 +42,9 @@ def test_g0_context_trace_is_metadata_only(tmp_path):
 
     row = json.loads(raw)
     assert row["phase"] == "G0.3"
+    assert "session_id" not in row
+    assert row["session_sha256"] == hashlib.sha256(b"s1").hexdigest()
+    assert row["query_namespace"] == "general"
     assert row["history"]["messages"] == 2
     assert row["history"]["role_counts"] == {"user": 1, "assistant": 1}
     assert row["current_turn"]["cognitive_item_count"] == 2
@@ -67,15 +71,31 @@ def test_g0_context_trace_fail_open(tmp_path):
     )
 
 
-def test_runtime_delta_semantics_documented():
-    native = "abc"
-    final = native + "\nCOGNITIVE"
-    cognitive = final[len(native):] if final.startswith(native) else ""
-    assert cognitive == "\nCOGNITIVE"
-    history = [
-        {"role": "user", "content": "u1"},
-        {"role": "assistant", "content": "a1"},
-        {"role": "user", "content": "current"},
-    ]
-    current_turn_user_idx = 2
-    assert history[:current_turn_user_idx] == history[:2]
+def test_trace_is_opt_in_and_uses_current_profile_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HONEYOS_HOME", str(tmp_path))
+    monkeypatch.delenv("HONEYOS_CONTEXT_TRACE", raising=False)
+    args = dict(
+        session_id="private-session-marker",
+        turn_id="private-turn-marker",
+        query_namespace="private-namespace-marker",
+        system_prompt="private-system-marker",
+        history_messages=[{"role": "private-role-marker", "content": "private-content"}],
+        clean_user_message="private-question",
+        native_memory_context="",
+        cognitive_context="",
+        cognitive_item_count=0,
+        plugin_user_context="",
+        final_memory_context="",
+        api_content="private-question",
+    )
+    trace = tmp_path / "memory" / "runtime_context_sources.jsonl"
+    write_context_source_trace(**args)
+    assert not trace.exists()
+
+    monkeypatch.setenv("HONEYOS_CONTEXT_TRACE", "1")
+    write_context_source_trace(**args)
+    raw = trace.read_text()
+    assert "private-" not in raw
+    row = json.loads(raw)
+    assert row["query_namespace"] == ""
+    assert row["history"]["role_counts"] == {"unknown": 1}

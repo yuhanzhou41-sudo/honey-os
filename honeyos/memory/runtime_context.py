@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from .runtime_shadow import EXPANDED_RECALL_CHARS, EXPANDED_RECALL_ITEMS
+
 MAX_ITEMS = 3
 MAX_SUMMARY_CHARS = 240
 MAX_MEMORY_PAYLOAD_CHARS = 700
@@ -298,12 +300,14 @@ def build_silent_memory_context(
     max_items: int = MAX_ITEMS,
     max_summary_chars: int = MAX_SUMMARY_CHARS,
     max_memory_chars: int = MAX_MEMORY_PAYLOAD_CHARS,
+    exclude_summaries: Iterable[str] = (),
 ) -> SilentMemoryContext:
     del query
+    seen = {_clean_text(summary).casefold() for summary in exclude_summaries}
 
-    limit_items = max(0, min(int(max_items), MAX_ITEMS))
+    limit_items = max(0, min(int(max_items), EXPANDED_RECALL_ITEMS))
     limit_summary = max(40, min(int(max_summary_chars), MAX_SUMMARY_CHARS))
-    limit_memory = max(0, min(int(max_memory_chars), MAX_MEMORY_PAYLOAD_CHARS))
+    limit_memory = max(0, min(int(max_memory_chars), EXPANDED_RECALL_CHARS))
 
     included: list[MemoryContextItem] = []
     rejected: list[MemoryContextItem] = []
@@ -327,6 +331,11 @@ def build_silent_memory_context(
 
         if _strong_current_turn_conflict(current_turn_text, base.summary):
             rejected.append(_candidate_item(candidate, reason="current_turn_conflict"))
+            continue
+
+        normalized = base.summary.casefold()
+        if normalized in seen:
+            rejected.append(_candidate_item(candidate, reason="duplicate_context"))
             continue
 
         if len(included) >= limit_items:
@@ -501,6 +510,8 @@ def run_silent_memory_context_shadow(
     turn_id: str | None = None,
     repository: Any = None,
     audit_path: Path | None = None,
+    expanded: bool = False,
+    structured_context: str = "",
 ) -> SilentMemoryContext:
     """F2.2: build would-be model context, audit it, but never inject it."""
     try:
@@ -527,6 +538,12 @@ def run_silent_memory_context_shadow(
             selected_memories=enriched,
             current_turn_text=query,
             current_namespace=namespace,
+            max_items=EXPANDED_RECALL_ITEMS if expanded else MAX_ITEMS,
+            max_memory_chars=EXPANDED_RECALL_CHARS if expanded else MAX_MEMORY_PAYLOAD_CHARS,
+            exclude_summaries=(
+                line.partition("：")[2] for line in structured_context.splitlines()
+                if line.startswith("- [") and "：" in line
+            ),
         )
 
         _write_context_shadow_audit(

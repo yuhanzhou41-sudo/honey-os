@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from honeyos.companion.affect_evidence import assistant_self_clauses
+
 VERSION = 1
 HALF_LIFE_HOURS = 3.0
 HARD_EXPIRE_HOURS = 12.0
@@ -188,9 +190,11 @@ def _matched_axes(text: str) -> set[str]:
     matched: set[str] = set()
     if not text.strip():
         return matched
+    self_text = "\n".join(assistant_self_clauses(text))
     for axis, patterns in _PATTERNS.items():
         for pattern in patterns:
-            if re.search(pattern, text, re.IGNORECASE):
+            evidence = self_text if axis in {"warmth", "tension", "positive_valence", "negative_valence"} else text
+            if re.search(pattern, evidence, re.IGNORECASE):
                 matched.add(axis)
                 break
     return matched

@@ -4,12 +4,49 @@ from datetime import datetime, timedelta, timezone
 
 from honeyos.companion.continuity import (
     ContinuityStore,
+    StructuredMemoryStore,
     note_for_reset_session,
     record_reset_handoff,
 )
 
 
 NOW = datetime(2026, 8, 7, 8, 0, tzinfo=timezone.utc)
+
+
+def test_repeated_open_loop_keeps_cross_session_sources_and_forget_blocks_background(tmp_path):
+    store = StructuredMemoryStore(tmp_path)
+    options = dict(
+        lane_key="chat", kind="open_loop", content="Check whether the project backup exists.",
+        evidence="user_stated", created_by="background", now=NOW,
+    )
+    first = store.record(**options, source_session_id="one", source_message_ids=[1])
+    second = store.record(**options, source_session_id="two", source_message_ids=[20])
+    assert first and second and first.id == second.id
+    assert second.source_refs == (("one", 1), ("two", 20))
+    assert store.update_content(
+        lane_key="chat", item_id=second.id, content="The backup check is still pending.",
+        source_session_id="three", source_message_ids=[46], now=NOW,
+    )
+    assert store.list_active(lane_key="chat", now=NOW)[0].source_refs == (
+        ("one", 1), ("two", 20), ("three", 46),
+    )
+    assert store.change_status(lane_key="chat", item_id=second.id, action="forget", now=NOW)
+    options["content"] = "The backup check is still pending."
+    assert store.record(**options, source_session_id="four", source_message_ids=[89]) is None
+
+
+def test_equal_episode_wording_needs_common_evidence_to_merge(tmp_path):
+    store = StructuredMemoryStore(tmp_path)
+    options = dict(
+        lane_key="chat", kind="episode", content="We went for a walk.", evidence="conversation_event",
+        created_by="background", now=NOW,
+    )
+    first = store.record(**options, source_session_id="one", source_message_ids=[1])
+    retry = store.record(**options, source_session_id="one", source_message_ids=[1, 3])
+    separate = store.record(**options, source_session_id="two", source_message_ids=[22])
+    assert first and retry and separate
+    assert retry.id == first.id and retry.source_refs == (("one", 1), ("one", 3))
+    assert separate.id != first.id
 
 
 def _messages() -> list[dict]:

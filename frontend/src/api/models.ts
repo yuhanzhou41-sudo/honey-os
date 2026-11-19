@@ -1,4 +1,4 @@
-import { apiPath, fetchWithLocalSessionRecovery } from "./client";
+import { requestJson } from "./client";
 
 export type ModelProviderOption = {
   slug: string;
@@ -15,26 +15,8 @@ export type ModelOptions = {
   provider?: string;
 };
 
-async function modelOptionsError(response: Response): Promise<Error> {
-  let detail = "";
-  try {
-    detail = await response.text();
-  } catch {
-    detail = "";
-  }
-  return new Error(detail || `Model options request failed (${response.status})`);
-}
-
-export async function fetchModelOptions(): Promise<ModelOptions> {
-  const response = await fetchWithLocalSessionRecovery(
-    apiPath("/api/model/options"),
-    {
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    },
-  );
-  if (!response.ok) throw await modelOptionsError(response);
-  return response.json() as Promise<ModelOptions>;
+export function fetchModelOptions(): Promise<ModelOptions> {
+  return requestJson<ModelOptions>("/api/model/options");
 }
 
 export type GlobalModelSelection = {
@@ -43,23 +25,13 @@ export type GlobalModelSelection = {
   model: string;
 };
 
-export async function setGlobalDefaultModel(options: {
+export function setGlobalDefaultModel(options: {
   provider: string;
   model: string;
 }): Promise<GlobalModelSelection> {
-  const response = await fetchWithLocalSessionRecovery(
-    apiPath("/api/model/default"),
-    {
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(options),
-    },
-  );
-  if (!response.ok) throw await modelOptionsError(response);
-  return response.json() as Promise<GlobalModelSelection>;
+  return requestJson<GlobalModelSelection>("/api/model/default", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(options),
+  });
 }
-

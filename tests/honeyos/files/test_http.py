@@ -4,6 +4,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from aiohttp import web
 
 from honeyos.files.http import AttachmentHTTPHandlers
+from honeyos.gateway.config import PlatformConfig
+from honeyos.gateway.platforms.api_server import APIServerAdapter
 
 
 async def make_client(tmp_path):
@@ -211,5 +213,45 @@ def test_attachment_http_missing_id_returns_404(tmp_path):
 
         finally:
             await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_gateway_attachment_routes_require_existing_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    key = "a" * 32
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": key}))
+    app = web.Application()
+    for method, path, handler in adapter._http_route_table():
+        if path.startswith("/api/attachments"):
+            app.router.add_route(method, path, handler)
+
+    async def scenario():
+        async with TestClient(TestServer(app)) as client:
+            endpoints = (
+                ("POST", "/api/attachments"),
+                ("GET", "/api/attachments"),
+                ("GET", "/api/attachments/missing"),
+                ("GET", "/api/attachments/missing/content"),
+                ("DELETE", "/api/attachments/missing"),
+                ("POST", "/api/attachments/missing/restore"),
+            )
+            for method, path in endpoints:
+                for headers in ({}, {"Authorization": "Bearer invalid"}):
+                    async with client.request(method, path, headers=headers) as response:
+                        assert response.status == 401, (method, path)
+                        assert (await response.json())["error"]["code"] == "gateway_auth_failed"
+
+            async with client.get(
+                "/api/attachments", headers={"Authorization": f"Bearer {key}"}
+            ) as response:
+                assert response.status == 200
+                assert await response.json() == {"attachments": []}
+
+            async with client.get(
+                "/api/attachments", cookies={"honeyos_local": adapter._local_web_token}
+            ) as response:
+                assert response.status == 200
+                assert await response.json() == {"attachments": []}
 
     asyncio.run(scenario())

@@ -2,10 +2,10 @@
 
 ## Status
 
-G0.1 Static Context Source Audit: PASS  
-G0.2 Session-store Resolution: PASS  
-G0.2 DB Replay Feasibility: NOT SUITABLE for active api_server Web lane  
-G0.3 Runtime Context Contribution Trace: PASS  
+G0.1 Static Context Source Audit: PASS
+G0.2 Session-store Resolution: PASS
+G0.2 DB Replay Feasibility: NOT SUITABLE for active api_server Web lane
+G0.3 Runtime Context Contribution Trace: PASS
 G0.4 System / Plugin Attribution: PASS
 
 ## Frozen findings
@@ -43,3 +43,13 @@ G1 changes expression only. It must not alter:
 - provenance storage.
 
 Diagnostic G0 runtime traces may remain temporarily enabled during G1 validation, but are not product behavior.
+
+
+## 2026-11-15 implementation boundary
+
+G0.3 and G0.4 diagnostic files are off by default. Set
+`HONEYOS_CONTEXT_TRACE=1` for a diagnostic run. Both JSONL files are written
+under the active HoneyOS profile's `memory` directory. The files contain
+hashed identifiers, counts, and hashes of prompt sections. They omit
+message, prompt, memory, and plugin text. The G0.4 metadata identifies
+wording guidance separately from plugin output and the clock.

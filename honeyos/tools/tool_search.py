@@ -209,7 +209,7 @@ def is_deferrable_tool_name(name: str) -> bool:
     even when their toolset is technically plugin-provided (this protects
     against accidental shadowing).
     """
-    if name in BRIDGE_TOOL_NAMES:
+    if name in BRIDGE_TOOL_NAMES or name == "work_action":
         return False
     if name in _core_tool_names():
         return False

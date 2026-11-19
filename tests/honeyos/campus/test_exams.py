@@ -1,0 +1,119 @@
+"""Campus 考试快照：读取契约、导入替换与降级语义的单测（全部使用虚构数据）。"""
+import json
+
+import pytest
+
+from honeyos.campus import CampusExamsService
+from honeyos.campus.snapshot import InvalidSnapshotError, MissingSnapshotError, read_snapshot
+
+
+def write_snapshot(path, rows=None, captured_at="2026-11-19T16:00:00+08:00",
+                  source="https://jiaowu.cqmu.edu.cn:8080", schema="campus-exams-snapshot/1"):
+    payload = {
+        "schema": schema,
+        "captured_at": captured_at,
+        "source": source,
+        "row_count": len(rows or []),
+        "rows": rows or [],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def row(course, exam_date, arrangement="上午 09:00-11:00", location="教学楼 301"):
+    return {"course": course, "exam_date": exam_date, "arrangement": arrangement, "location": location}
+
+
+def test_refresh_reports_missing_snapshot(tmp_path):
+    service = CampusExamsService(home=tmp_path, snapshot_path=tmp_path / "missing.json")
+    result = service.refresh()
+    assert result["result"] == "snapshot_missing"
+    assert result["action"] == "open-host"
+
+
+def test_refresh_imports_and_lists(tmp_path):
+    snapshot = tmp_path / "exams.json"
+    write_snapshot(snapshot, [
+        row("外科学", "2026-11-25 09:00-11:00"),
+        row("妇产科学", "时间未安排", arrangement="时间未安排", location="地点未安排"),
+    ])
+    service = CampusExamsService(home=tmp_path, snapshot_path=snapshot)
+    result = service.refresh()
+    assert result["result"] == "updated"
+    assert result["imported"] == 2
+
+    exams = service.get_exams()
+    assert exams["has_data"] is True
+    assert exams["needs_capture"] is False
+    assert exams["row_count"] == 2
+    assert exams["stale"] is False
+    assert {r["course"] for r in exams["records"]} == {"外科学", "妇产科学"}
+
+
+def test_refresh_replaces_previous_batch(tmp_path):
+    snapshot = tmp_path / "exams.json"
+    write_snapshot(snapshot, [row("外科学", "2026-11-25 09:00")])
+    service = CampusExamsService(home=tmp_path, snapshot_path=snapshot)
+    assert service.refresh()["result"] == "updated"
+
+    write_snapshot(
+        snapshot,
+        [row("内科学", "2026-12-02 14:00"), row("病理学", "2026-12-09 09:00")],
+        captured_at="2026-11-19T18:00:00+08:00",
+    )
+    result = service.refresh()
+    assert result["result"] == "updated"
+    assert result["imported"] == 2
+    assert {r["course"] for r in service.get_exams()["records"]} == {"内科学", "病理学"}
+
+
+def test_older_snapshot_does_not_overwrite_newer(tmp_path):
+    snapshot = tmp_path / "exams.json"
+    write_snapshot(snapshot, [row("新课程", "2026-12-02 09:00")], captured_at="2026-11-19T18:00:00+08:00")
+    service = CampusExamsService(home=tmp_path, snapshot_path=snapshot)
+    assert service.refresh()["result"] == "updated"
+
+    write_snapshot(snapshot, [row("旧课程", "2026-11-01 09:00")], captured_at="2026-11-19T16:00:00+08:00")
+    result = service.refresh()
+    assert result["result"] == "no_new_snapshot"
+    assert {r["course"] for r in service.get_exams()["records"]} == {"新课程"}
+
+
+def test_invalid_schema_rejected(tmp_path):
+    snapshot = tmp_path / "exams.json"
+    write_snapshot(snapshot, schema="campus-exams-snapshot/0")
+    service = CampusExamsService(home=tmp_path, snapshot_path=snapshot)
+    assert service.refresh()["result"] == "snapshot_invalid"
+    with pytest.raises(InvalidSnapshotError):
+        read_snapshot(snapshot)
+
+
+def test_unparsable_captured_at_rejected(tmp_path):
+    snapshot = tmp_path / "exams.json"
+    write_snapshot(snapshot, [row("外科学", "2026-11-25 09:00")], captured_at="not-a-time")
+    service = CampusExamsService(home=tmp_path, snapshot_path=snapshot)
+    assert service.refresh()["result"] == "snapshot_invalid"
+
+
+def test_missing_snapshot_raises(tmp_path):
+    with pytest.raises(MissingSnapshotError):
+        read_snapshot(tmp_path / "nope.json")
+
+
+def test_empty_rows_means_confirmed_no_exams(tmp_path):
+    snapshot = tmp_path / "exams.json"
+    write_snapshot(snapshot, [])
+    service = CampusExamsService(home=tmp_path, snapshot_path=snapshot)
+    assert service.refresh()["result"] == "updated"
+    exams = service.get_exams()
+    assert exams["has_data"] is True
+    assert exams["needs_capture"] is False
+    assert exams["row_count"] == 0
+
+
+def test_stale_flag_after_threshold(tmp_path):
+    snapshot = tmp_path / "exams.json"
+    write_snapshot(snapshot, [row("外科学", "2026-11-25 09:00")], captured_at="2026-11-17T10:00:00+08:00")
+    service = CampusExamsService(home=tmp_path, snapshot_path=snapshot)
+    service.refresh()
+    assert service.get_exams()["stale"] is True

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from honeyos.memory.repository import CognitiveMemoryRepository
@@ -38,6 +39,96 @@ def test_shadow_selects_relevant_external_memory_without_prompt_payload(tmp_path
     assert result.selected
     assert result.selected[0].id == "me_honey"
     assert result.total_char_cost <= 900
+
+
+def test_association_follows_one_shared_original_message_only(tmp_path):
+    repo = _repo(tmp_path)
+    _add(repo, eid="anchor", summary="The backup was available on a spare disk.")
+    _add(repo, eid="neighbor", summary="A quiet meeting happened in March.")
+    _add(repo, eid="beyond", summary="The package arrived after lunch.")
+    for item, message in (("anchor", "m1"), ("neighbor", "m1"), ("neighbor", "m2"), ("beyond", "m2")):
+        repo.add_provenance(
+            memory_kind="episode", memory_id=item, source_system="deepseek",
+            source_type="conversation", source_id="history", session_id="s1", message_id=message,
+        )
+    retriever = CognitiveMemoryShadowRetriever(repo)
+    result = retriever.retrieve("backup", adaptive=True, write_audit=False)
+    assert [(item.id, item.reason) for item in result.selected] == [
+        ("anchor", "lexical:backup"), ("neighbor", "shared_source_message"),
+    ]
+    repo.create_tombstone(scope="source", source_system="deepseek", source_id="source-neighbor", reason="test")
+    assert [item.id for item in retriever.retrieve("backup", adaptive=True, write_audit=False).selected] == ["anchor"]
+
+
+def test_sensory_alias_recalls_memory_and_salience_only_reranks_matches(tmp_path):
+    repo = _repo(tmp_path)
+    _add(repo, eid="me_garden", summary="散步时闻到雨后泥土味。")
+    _add(repo, eid="me_garden_copy", summary="散步时闻到雨后泥土味。")
+    _add(repo, eid="me_lake", summary="湖边也有雨后泥土味。")
+    _add(repo, eid="me_other", summary="一次很重要的会议。")
+    with repo.connect() as db:
+        db.executemany(
+            "INSERT INTO memory_salience "
+            "(memory_kind, memory_id, user_emphasis, arousal, updated_at) "
+            "VALUES ('episode', ?, 1, 1, '2026-11-17T00:00:00+00:00')",
+            [("me_lake",), ("me_other",)],
+        )
+    retriever = CognitiveMemoryShadowRetriever(repo)
+    result = retriever.retrieve("潮湿泥土的气味", write_audit=False)
+    assert [item.id for item in result.selected] == ["me_lake", "me_garden"]
+    assert "sensory:smell:petrichor" in result.selected[0].reason
+
+
+def test_old_memory_weak_cue_fades_but_explicit_date_finds_dormant_memory(tmp_path):
+    repo = _repo(tmp_path)
+    _add(repo, eid="old", summary="散步时闻到雨后泥土味。")
+    _add(repo, eid="new", summary="石板路附近也有雨后泥土味。")
+    with repo.connect() as db:
+        db.execute("UPDATE memory_episodes SET occurred_at='2024-04-13T19:00:00+08:00' WHERE episode_id='old'")
+        db.execute("UPDATE memory_episodes SET occurred_at='2026-11-16T19:00:00+08:00' WHERE episode_id='new'")
+    target = CognitiveMemoryShadowRetriever(repo)
+    options = {"write_audit": False, "adaptive": True, "now": datetime(2026, 11, 17, tzinfo=timezone.utc)}
+    assert [item.id for item in target.retrieve("潮湿泥土的气味", **options).selected] == ["new"]
+    with repo.connect() as db:
+        db.execute("UPDATE memory_episodes SET status='dormant' WHERE episode_id='old'")
+    dates = "回顾 2024年4月12日 至 2024年4月13日 的聊天记录"
+    assert [item.id for item in target.retrieve(dates, **options).selected] == ["old"]
+
+    repo.add_provenance(
+        memory_kind="episode", memory_id="old", source_system="deepseek",
+        source_type="conversation", source_id="original-conversation",
+    )
+    repo.create_tombstone(scope="source", source_system="deepseek", source_id="original-conversation", reason="test")
+    assert not target.retrieve(dates, **options).selected
+
+
+def test_current_appraisal_changes_order_only_among_matching_memories(tmp_path):
+    from honeyos.companion.physiology_shadow import PhysiologyShadow, TurnEvidence
+
+    repo = CognitiveMemoryRepository(tmp_path)
+    _add(repo, eid="emphasis", summary="The backup was available on a spare disk.")
+    _add(repo, eid="arousal", summary="The missing backup caused a surprise.")
+    _add(repo, eid="unrelated", summary="A very surprising walk in the park.")
+    with repo.connect() as db:
+        db.execute("UPDATE memory_episodes SET occurred_at='2026-11-16T19:00:00+08:00'")
+        db.executemany(
+            "INSERT INTO memory_salience (memory_kind,memory_id,user_emphasis,arousal,updated_at)"
+            " VALUES ('episode',?,?,?,'2026-11-17')",
+            [("emphasis", 0.45, 0), ("arousal", 0, 1), ("unrelated", 1, 1)],
+        )
+    now = datetime(2026, 11, 17, tzinfo=timezone.utc)
+    retriever = CognitiveMemoryShadowRetriever(repo)
+    options = {"adaptive": True, "now": now, "write_audit": False}
+    assert [m.id for m in retriever.retrieve("backup", **options).selected] == ["emphasis", "arousal"]
+    state = PhysiologyShadow(tmp_path)
+    reply = "I was surprised by the new result."
+    state.enqueue("s", 1, now=now)
+    state.process_one(
+        lambda *_: TurnEvidence(reply, reply),
+        lambda _: {"event": "surprise", "strength": 1, "quote": reply},
+        now=now,
+    )
+    assert [m.id for m in retriever.retrieve("backup", **options).selected] == ["arousal", "emphasis"]
 
 
 def test_shadow_excludes_active_source_tombstone(tmp_path):

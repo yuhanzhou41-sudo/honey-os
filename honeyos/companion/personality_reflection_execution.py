@@ -5,9 +5,7 @@ G2.1B.3:
 - checks the frozen ReflectionPolicy before any model call,
 - launches reflection outside the visible response path,
 - prevents duplicate concurrent reflection,
-- records provider/model/token metadata when available.
-
-This phase still does not promote candidates into authoritative personality.
+- records provider/model/token metadata when available and checks promotion after reflection.
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ _THREAD_LOCK = threading.Lock()
 
 _REFLECTION_INSTRUCTIONS = """You are performing a private periodic self-reflection for a conversational companion.
 
-Review the supplied bounded observations across multiple turns and identify only recurring or meaningfully supported patterns in the companion's own tendencies.
+Review the supplied bounded observations across multiple turns and identify only recurring or meaningfully supported patterns in the companion's own tendencies. Compare them with the supplied active candidates before proposing a new trait.
 
 Important distinctions:
 - Describe the companion, not the user.
@@ -160,6 +158,7 @@ class AuxiliaryPersonalityReflectionAdapter:
                     {
                         "batch_id": batch.get("batch_id", ""),
                         "observations": batch.get("observations", []),
+                        "candidates": batch.get("candidates", []),
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -238,6 +237,7 @@ def run_personality_reflection_once(
     *,
     main_runtime: Mapping[str, Any] | None = None,
     force: bool = False,
+    liked_only: bool = False,
 ):
     """Run at most one real reflection batch.
 
@@ -246,7 +246,7 @@ def run_personality_reflection_once(
     """
     home = _home_path(home)
     adapter = AuxiliaryPersonalityReflectionAdapter(home, main_runtime=main_runtime)
-    runner = PersonalityReflectionRunner(home, adapter=adapter)
+    runner = PersonalityReflectionRunner(home, adapter=adapter, liked_only=liked_only)
 
     first = runner.should_reflect(force=force)
     if not first.should_reflect:
@@ -279,7 +279,7 @@ def run_personality_reflection_once(
         if result.status == "success":
             try:
                 from honeyos.companion.personality_promotion import promote_eligible_candidates
-                promotion_result = promote_eligible_candidates(home)
+                promotion_result = promote_eligible_candidates(home, liked_only=liked_only)
             except Exception:
                 logger.exception("personality candidate promotion scan failed")
         return {
@@ -296,6 +296,7 @@ def maybe_start_background_personality_reflection(
     home: Path | str,
     *,
     main_runtime: Mapping[str, Any] | None = None,
+    liked_only: bool = False,
 ) -> dict[str, Any]:
     """Cheap runtime trigger.
 
@@ -305,7 +306,7 @@ def maybe_start_background_personality_reflection(
 
     # A placeholder adapter is enough for the pure threshold check; it is never
     # called here.
-    runner = PersonalityReflectionRunner(home, adapter=lambda _: {"operations": []})
+    runner = PersonalityReflectionRunner(home, adapter=lambda _: {"operations": []}, liked_only=liked_only)
     decision = runner.should_reflect()
     if not decision.should_reflect:
         return {
@@ -320,6 +321,7 @@ def maybe_start_background_personality_reflection(
                 home,
                 main_runtime=main_runtime,
                 force=False,
+                liked_only=liked_only,
             )
         except Exception:
             logger.exception("background personality reflection failed")

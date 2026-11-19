@@ -215,6 +215,7 @@ _MAX_SSRF_CONNECT_IPS = 8
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 _PROXY_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 _PROXY_FAKE_IPV6_NETWORK = ipaddress.ip_network("::ffff:0:0:0/96")
+_PROXY_BENCHMARK_IPV6_NETWORK = ipaddress.ip_network("2001:2::/48")
 
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
@@ -582,7 +583,7 @@ def _safe_connect_scheme(host: str, port: int, schemes_by_origin: dict[tuple[str
     return schemes_by_origin.get((host, port)) or ("https" if port == 443 else "http")
 
 
-def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
+def _resolved_http_connect_ips(host: str, port: int, scheme: str, *, public_only: bool = False) -> list[str]:
     """Resolve and validate *host* for one HTTP connect attempt.
 
     Unlike :func:`is_safe_url`, this is called from the HTTP transport at the
@@ -597,8 +598,8 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
     if hostname in _BLOCKED_HOSTNAMES:
         raise SSRFConnectionBlocked(f"Blocked request to internal hostname: {hostname}")
 
-    allow_all_private = _global_allow_private_urls()
-    allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
+    allow_all_private = not public_only and _global_allow_private_urls()
+    allow_private_ip = not public_only and _allows_private_ip_resolution(hostname, scheme)
 
     try:
         addr_info = socket.getaddrinfo(
@@ -609,8 +610,7 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
             f"Blocked request - DNS resolution failed for: {hostname}"
         ) from exc
 
-    safe_ips: list[str] = []
-    seen: set[str] = set()
+    resolved = []
     for _family, _, _, _, sockaddr in addr_info:
         ip_str = sockaddr[0]
         if "%" in ip_str:
@@ -621,11 +621,26 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
             raise SSRFConnectionBlocked(
                 f"Blocked request - unparseable IP address {sockaddr[0]!r} for hostname {hostname}"
             ) from exc
+        resolved.append((ip_str, ip))
+
+    # A proxy's synthetic AAAA is only usable alongside an opted-in synthetic
+    # A record for this DNS name. Keep IPv4 as the actual connection target.
+    paired_fake_ipv6 = public_only and any(
+        isinstance(ip, ipaddress.IPv4Address) and _allows_proxy_fake_ip(hostname, ip)
+        for _, ip in resolved
+    )
+    safe_ips: list[str] = []
+    seen: set[str] = set()
+    for ip_str, ip in resolved:
 
         if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
             raise SSRFConnectionBlocked(
                 f"Blocked request to cloud metadata address during connect: {hostname} -> {ip_str}"
             )
+        if public_only and ip in _PROXY_BENCHMARK_IPV6_NETWORK:
+            if paired_fake_ipv6:
+                continue
+            raise SSRFConnectionBlocked(f"Blocked unpaired synthetic IPv6 address: {hostname} -> {ip_str}")
 
         if (
             not allow_all_private
@@ -697,11 +712,12 @@ class _SSRFGuardedAsyncNetworkBackend:
 
 
 class _SSRFGuardedNetworkBackend:
-    def __init__(self, schemes_by_origin_var: Any):
+    def __init__(self, schemes_by_origin_var: Any, *, public_only: bool = False):
         from httpcore._backends.sync import SyncBackend
 
         self._backend = SyncBackend()
         self._schemes_by_origin_var = schemes_by_origin_var
+        self._public_only = public_only
 
     def connect_tcp(
         self,
@@ -715,7 +731,7 @@ class _SSRFGuardedNetworkBackend:
 
         schemes_by_origin = self._schemes_by_origin_var.get({})
         scheme = _safe_connect_scheme(host, port, schemes_by_origin)
-        ips = _resolved_http_connect_ips(host, port, scheme)
+        ips = _resolved_http_connect_ips(host, port, scheme, public_only=self._public_only)
 
         last_exc: Exception | None = None
         for ip in ips:
@@ -779,7 +795,7 @@ def ssrf_safe_async_http_transport(**kwargs: Any) -> Any:
     return _Transport(**kwargs)
 
 
-def ssrf_safe_http_transport(**kwargs: Any) -> Any:
+def ssrf_safe_http_transport(*, public_only: bool = False, **kwargs: Any) -> Any:
     """Return an httpx sync transport that pins direct TCP connects to vetted IPs."""
     import contextvars
     import httpx
@@ -790,7 +806,7 @@ def ssrf_safe_http_transport(**kwargs: Any) -> Any:
         def __init__(self, **transport_kwargs: Any):
             super().__init__(**transport_kwargs)
             self._pool._network_backend = _SSRFGuardedNetworkBackend(  # type: ignore[attr-defined]
-                schemes_by_origin_var
+                schemes_by_origin_var, public_only=public_only,
             )
 
         def handle_request(self, request: Any) -> Any:

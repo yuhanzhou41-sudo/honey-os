@@ -24,6 +24,7 @@ def test_g0_4_trace_metadata_only(tmp_path):
         plugin_hook_context=secrets["hook"],
         runtime_time_context=secrets["time"],
         gateway_notes_context=secrets["notes"],
+        memory_style_context="a synthetic style instruction",
         path=path,
     )
 
@@ -36,6 +37,8 @@ def test_g0_4_trace_metadata_only(tmp_path):
     assert row["plugin_sidecar"]["pre_llm_hook_chars"] == len(secrets["hook"])
     assert row["plugin_sidecar"]["runtime_time_context_chars"] == len(secrets["time"])
     assert row["plugin_sidecar"]["gateway_notes_chars"] == len(secrets["notes"])
+    assert row["plugin_sidecar"]["memory_style_chars"] == len("a synthetic style instruction")
+    assert "a synthetic style instruction" not in raw
     assert row["system_prompt"]["section_count"] == 2
     assert row["system_prompt"]["keyword_counts"]["memory"] >= 1
 
