@@ -151,3 +151,34 @@ def test_invalid_account_rejected(tmp_path):
     write_snapshot(snapshot, [row("外科学", "2026-12-01 09:00")], account="../etc")
     service = CampusExamsService(home=tmp_path, snapshot_path=snapshot)
     assert service.refresh()["result"] == "snapshot_invalid"
+
+
+def test_legacy_database_without_account_column_is_upgraded(tmp_path):
+    import sqlite3
+
+    db_dir = tmp_path / "campus"
+    db_dir.mkdir(parents=True)
+    conn = sqlite3.connect(db_dir / "campus.db")
+    conn.executescript(
+        """
+        CREATE TABLE campus_exam_records (
+            id TEXT PRIMARY KEY, source TEXT NOT NULL, batch_key TEXT NOT NULL,
+            course TEXT NOT NULL, exam_date TEXT NOT NULL, arrangement TEXT NOT NULL,
+            location TEXT NOT NULL, fingerprint TEXT NOT NULL, captured_at TEXT NOT NULL,
+            created_at TEXT NOT NULL);
+        CREATE TABLE campus_snapshot_meta (
+            source TEXT PRIMARY KEY, batch_key TEXT NOT NULL, captured_at TEXT NOT NULL,
+            row_count INTEGER NOT NULL, last_attempt_at TEXT NOT NULL,
+            last_success_at TEXT NOT NULL);
+        INSERT INTO campus_snapshot_meta VALUES
+            ('https://jiaowu.cqmu.edu.cn:8080', '2026-11-19', '2026-11-19T10:00:00+08:00',
+             0, '2026-11-19T10:00:00+08:00', '2026-11-19T10:00:00+08:00');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    service = CampusExamsService(home=tmp_path)
+    exams = service.get_exams()
+    assert exams["account"] == "default"
+    assert exams["has_data"] is True

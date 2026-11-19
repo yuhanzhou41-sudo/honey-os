@@ -83,14 +83,20 @@ class CampusRepository:
                     detail TEXT NOT NULL DEFAULT '',
                     finished_at TEXT NOT NULL
                 );
+                """
+            )
+            # 旧库的表已存在时 CREATE TABLE IF NOT EXISTS 不会补列，
+            # 必须先补 account 列，再建依赖该列的索引。
+            self._ensure_account_column(conn, "campus_exam_records")
+            self._ensure_account_column(conn, "campus_timetable_records")
+            conn.executescript(
+                """
                 CREATE INDEX IF NOT EXISTS idx_campus_exams_account
                     ON campus_exam_records(account, source, captured_at);
                 CREATE INDEX IF NOT EXISTS idx_campus_timetable_account
                     ON campus_timetable_records(account, source, captured_at);
                 """
             )
-            self._ensure_account_column(conn, "campus_exam_records")
-            self._ensure_account_column(conn, "campus_timetable_records")
             self._migrate_legacy_meta(conn)
 
     @staticmethod
