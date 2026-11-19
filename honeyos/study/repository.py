@@ -4,12 +4,20 @@ from contextlib import contextmanager, nullcontext
 import json
 import sqlite3
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from honeyos.core.constants import get_honeyos_home
 
 from .models import StudyPlan, StudyResource
 from .validation import validate_study_plan
+
+
+def version_matches(actual, expected):
+    try:
+        first, second = datetime.fromisoformat(actual), datetime.fromisoformat(expected)
+        return first.tzinfo is not None and second.tzinfo is not None and first == second
+    except (ValueError, TypeError):
+        return False
 
 
 class StudyPlanNotFoundError(KeyError):
@@ -57,6 +65,28 @@ class StudyRepository:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS study_task_completion_events (
+                    task_id TEXT PRIMARY KEY REFERENCES study_tasks(id) ON DELETE CASCADE,
+                    completed_at TEXT NOT NULL,active INTEGER NOT NULL,revision INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS study_projection_dirty (
+                    plan_id TEXT NOT NULL REFERENCES study_plans(id) ON DELETE CASCADE,
+                    local_date TEXT NOT NULL,revision INTEGER NOT NULL,
+                    PRIMARY KEY(plan_id,local_date)
+                );
+                CREATE TABLE IF NOT EXISTS study_activity_archive (
+                    kind TEXT NOT NULL,event_id TEXT NOT NULL,payload_json TEXT NOT NULL,
+                    PRIMARY KEY(kind,event_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS study_activity_attribution (
+                    kind TEXT NOT NULL, event_id TEXT NOT NULL,
+                    plan_id TEXT REFERENCES study_plans(id) ON DELETE SET NULL,
+                    PRIMARY KEY(kind,event_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS study_activity_plan ON study_activity_attribution(plan_id,kind,event_id);
 
                 CREATE TABLE IF NOT EXISTS study_daily_capacity (
                     local_date TEXT PRIMARY KEY,
@@ -195,16 +225,24 @@ class StudyRepository:
                     f'超过已设置上限 {day["limit_minutes"]} 分钟。'
                 )
 
-    def save_plan(self, plan: StudyPlan, *, expected_updated_at=None, new=False) -> StudyPlan:
+    def save_plan(self, plan: StudyPlan, *, expected_updated_at=None, new=False, connection=None) -> StudyPlan:
         plan = validate_study_plan(plan)
 
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with (nullcontext(connection) if connection is not None else self._connect()) as conn:
+            if connection is None:
+                conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT updated_at FROM study_plans WHERE id=?", (plan.id,)).fetchone()
+            closure_table=conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='study_plan_closures'").fetchone()
+            if closure_table and conn.execute("SELECT plan_id FROM study_plan_closures WHERE plan_id=?",(plan.id,)).fetchone():
+                raise ValueError("计划已结束归档，不能修改历史计划。")
             if new and row:
                 return self.get_plan(plan.id)
-            if expected_updated_at is not None and (row is None or row["updated_at"] != expected_updated_at):
+            if expected_updated_at is not None and (row is None or not version_matches(row["updated_at"], expected_updated_at)):
                 raise ValueError("计划已变化，请重新预览再确认。")
+            if row:
+                previous_time=datetime.fromisoformat(row["updated_at"])
+                if plan.updated_at<=previous_time:
+                    plan.updated_at=previous_time+timedelta(microseconds=1)
             self._check_capacity_increase(conn, plan)
             conn.execute(
                 """
@@ -251,6 +289,15 @@ class StudyRepository:
                 ),
             )
 
+            from .activity import mark_day_dirty
+            changed_days={task.scheduled_date.isoformat() for task in plan.tasks}
+            changed_days.update(slot.scheduled_date.isoformat() for slot in plan.flex_slots)
+            changed_days.update(item[0] for item in conn.execute("SELECT scheduled_date FROM study_tasks WHERE plan_id=?",(plan.id,)))
+            old_definition=conn.execute("SELECT definition_json FROM study_plan_definitions WHERE plan_id=?",(plan.id,)).fetchone()
+            if old_definition:
+                changed_days.update(item["scheduled_date"] for item in json.loads(old_definition[0]).get("flex_slots",[]))
+            for day in changed_days:
+                mark_day_dirty(conn,plan.id,day)
             definition = {
                 "flex_slots": [slot.model_dump(mode="json") for slot in plan.flex_slots],
                 "tasks": {
@@ -274,7 +321,7 @@ class StudyRepository:
                              ((plan.id, row["id"]) for row in old_ids if row["id"] not in retained))
 
             for task in plan.tasks:
-                owner = conn.execute("SELECT plan_id FROM study_tasks WHERE id=?", (task.id,)).fetchone()
+                owner = conn.execute("SELECT plan_id,status FROM study_tasks WHERE id=?", (task.id,)).fetchone()
                 if owner is not None and owner["plan_id"] != plan.id:
                     raise ValueError("任务编号已属于另一个计划。")
                 conn.execute(
@@ -306,8 +353,18 @@ class StudyRepository:
                         task.updated_at.isoformat(),
                     ),
                 )
+                if owner and owner["status"] != task.status.value:
+                    if task.status.value == "completed":
+                        conn.execute(
+                            "INSERT INTO study_task_completion_events VALUES (?,?,1,1) "
+                            "ON CONFLICT(task_id) DO UPDATE SET completed_at=excluded.completed_at,active=1,revision=revision+1",
+                            (task.id,plan.updated_at.isoformat()),
+                        )
+                    elif owner["status"] == "completed":
+                        conn.execute("UPDATE study_task_completion_events SET active=0 WHERE task_id=?",(task.id,))
 
-        return self.get_plan(plan.id)
+
+        return plan if connection is not None else self.get_plan(plan.id)
 
     def save_new_plan(self, plan: StudyPlan) -> StudyPlan:
         return self.save_plan(plan, new=True)

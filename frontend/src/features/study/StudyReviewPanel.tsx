@@ -125,7 +125,7 @@ export default function StudyReviewPanel({ todayTasks = [], planId }: { todayTas
     const attempt = pendingAttempt?.choice === choice ? pendingAttempt : { choice, id: crypto.randomUUID() };
     setPendingAttempt(attempt);
     await work(async () => {
-      const result = await studyReview.attempt(active.id, choice, attempt.id);
+      const result = await studyReview.attempt(active.id, choice, attempt.id, planId);
       setFeedback(result);
       setHistory(undefined);
       setQuestions(previous => previous.map(item => item.id === active.id
@@ -182,7 +182,7 @@ export default function StudyReviewPanel({ todayTasks = [], planId }: { todayTas
     {mode === "practice" && <QuestionImport resources={resources} onSaved={() =>
       studyReview.questions().then(value => setQuestions(value.questions))} />}
 
-    {mode === "daily" && <DailyReview resources={resources} tasks={todayTasks} />}
+    {mode === "daily" && <DailyReview resources={resources} tasks={todayTasks} planId={planId} />}
 
     {(mode === "practice" || mode === "wrong") && <>
       <ul className="space-y-2">{questions.filter(item => mode !== "wrong" || item.latest_correct === 0)
@@ -212,7 +212,7 @@ export default function StudyReviewPanel({ todayTasks = [], planId }: { todayTas
         </>}
         {!feedback && active.latest_correct === 0 && <button className={action} disabled={busy}
           onClick={() => void generate({ question_id: active.id })}>从错题生成闪卡</button>}
-        <button className={action} disabled={busy} onClick={() => void work(async () => setHistory(await studyReview.history(active.id)))}>查看作答记录</button>
+        <button className={action} disabled={busy} onClick={() => void work(async () => setHistory(await studyReview.history(active.id,planId)))}>查看作答记录</button>
         {history && (history.attempts.length
           ? <ol className="list-decimal pl-5">{history.attempts.map(a => <li key={a.id}>
             {new Date(a.created_at).toLocaleString()} · {active.options[a.choice]} · {a.correct ? "答对" : "答错"}
@@ -344,14 +344,14 @@ function QuestionImport({ resources, onSaved }: { resources: StudyResource[]; on
   </details>;
 }
 
-function DailyReview({ resources, tasks }: { resources: StudyResource[]; tasks: StudyTask[] }) {
+function DailyReview({ resources, tasks, planId }: { resources: StudyResource[]; tasks: StudyTask[]; planId?: string }) {
   const [scope, setScope] = useState<DailyScope>({ keyword: "", resource_id: "", wrong: false });
   const [count, setCount] = useState(10);
   const [card, setCard] = useState<Pick<SavedCard, "id" | "front">>();
   const [response, setResponse] = useState("");
   const [recallId, setRecallId] = useState("");
   const [revealed, setRevealed] = useState<{ card: SavedCard; recall: Recall }>();
-  const [history, setHistory] = useState<(Recall & { front: string })[]>();
+  const [history, setHistory] = useState<(Recall & { front: string; archived?: number })[]>();
   const [summary, setSummary] = useState<DailySummary>();
   const [quiz, setQuiz] = useState<Quiz>();
   const [choices, setChoices] = useState<Record<string, number>>({});
@@ -382,7 +382,7 @@ function DailyReview({ resources, tasks }: { resources: StudyResource[]; tasks: 
 
   return <section className={panel}>
     <button className={action} disabled={busy} onClick={() => void run(async () =>
-      setSummary(await studyReview.summary()))}>查看今日复盘</button>
+      setSummary(await studyReview.summary(planId)))}>查看今日复盘</button>
     {summary && <section className={panel} aria-label="今日复盘">
       <h3 className="font-semibold">{summary.date} 学习复盘</h3>
       <p>任务完成 {summary.completed} / {summary.tasks} · 答对 {summary.correct} / {summary.attempts}
@@ -448,7 +448,7 @@ function DailyReview({ resources, tasks }: { resources: StudyResource[]; tasks: 
             onChange={event => { setResponse(event.target.value); setRecallId(crypto.randomUUID()); }} />
         </label>
         <button className={action} disabled={busy || !response.trim()} onClick={() => void run(async () => {
-          setRevealed(await studyReview.recall(card.id, recallId, response));
+          setRevealed(await studyReview.recall(card.id, recallId, response, planId));
           setHistory(undefined);
         })}>提交复述并核对</button>
       </>}
@@ -459,21 +459,21 @@ function DailyReview({ resources, tasks }: { resources: StudyResource[]; tasks: 
         {revealed.recall.rating === null ? <fieldset disabled={busy} className="flex flex-wrap gap-2">
           <legend>记录掌握程度</legend>
           {mastery.map((label, rating) => <button key={label} className={action} onClick={() => void run(async () => {
-            setRevealed({ ...revealed, recall: await studyReview.rate(revealed.recall.id, rating) });
+            setRevealed({ ...revealed, recall: await studyReview.rate(revealed.recall.id, rating,planId) });
             setHistory(undefined);
           })}>{label}</button>)}
         </fieldset> : <p role="status">{mastery[revealed.recall.rating]} · 下次复习 {new Date(revealed.recall.due_at!).toLocaleString()}</p>}
       </>}
     </section>}
     <button className={action} disabled={busy} onClick={() => void run(async () =>
-      setHistory((await studyReview.recalls()).recalls))}>查看抽背记录</button>
+      setHistory((await studyReview.recalls(planId)).recalls))}>查看抽背记录</button>
     {history && (history.length ? <ol className="space-y-2">{history.map(entry => <li key={entry.id} className={panel}>
       <strong>{entry.front}</strong>
       <p className="whitespace-pre-wrap">{entry.response}</p>
       <p>{new Date(entry.created_at).toLocaleString()} · {entry.rating === null ? "待自评" : mastery[entry.rating]}</p>
-      {entry.rating === null && <button className={action} disabled={busy}
+      {entry.rating === null && !entry.archived && <button className={action} disabled={busy}
         onClick={() => void run(async () => {
-          const saved = await studyReview.recall(entry.card_id, entry.id, entry.response);
+          const saved = await studyReview.recall(entry.card_id, entry.id, entry.response, planId);
           setCard(saved.card);
           setRevealed(saved);
           setHistory(undefined);
@@ -502,7 +502,7 @@ function DailyReview({ resources, tasks }: { resources: StudyResource[]; tasks: 
       })}
       {!result && <button className={action} disabled={busy || Object.keys(choices).length !== quiz.questions.length}
         onClick={() => void run(async () => {
-          setResult(await studyReview.submitQuiz(quiz.id!, quiz.questions.map(question => choices[question.id])));
+          setResult(await studyReview.submitQuiz(quiz.id!, quiz.questions.map(question => choices[question.id]), planId));
         })}>提交整套练习</button>}
     </section>}
   </section>;

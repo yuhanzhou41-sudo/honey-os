@@ -56,6 +56,20 @@ class StudyReview:
                     kind TEXT NOT NULL, exam TEXT, year INTEGER, location TEXT,
                     UNIQUE(kind, exam, year, location)
                 );
+                CREATE VIEW IF NOT EXISTS study_learning_attempts AS
+                    SELECT * FROM study_review_attempts
+                    UNION ALL SELECT event_id,json_extract(payload_json,'$.question_id'),
+                        json_extract(payload_json,'$.choice'),json_extract(payload_json,'$.correct'),
+                        json_extract(payload_json,'$.created_at')
+                    FROM study_activity_archive a WHERE kind='attempt'
+                    AND NOT EXISTS(SELECT 1 FROM study_review_attempts e WHERE e.id=a.event_id);
+                CREATE VIEW IF NOT EXISTS study_learning_recalls AS
+                    SELECT id,card_id,response,rating,created_at,due_at FROM study_review_recalls
+                    UNION ALL SELECT event_id,json_extract(payload_json,'$.card_id'),
+                        json_extract(payload_json,'$.response'),json_extract(payload_json,'$.rating'),
+                        json_extract(payload_json,'$.created_at'),json_extract(payload_json,'$.due_at')
+                    FROM study_activity_archive a WHERE kind='recall'
+                    AND NOT EXISTS(SELECT 1 FROM study_review_recalls e WHERE e.id=a.event_id);
                 CREATE TABLE IF NOT EXISTS study_review_intake (
                     id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL,
                     url TEXT, content TEXT NOT NULL, created_at TEXT NOT NULL, saved INTEGER NOT NULL DEFAULT 0
@@ -230,7 +244,7 @@ class StudyReview:
             raise KeyError(question_id)
         return row
 
-    def attempt(self, question_id, choice, attempt_id):
+    def attempt(self, question_id, choice, attempt_id, plan_id=None):
         attempt_id = text(attempt_id, "作答编号", 100)
         with closing(self._connect()) as db, db:
             question = self._get(db, question_id)
@@ -242,14 +256,16 @@ class StudyReview:
             row = db.execute("SELECT * FROM study_review_attempts WHERE id=?", (attempt_id,)).fetchone()
             if row["question_id"] != question_id or row["choice"] != choice:
                 raise ValueError("作答编号已用于其他提交，请刷新后重试。")
+            from .activity import link_event
+            link_event(db, "attempt", attempt_id, plan_id)
             return {"attempt": dict(row), "question": self._question(question, answered=True)}
 
-    def history(self, question_id):
+    def history(self, question_id, plan_id=None):
         with closing(self._connect()) as db:
             question = self._get(db, question_id)
             attempts = [dict(row) for row in db.execute(
-                "SELECT * FROM study_review_attempts WHERE question_id=? ORDER BY rowid DESC",
-                (question_id,),
+                "SELECT * FROM study_review_attempts WHERE question_id=? AND (? IS NULL OR EXISTS (SELECT 1 FROM study_activity_attribution a WHERE a.kind='attempt' AND a.event_id=study_review_attempts.id AND a.plan_id=?)) ORDER BY rowid DESC",
+                (question_id,plan_id,plan_id),
             )]
             return {"attempts": attempts, "question": self._question(question, answered=bool(attempts))}
 
@@ -364,9 +380,11 @@ class StudyReview:
             row = db.execute("SELECT * FROM study_review_recalls WHERE id=?", (recall_id,)).fetchone()
             if row["card_id"] != card_id or row["response"] != response:
                 raise ValueError("复述编号已用于其他提交。")
+            from .activity import link_event
+            link_event(db, "recall", recall_id, payload.get("plan_id"))
             return {"card": dict(card), "recall": dict(row)}
 
-    def assess(self, recall_id, rating):
+    def assess(self, recall_id, rating, plan_id=None):
         if type(rating) is not int or rating not in (0, 1, 2):
             raise ValueError("请选择掌握程度。")
         with closing(self._connect()) as db, db:
@@ -374,7 +392,16 @@ class StudyReview:
             row = db.execute("SELECT * FROM study_review_recalls WHERE id=?", (recall_id,)).fetchone()
             if row is None:
                 raise KeyError(recall_id)
+            if plan_id is not None:
+                owner=db.execute("SELECT plan_id FROM study_activity_attribution WHERE kind='recall' AND event_id=?",(recall_id,)).fetchone()
+                if owner is None or owner["plan_id"]!=plan_id:
+                    raise ValueError("这条复述不属于当前计划。")
             if row["rating"] is None:
+                closed_owner=db.execute(
+                    "SELECT p.id FROM study_activity_attribution a JOIN study_plans p ON p.id=a.plan_id "
+                    "WHERE a.kind='recall' AND a.event_id=? AND p.status IN ('completed','archived')",(recall_id,)).fetchone()
+                if closed_owner:
+                    raise ValueError("已结束计划的复述记录只能查看。")
                 previous = db.execute("""
                     SELECT rating, due_at, created_at FROM study_review_recalls
                     WHERE card_id=? AND rating IS NOT NULL ORDER BY rowid DESC LIMIT 1
@@ -387,16 +414,26 @@ class StudyReview:
                 db.execute("UPDATE study_review_recalls SET rating=?, due_at=? WHERE id=?", (rating, due, recall_id))
             elif row["rating"] != rating:
                 raise ValueError("这次复述已记录掌握程度。")
+            owner=db.execute("SELECT plan_id FROM study_activity_attribution WHERE kind='recall' AND event_id=?",(recall_id,)).fetchone()
+            if owner:
+                from .activity import mark_event_dirty
+                mark_event_dirty(db,owner["plan_id"],row["created_at"])
             return dict(db.execute("SELECT * FROM study_review_recalls WHERE id=?", (recall_id,)).fetchone())
 
-    def recall_history(self):
+    def recall_history(self, plan_id=None):
+        if plan_id is not None:
+            self.study.get_plan(plan_id)
         with closing(self._connect()) as db:
             return [dict(row) for row in db.execute("""
-                SELECT r.*, c.front FROM study_review_recalls r
-                JOIN study_review_cards c ON c.id=r.card_id ORDER BY r.rowid DESC LIMIT 100
-            """)]
+                SELECT r.*, COALESCE(c.front,'已归档闪卡') AS front, c.id IS NULL AS archived
+                FROM study_learning_recalls r LEFT JOIN study_review_cards c ON c.id=r.card_id
+                LEFT JOIN study_activity_attribution a ON a.kind='recall' AND a.event_id=r.id
+                WHERE (? IS NULL OR a.plan_id=?) ORDER BY r.created_at DESC LIMIT 100
+            """,(plan_id,plan_id))]
 
-    def daily_summary(self, zone_name):
+    def daily_summary(self, zone_name, plan_id=None):
+        if plan_id is not None:
+            self.study.get_plan(plan_id)
         try:
             zone = ZoneInfo(text(zone_name, "时区", 100))
         except (ZoneInfoNotFoundError, ValueError) as exc:
@@ -408,18 +445,22 @@ class StudyReview:
         )
         tasks = [
             {"id": task.id, "title": task.title, "status": task.status.value, "plan": plan.title}
-            for plan in self.study.list_plans() if plan.status != StudyPlanStatus.ARCHIVED
+            for plan in self.study.list_plans() if (plan_id is None and plan.status != StudyPlanStatus.ARCHIVED) or plan.id==plan_id
             for task in plan.tasks if task.scheduled_date == day
         ]
         with closing(self._connect()) as db:
             attempts, correct = db.execute("""
-                SELECT COUNT(*), COALESCE(SUM(correct), 0) FROM study_review_attempts
+                SELECT COUNT(*), COALESCE(SUM(correct), 0) FROM study_learning_attempts
                 WHERE created_at >= ? AND created_at < ?
-            """, (start, end)).fetchone()
+                AND (? IS NULL OR EXISTS (SELECT 1 FROM study_activity_attribution a
+                    WHERE a.kind='attempt' AND a.event_id=study_learning_attempts.id AND a.plan_id=?))
+            """, (start, end,plan_id,plan_id)).fetchone()
             recalls, mastered = db.execute("""
-                SELECT COUNT(*), COUNT(CASE WHEN rating=2 THEN 1 END) FROM study_review_recalls
+                SELECT COUNT(*), COUNT(CASE WHEN rating=2 THEN 1 END) FROM study_learning_recalls
                 WHERE created_at >= ? AND created_at < ?
-            """, (start, end)).fetchone()
+                AND (? IS NULL OR EXISTS (SELECT 1 FROM study_activity_attribution a
+                    WHERE a.kind='recall' AND a.event_id=study_learning_recalls.id AND a.plan_id=?))
+            """, (start, end,plan_id,plan_id)).fetchone()
         pending = [task for task in tasks if task["status"] != StudyTaskStatus.COMPLETED]
         suggestions = []
         if pending:
@@ -449,7 +490,7 @@ class StudyReview:
             for question in questions
         ]}
 
-    def submit_quiz(self, quiz_id, choices):
+    def submit_quiz(self, quiz_id, choices, plan_id=None):
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             quiz = db.execute("SELECT * FROM study_review_quizzes WHERE id=?", (quiz_id,)).fetchone()
@@ -462,6 +503,11 @@ class StudyReview:
                 result = json.loads(quiz["answers"])
                 if choices != [item["choice"] for item in result["results"]]:
                     raise ValueError("这套练习已经提交。")
+                from .activity import link_event
+                for question_id in ids:
+                    event_id = f"quiz:{quiz_id}:{question_id}"
+                    if db.execute("SELECT id FROM study_review_attempts WHERE id=?", (event_id,)).fetchone():
+                        link_event(db, "attempt", event_id, plan_id)
                 return result
             results = []
             now = datetime.now(timezone.utc).isoformat()
@@ -470,8 +516,11 @@ class StudyReview:
                 if type(choice) is not int or not 0 <= choice < len(question["options"]):
                     raise ValueError("请为每道题选择一个选项。")
                 correct = choice == question["correct"]
+                event_id = f"quiz:{quiz_id}:{question_id}"
                 db.execute("INSERT INTO study_review_attempts VALUES (?,?,?,?,?)",
-                           (uuid4().hex, question_id, choice, correct, now))
+                           (event_id, question_id, choice, correct, now))
+                from .activity import link_event
+                link_event(db, "attempt", event_id, plan_id)
                 results.append({"question": question, "choice": choice, "correct": correct})
             result = {"score": sum(item["correct"] for item in results), "results": results}
             db.execute("UPDATE study_review_quizzes SET answers=? WHERE id=?", (json.dumps(result), quiz_id))
@@ -541,6 +590,21 @@ class StudyReview:
                     continue
                 if owned & set(question_ids):
                     quiz_ids.append(row["id"])
+            for kind,table,column,owned in (
+                ("attempt","study_review_attempts","question_id",question_ids),
+                ("recall","study_review_recalls","card_id",card_ids),
+            ):
+                if owned:
+                    event_marks=",".join("?" for _ in owned)
+                    for event in db.execute(f"SELECT * FROM {table} WHERE {column} IN ({event_marks})",owned).fetchall():
+                        payload=dict(event)
+                        source_table="study_review_questions" if kind=="attempt" else "study_review_cards"
+                        source_column="question_id" if kind=="attempt" else "card_id"
+                        source=db.execute(f"SELECT resource_id,source_title FROM {source_table} WHERE id=?",(event[source_column],)).fetchone()
+                        if source:
+                            payload["source"]=dict(source)
+                        db.execute("INSERT OR IGNORE INTO study_activity_archive VALUES (?,?,?)",
+                                   (kind,event["id"],json.dumps(payload,ensure_ascii=False)))
             if card_ids:
                 card_marks = ",".join("?" for _ in card_ids)
                 counts["recalls"] = db.execute(

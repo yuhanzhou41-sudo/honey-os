@@ -76,16 +76,16 @@ export const studyReview = {
     post<{ imported: number }>(review + "/intake/save", { source_id, questions }),
   draw: (scope: DailyScope) =>
     post<{ card: Pick<SavedCard, "id" | "front"> | null; matched: number }>(daily + "/card", scope),
-  recall: (cardId: string, id: string, response: string) =>
-    post<{ card: SavedCard; recall: Recall }>(daily + "/recall/" + encodeURIComponent(cardId), { id, response }),
-  rate: (id: string, rating: number) =>
-    post<Recall>(daily + "/rating/" + encodeURIComponent(id), { rating }),
-  recalls: () => requestJson<{ recalls: (Recall & { front: string })[] }>(daily + "/recalls"),
-  summary: () => requestJson<DailySummary>(daily + "/summary?timezone=" +
-    encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)),
+  recall: (cardId: string, id: string, response: string, plan_id?: string) =>
+    post<{ card: SavedCard; recall: Recall }>(daily + "/recall/" + encodeURIComponent(cardId), { id, response, plan_id }),
+  rate: (id: string, rating: number, plan_id?: string) =>
+    post<Recall>(daily + "/rating/" + encodeURIComponent(id), { rating, plan_id }),
+  recalls: (planId?: string) => requestJson<{ recalls: (Recall & { front: string; archived?: number })[] }>(daily + "/recalls" + (planId ? "?plan_id=" + encodeURIComponent(planId) : "")),
+  summary: (planId?: string) => requestJson<DailySummary>(daily + "/summary?timezone=" +
+    encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone) + (planId ? "&plan_id=" + encodeURIComponent(planId) : "")),
   quiz: (scope: DailyScope, count: number) => post<Quiz>(daily + "/quiz", { ...scope, count }),
-  submitQuiz: (id: string, choices: number[]) =>
-    post<QuizResult>(daily + "/quiz/" + encodeURIComponent(id), { choices }),
+  submitQuiz: (id: string, choices: number[], plan_id?: string) =>
+    post<QuizResult>(daily + "/quiz/" + encodeURIComponent(id), { choices, plan_id }),
   questions: () => requestJson<{ questions: Question[] }>(review + "/questions"),
   createQuestion: (value: QuestionInput) => post<{ id: string }>(review + "/questions", value),
   importQuestions: (resource_id: string, kind: "past" | "mock", questions: unknown) =>
@@ -93,9 +93,9 @@ export const studyReview = {
   previewQuestions: (resource_id: string, segment: number) =>
     post<{ questions: Omit<QuestionInput, "resource_id">[]; segments: number }>(
       review + "/questions/preview", { resource_id, segment }),
-  history: (id: string) => requestJson<History>(attempts(id)),
-  attempt: (id: string, choice: number, attempt_id: string) =>
-    post<{ attempt: Attempt; question: AnsweredQuestion }>(attempts(id), { choice, attempt_id }),
+  history: (id: string, planId?: string) => requestJson<History>(attempts(id) + (planId ? "?plan_id=" + encodeURIComponent(planId) : "")),
+  attempt: (id: string, choice: number, attempt_id: string, plan_id?: string) =>
+    post<{ attempt: Attempt; question: AnsweredQuestion }>(attempts(id), { choice, attempt_id, plan_id }),
   cards: () => requestJson<{ cards: SavedCard[] }>(review + "/cards"),
   preview: (source: CardSource) => post<CardPreview>(review + "/cards/preview", source),
   saveCards: (source: CardSource, cards: Card[]) =>

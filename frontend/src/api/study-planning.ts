@@ -49,12 +49,14 @@ export async function confirmManualStudyChange(planId: string, patch: object, ta
   );
   const text = [
     preview.plan.title,
+    preview.plan.status ? "状态 " + preview.plan.status : "",
     preview.plan.start_date + " 至 " + preview.plan.end_date,
     ...preview.plan.tasks.map(task => task.title + " · " + task.scheduled_date + " · " + task.planned_minutes + "分钟"),
     ...(preview.capacity ?? []).map(day => day.date + " 合计" + day.total_minutes + "分钟"
       + (day.verified ? " / 上限" + day.limit_minutes + "分钟" : " / 上限未核实")),
   ].join("\n");
-  if (!window.confirm(text + "\n确认保存本次修改？")) throw new Error("已取消修改。");
+  const ending = "status" in patch && ["completed", "archived"].includes(String(patch.status));
+  if (!window.confirm(text + (ending ? "\n结束时将保留一句话总结，并清理本计划旧周报正文。" : "") + "\n确认保存本次修改？")) throw new Error("已取消修改。");
   return requestJson<{ plan: StudyPlan }>(
     "/api/study/plans/" + encodeURIComponent(planId) + "/changes/confirm",
     json("POST", { ...body, expected_updated_at: preview.expected_updated_at }),

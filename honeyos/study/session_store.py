@@ -56,6 +56,10 @@ class StudySessionStore:
 
     def save_session(self, session: StudySession) -> StudySession:
         with self._connect() as conn:
+            if conn.execute("SELECT name FROM sqlite_master WHERE name='study_plan_closures'").fetchone():
+                if conn.execute("SELECT c.plan_id FROM study_plan_closures c JOIN study_tasks t ON t.plan_id=c.plan_id WHERE t.id=?",
+                                (session.task_id,)).fetchone():
+                    raise ValueError("计划已结束归档，不能新增或修改专注记录。")
             conn.execute(
                 """
                 INSERT INTO study_sessions (
@@ -92,6 +96,13 @@ class StudySessionStore:
                     session.updated_at.isoformat(),
                 ),
             )
+            if conn.execute("SELECT name FROM sqlite_master WHERE name='study_tasks'").fetchone():
+                owner=conn.execute("SELECT plan_id FROM study_tasks WHERE id=?",(session.task_id,)).fetchone()
+                if owner:
+                    from .activity import mark_event_dirty
+                    for instant in (session.started_at,session.ended_at):
+                        if instant:
+                            mark_event_dirty(conn,owner["plan_id"],instant.isoformat())
         return self.get_session(session.id)
 
     def get_session(self, session_id: str) -> StudySession:

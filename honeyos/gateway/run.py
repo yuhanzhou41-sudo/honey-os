@@ -19349,6 +19349,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await asyncio.sleep(10)
             while True:
                 await run_hourly(self, self._topic_pool_store_instance(), datetime.now(local_timezone()))
+                from honeyos.study.supervision import run_study_maintenance
+                await run_study_maintenance(self, datetime.now(local_timezone()))
                 await asyncio.sleep(60)
 
         task = asyncio.create_task(poll())

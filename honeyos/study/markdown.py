@@ -77,6 +77,17 @@ def parse_study_plan_markdown(text: str) -> StudyPlan:
             + ", ".join(sorted(str(key) for key in unknown_fields))
         )
 
+    if version == 2:
+        for field in ("start_date","end_date"):
+            value=front.get(field)
+            if type(value) is date:
+                continue
+            if not isinstance(value,str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}",value):
+                raise StudyPlanMarkdownError(f"{field} must be YYYY-MM-DD")
+            date.fromisoformat(value)
+    seen_dates=set()
+    seen_sections=[]
+
     goals: list[str] = []
     tasks: list[StudyTask] = []
 
@@ -108,12 +119,14 @@ def parse_study_plan_markdown(text: str) -> StudyPlan:
         line = raw_line.rstrip()
 
         if line == "# Goals":
+            seen_sections.append("goals")
             flush_task()
             section = "goals"
             current_date = None
             continue
 
         if line == "# Schedule":
+            seen_sections.append("schedule")
             flush_task()
             section = "schedule"
             current_date = None
@@ -128,6 +141,9 @@ def parse_study_plan_markdown(text: str) -> StudyPlan:
                 raise StudyPlanMarkdownError(
                     f"invalid schedule date: {date_match.group(1)!r}"
                 ) from exc
+            if version == 2 and seen_dates and current_date <= max(seen_dates):
+                raise StudyPlanMarkdownError("V2 schedule dates must be unique and increasing")
+            seen_dates.add(current_date)
             continue
 
         task_match = _TASK_RE.match(line)
@@ -190,8 +206,18 @@ def parse_study_plan_markdown(text: str) -> StudyPlan:
 
         if not line.strip():
             continue
+        if version == 2:
+            raise StudyPlanMarkdownError("unsupported V2 body line: " + line[:120])
 
     flush_task()
+    if version == 2:
+        if seen_sections != ["goals","schedule"]:
+            raise StudyPlanMarkdownError("V2 requires Goals followed by Schedule exactly once")
+        previous={}
+        for task in tasks:
+            if task.order_index <= previous.get(task.scheduled_date,-1):
+                raise StudyPlanMarkdownError("V2 task order must increase within each date")
+            previous[task.scheduled_date]=task.order_index
 
     raw_plan = {
         "id": front.get("id"),

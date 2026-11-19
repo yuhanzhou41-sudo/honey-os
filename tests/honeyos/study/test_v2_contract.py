@@ -125,3 +125,36 @@ def test_v2_import_does_not_create_completion_facts(tmp_path):
     raw = raw.replace("- [ ]", "- [x]").replace("status: planned", "status: completed")
     saved = service.import_markdown_plan(raw)
     assert saved.tasks[0].status.value == "planned"
+
+
+
+@pytest.mark.parametrize("length",[3,7,17,30])
+def test_arbitrary_plan_lengths_keep_flex_and_empty_days(tmp_path,length):
+    from datetime import timedelta
+    start=date(2026,11,20)
+    plan=StudyPlan(
+        schema_version=2,title="Length",start_date=start,end_date=start+timedelta(days=length-1),
+        tasks=[{"title":f"Day {index}","scheduled_date":start+timedelta(days=index)}
+               for index in range(length-1) if index!=1],
+        flex_slots=[{"scheduled_date":start+timedelta(days=length-1),"planned_minutes":30}],
+    )
+    parsed=parse_study_plan_markdown(export_study_plan_markdown(plan))
+    saved=StudyRepository(tmp_path).save_new_plan(parsed)
+    assert saved.end_date==plan.end_date
+    assert saved.flex_slots==plan.flex_slots
+    assert not any(task.scheduled_date==start+timedelta(days=1) for task in saved.tasks)
+
+
+
+@pytest.mark.parametrize("alter",[
+    lambda text:text+"\nExtra notes",
+    lambda text:text.replace("# Goals","# Goals\n# Goals"),
+    lambda text:text.replace("start_date: '2026-11-19'","start_date: 0"),
+    lambda text:text.replace("# Schedule","# Schedule\n\n## 2026-11-20"),
+])
+def test_v2_rejects_noncontract_body_and_invalid_dates(alter):
+    raw=export_study_plan_markdown(StudyPlan.model_validate(v2_payload()))
+    changed=alter(raw)
+    assert changed!=raw
+    with pytest.raises((StudyPlanMarkdownError,ValueError)):
+        parse_study_plan_markdown(changed)

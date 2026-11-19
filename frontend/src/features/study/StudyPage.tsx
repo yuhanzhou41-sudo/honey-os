@@ -1,4 +1,5 @@
-import { confirmManualStudyChange } from "../../api/study-planning";
+import StudyGrowthPanel from "./StudyGrowthPanel";
+import { confirmManualStudyChange, getStudyPlanningCapabilities } from "../../api/study-planning";
 import PlanningRequestBuilder from "./PlanningRequestBuilder";
 import StudyCapacityPanel, { CapacitySummary } from "./StudyCapacityPanel";
 import type { StudyCapacityDay } from "../../api/study";
@@ -26,7 +27,6 @@ import {
   resumeStudySession,
   setStudyTaskStatus,
   startStudySession,
-  updateStudyPlan,
   type StudyPlan,
   type StudyPomodoroState,
   type StudySession,
@@ -61,6 +61,9 @@ type TaskDraft = {
   planned_minutes: string;
   review_required: boolean;
   status: StudyTaskStatus;
+  priority: "must" | "standard" | "optional";
+  minimum_required: boolean;
+  kind: "study" | "review" | "quiz" | "flashcard";
 };
 
 type DrawerKind = "library" | "review" | "qa" | "textbook" | "campus" | null;
@@ -88,6 +91,9 @@ function taskDraftOf(task: StudyTask): TaskDraft {
     planned_minutes: String(task.planned_minutes),
     review_required: task.review_required,
     status: task.status,
+    priority: task.priority ?? "standard",
+    minimum_required: task.minimum_required ?? false,
+    kind: task.kind ?? "study",
   };
 }
 
@@ -198,7 +204,9 @@ export function StudyPage() {
       const start = today.toISOString().slice(0, 10);
       const endDate = new Date(today);
       endDate.setDate(endDate.getDate() + 6);
+      const capabilities = await getStudyPlanningCapabilities();
       return createStudyPlan({
+        schema_version: capabilities.supported_schema_version,
         title,
         start_date: start,
         end_date: endDate.toISOString().slice(0, 10),
@@ -280,6 +288,7 @@ export function StudyPage() {
         planned_minutes: positiveInt(taskDraft.planned_minutes, "任务时长"),
         review_required: taskDraft.review_required,
         status: taskDraft.status,
+        ...(selectedPlan.schema_version === 2 ? { priority: taskDraft.priority, minimum_required: taskDraft.minimum_required, kind: taskDraft.kind } : {}),
       }, taskEditingId);
     },
     onSuccess: () => {
@@ -296,7 +305,7 @@ export function StudyPage() {
 
   const setPlanStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: StudyPlan["status"] }) =>
-      updateStudyPlan(id, { status }),
+      confirmManualStudyChange(id, { status }),
     onSuccess: refreshPlans,
   });
 
@@ -366,7 +375,7 @@ export function StudyPage() {
         description="今天只看今天要完成的内容；资料、教材、复习、答疑、校园入口和番茄钟需要时再展开。"
       />
 
-      <GrowthStrip />
+      <StudyGrowthPanel key={selectedPlan?.id ?? "none"} plan={selectedPlan} onChanged={refreshPlans} />
 
       <details className="mt-4 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)]">
         <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium">
@@ -567,34 +576,6 @@ export function StudyPage() {
         />
       ) : null}
     </Frame>
-  );
-}
-
-function GrowthStrip() {
-  return (
-    <section className="mt-5 grid gap-3 sm:grid-cols-3">
-      <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] px-4 py-3">
-        <p className="text-xs text-[var(--foreground-muted)]">阳光点</p>
-        <p className="mt-1 text-lg font-semibold">☀️ —</p>
-        <p className="mt-1 text-xs text-[var(--foreground-muted)]">
-          奖励系统预留
-        </p>
-      </div>
-      <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] px-4 py-3">
-        <p className="text-xs text-[var(--foreground-muted)]">小花盆</p>
-        <p className="mt-1 text-lg font-semibold">🫘 待成长</p>
-        <p className="mt-1 text-xs text-[var(--foreground-muted)]">
-          成长逻辑后续接入
-        </p>
-      </div>
-      <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] px-4 py-3">
-        <p className="text-xs text-[var(--foreground-muted)]">每日复盘</p>
-        <p className="mt-1 text-lg font-semibold">HoneyOS · 预留</p>
-        <p className="mt-1 text-xs text-[var(--foreground-muted)]">
-          每日学习监督后续接入
-        </p>
-      </div>
-    </section>
   );
 }
 
@@ -963,6 +944,7 @@ function PlanWorkspace({
               key={task.id}
               task={task}
               planId={plan.id}
+              schemaVersion={plan.schema_version}
               editing={taskEditingId === task.id}
               draft={taskEditingId === task.id ? taskDraft : null}
               onEdit={() => onStartTaskEdit(task)}
@@ -995,6 +977,7 @@ function PlanWorkspace({
 function DayTaskCard({
   task,
   planId,
+  schemaVersion,
   editing,
   draft,
   onEdit,
@@ -1009,6 +992,7 @@ function DayTaskCard({
 }: {
   task: StudyTask;
   planId: string;
+  schemaVersion: 1 | 2;
   editing: boolean;
   draft: TaskDraft | null;
   onEdit: () => void;
@@ -1149,6 +1133,19 @@ function DayTaskCard({
                   <option value="deferred">已顺延</option>
                 </select>
               </div>
+              {schemaVersion === 2 && <div className="flex flex-wrap gap-3 text-sm">
+                <label>优先级 <select value={draft.priority} onChange={event => onDraft({
+                  ...draft, priority: event.target.value as TaskDraft["priority"],
+                  minimum_required: event.target.value === "must" && draft.minimum_required,
+                })}>
+                  <option value="must">必做</option><option value="standard">标准</option><option value="optional">选做</option>
+                </select></label>
+                <label>任务类型 <select value={draft.kind} onChange={event => onDraft({ ...draft, kind: event.target.value as TaskDraft["kind"] })}>
+                  <option value="study">学习</option><option value="review">复习</option><option value="quiz">测验</option><option value="flashcard">闪卡</option>
+                </select></label>
+                <label><input type="checkbox" checked={draft.minimum_required} disabled={draft.priority !== "must"}
+                  onChange={event => onDraft({ ...draft, minimum_required: event.target.checked })} /> 保底任务</label>
+              </div>}
               <label className="flex items-center gap-2 text-xs text-[var(--foreground-muted)]">
                 <input
                   type="checkbox"

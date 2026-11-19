@@ -29,6 +29,7 @@ from .local_source import (
 from honeyos.files.models import AttachmentStatus
 from honeyos.files.service import AttachmentService
 from .repository import (
+    version_matches,
     StudyPlanNotFoundError,
     StudyRepository,
     StudyResourceNotFoundError,
@@ -48,7 +49,7 @@ class StudyService:
     _PLAN_MUTABLE_FIELDS = {
         "title", "description", "start_date", "end_date", "status",
         "focus_minutes", "break_minutes", "long_break_minutes",
-        "long_break_after_sessions", "goals", "flex_slots",
+        "long_break_after_sessions", "goals", "flex_slots", "schema_version",
     }
     _TASK_MUTABLE_FIELDS = {
         "title", "description", "scheduled_date", "planned_minutes",
@@ -126,7 +127,7 @@ class StudyService:
 
         draft, original = preview_chat_plan(self, markdown, revision=revision)
         if original is not None:
-            if original.updated_at.isoformat() != expected_updated_at:
+            if not version_matches(original.updated_at.isoformat(), expected_updated_at):
                 raise ValueError("计划已变化，请重新预览再确认。")
             draft.updated_at = self._now()
             saved = self.repository.save_plan(draft, expected_updated_at=expected_updated_at)
@@ -162,10 +163,15 @@ class StudyService:
         unknown = set(patch) - allowed
         if unknown:
             raise ValueError(f"unsupported fields: {', '.join(sorted(unknown))}")
+        if not task_id and "schema_version" in patch:
+            if type(patch["schema_version"]) is not int or patch["schema_version"] < original.schema_version:
+                raise ValueError("不支持降级或无效的计划版本。")
         if task_id:
             for index, task in enumerate(proposed.tasks):
                 if task.id == task_id:
-                    proposed.tasks[index] = StudyTask.model_validate({**task.model_dump(), **patch})
+                    proposed.tasks[index] = StudyTask.model_validate({
+                        **task.model_dump(), **patch, "updated_at": self._now(),
+                    })
                     break
             else:
                 raise StudyTaskNotFoundError(task_id)
@@ -177,8 +183,27 @@ class StudyService:
     def update_plan(self, plan_id: str, patch: dict[str, Any], *, expected_updated_at=None) -> StudyPlan:
         return self.confirm_update(plan_id, patch, expected_updated_at=expected_updated_at)
 
+    def save_plan_definition(self, plan, *, expected_updated_at, connection=None):
+        plan = validate_study_plan(plan)
+        plan.updated_at = self._now()
+        return self.repository.save_plan(
+            plan, expected_updated_at=expected_updated_at, connection=connection,
+        )
+
     def confirm_update(self, plan_id, patch, *, task_id=None, expected_updated_at=None):
         original, proposed = self.preview_update(plan_id, patch, task_id=task_id)
+        if task_id is None and patch.get("status") in {"completed","archived"}:
+            from .learning import StudyLearningMemory
+            memory=StudyLearningMemory(self)
+            if memory.closure(plan_id):
+                if set(patch)=={"status"} and patch["status"]==original.status.value:
+                    return original
+                raise ValueError("已结束计划只能查看。")
+            reason="completed" if patch["status"]=="completed" or original.status.value=="completed" else "stopped"
+            preview=memory.close_preview(plan_id,reason)
+            memory.close(plan_id,reason,expected_updated_at or original.updated_at.isoformat(),
+                         preview["facts_revision"],definition=proposed)
+            return self.get_plan(plan_id)
         saved = self.repository.save_plan(
             proposed, expected_updated_at=expected_updated_at or original.updated_at.isoformat(),
         )

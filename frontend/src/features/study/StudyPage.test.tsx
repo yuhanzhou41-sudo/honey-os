@@ -122,10 +122,10 @@ it("requires a recall response before revealing the evidence and records mastery
   fireEvent.change(screen.getByLabelText("先复述你的答案"), { target: { value: "ATP" } });
   fireEvent.click(screen.getByRole("button", { name: "提交复述并核对" }));
   expect(await screen.findByText("ATP carries energy.")).toBeInTheDocument();
-  expect(submit).toHaveBeenCalledWith(card.id, expect.any(String), "ATP");
+  expect(submit).toHaveBeenCalledWith(card.id, expect.any(String), "ATP", undefined);
   fireEvent.click(screen.getByRole("button", { name: "已掌握" }));
   expect(await screen.findByText(/下次复习/)).toBeInTheDocument();
-  expect(rate).toHaveBeenCalledWith(recall.id, 2);
+  expect(rate).toHaveBeenCalledWith(recall.id, 2, undefined);
 });
 
 beforeEach(() => {

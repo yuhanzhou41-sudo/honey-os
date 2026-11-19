@@ -81,7 +81,7 @@ def test_service_rejects_frozen_or_unknown_fields(tmp_path):
     plan = service.create_plan(plan_payload())
 
     with pytest.raises(ValueError):
-        service.update_plan(plan.id, {"schema_version": 2})
+        service.update_plan(plan.id, {"schema_version": 3})
 
     with pytest.raises(ValueError):
         service.create_task(
@@ -100,3 +100,13 @@ def test_missing_task_has_clear_error(tmp_path):
 
     with pytest.raises(StudyTaskNotFoundError):
         service.update_task(plan.id, "task_missing", {"status": "completed"})
+
+
+def test_explicit_v2_upgrade_preserves_tasks_and_rejects_downgrade(tmp_path):
+    service=StudyService(StudyRepository(tmp_path))
+    plan=service.create_plan(plan_payload())
+    plan=service.create_task(plan.id,{"title":"Existing","scheduled_date":plan.start_date})
+    upgraded=service.update_plan(plan.id,{"schema_version":2})
+    assert upgraded.schema_version==2 and upgraded.tasks[0].id==plan.tasks[0].id
+    with pytest.raises(ValueError):
+        service.update_plan(plan.id,{"schema_version":1})

@@ -169,6 +169,12 @@ class StudyPlan(BaseModel):
             if task.order_index == 0:
                 task.order_index = index + 1
 
+        if self.schema_version == 2:
+            self.tasks.sort(key=lambda task: (task.scheduled_date,task.order_index,task.id))
+            previous={}
+            for task in self.tasks:
+                task.order_index=max(task.order_index,previous.get(task.scheduled_date,0)+1)
+                previous[task.scheduled_date]=task.order_index
         return self
 
 

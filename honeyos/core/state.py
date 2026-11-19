@@ -6611,6 +6611,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
         def _do(conn):
+            delivery_id = display_metadata.get("delivery_id") if isinstance(display_metadata, dict) else None
+            if role == "assistant" and display_kind == "proactive" and delivery_id:
+                prior = conn.execute(
+                    "SELECT id FROM messages WHERE role='assistant' AND display_kind='proactive' "
+                    "AND json_extract(CASE WHEN json_valid(display_metadata) THEN display_metadata ELSE '{}' END,"
+                    "'$.delivery_id')=? ORDER BY id LIMIT 1", (str(delivery_id),),
+                ).fetchone()
+                if prior:
+                    return prior[0]
             self._check_transcript_write_guards(
                 conn, session_id, compression_lock_holder
             )

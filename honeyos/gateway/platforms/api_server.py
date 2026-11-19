@@ -2670,6 +2670,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from honeyos.study.review_http import review_routes
         from honeyos.study.planning_http import planning_routes
+        from honeyos.study.growth_http import growth_routes
         from honeyos.study.textbook_http import textbook_routes
 
         routes: List[tuple] = [
@@ -2964,7 +2965,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated
             # by a NAS-minted JWT (NOT API_SERVER_KEY).
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
-        return planning_routes(self) + routes + review_routes(self) + textbook_routes(self)
+        return planning_routes(self) + growth_routes(self) + routes + review_routes(self) + textbook_routes(self)
 
     # ------------------------------------------------------------------
     # HoneyOS local companion web channel
@@ -5907,6 +5908,17 @@ class APIServerAdapter(BasePlatformAdapter):
             ordinary_memory_tools = {"memory", "companion_memory", "session_search"}
             enabled_toolsets = sorted((set(enabled_toolsets) - ordinary_memory_tools) | study_tools)
 
+        study_context = ""
+        if not study_planning:
+            from honeyos.study.learning import learning_context_for_message
+            try:
+                study_context = learning_context_for_message(shadow_user_message)
+                if study_context:
+                    enabled_toolsets = [tool for tool in enabled_toolsets if tool not in {"memory","companion_memory","session_search"}]
+                    ephemeral_system_prompt = "\n\n".join(part for part in (ephemeral_system_prompt,study_context) if part)
+            except Exception:
+                logger.warning("Study context unavailable for this turn",exc_info=True)
+
         max_iterations = _current_max_iterations()
 
         # Load fallback provider chain so the API server platform has the
@@ -5926,7 +5938,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "verbose_logging": False,
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
             "enabled_toolsets": enabled_toolsets,
-            "skip_memory": study_planning or work_mode,
+            "skip_memory": study_planning or work_mode or bool(study_context),
             "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
