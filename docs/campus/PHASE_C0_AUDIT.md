@@ -1,6 +1,6 @@
 # C0 校园抽屉审计与阶段报告
 
-2026-11-19。离线审计和已登录门户首页观察完成，子系统现场核查待完成。本轮交付本报告、[模块覆盖矩阵](MODULE_COVERAGE.md)、[架构草案](ARCHITECTURE.md)和[安全边界](SECURITY_BOUNDARIES.md)四份文档。
+2026-11-19。C0 目录级审计完成，覆盖真实门户、服务中心两类目录和图书馆预约入口。各子系统的权限与真实数据能力在后续阶段逐项核对。交付包括本报告、[模块覆盖矩阵](MODULE_COVERAGE.md)、[架构草案](ARCHITECTURE.md)和[安全边界](SECURITY_BOUNDARIES.md)。阶段状态见[开发计划](DEVELOPMENT_PLAN.md)。
 
 ## 基线和复用清单
 
