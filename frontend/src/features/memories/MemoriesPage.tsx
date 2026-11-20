@@ -1,3 +1,4 @@
+import StudyGardenPanel from "../study/StudyGardenPanel";
 import {
   ArrowCounterClockwiseIcon,
   BrainIcon,
@@ -104,7 +105,7 @@ export function MemoriesPage() {
     removeMemory,
   } = useHoneyStore();
 
-  const [section, setSection] = useState<"mine" | "history">("mine");
+  const [section, setSection] = useState<"mine" | "history" | "study">("mine");
   const [historyView, setHistoryView] = useState<"library" | "trash">("library");
   const [filter, setFilter] = useState("all");
   const [partition, setPartition] = useState("all");
@@ -121,6 +122,7 @@ export function MemoriesPage() {
   const memoryRefresh = useQuery({
     queryKey: ["companion", "memories"],
     queryFn: () => fetchCompanionBootstrap(),
+    enabled: section !== "study",
     refetchOnMount: "always",
     refetchInterval: section === "mine" ? 5_000 : false,
     staleTime: 0,
@@ -239,8 +241,14 @@ export function MemoriesPage() {
   const visibleChapters =
     filter === "all" || filter === "recent_chapter" ? recentChapters : [];
 
-  if (loading) return <PageFrame><LoadingState /></PageFrame>;
-  if (error) return <PageFrame><ErrorState /></PageFrame>;
+  const sectionTabs = <div className="mt-6 grid grid-cols-3 gap-2 rounded-[var(--radius-lg)] bg-[var(--surface)] p-1">
+    <SectionButton active={section === "mine"} onClick={() => setSection("mine")}>我的记忆</SectionButton>
+    <SectionButton active={section === "history"} onClick={() => setSection("history")}>历史记忆</SectionButton>
+    <SectionButton active={section === "study"} onClick={() => setSection("study")}>学习花园与记忆</SectionButton>
+  </div>;
+  if (section === "study") return <PageFrame><PageHeader title="记忆" description="学习的每一步，都留在自己的花园里。" />{sectionTabs}<StudyGardenPanel standalone /></PageFrame>;
+  if (loading) return <PageFrame><PageHeader title="记忆" description="日常记忆与学习花园在这里分别查看。" />{sectionTabs}<LoadingState /></PageFrame>;
+  if (error) return <PageFrame><PageHeader title="记忆" description="日常记忆与学习花园在这里分别查看。" />{sectionTabs}<ErrorState /></PageFrame>;
 
   const currentPage = historyView === "library" ? history.data : trash.data;
   const currentLoading = historyView === "library" ? history.isLoading : trash.isLoading;
@@ -253,14 +261,7 @@ export function MemoriesPage() {
         description="正在形成的记忆和从过去带来的历史，会分开保存在这里。"
       />
 
-      <div className="mt-6 grid grid-cols-2 gap-2 rounded-[var(--radius-lg)] bg-[var(--surface)] p-1">
-        <SectionButton active={section === "mine"} onClick={() => setSection("mine")}>
-          我的记忆
-        </SectionButton>
-        <SectionButton active={section === "history"} onClick={() => setSection("history")}>
-          历史记忆
-        </SectionButton>
-      </div>
+      {sectionTabs}
 
       {notice ? (
         <p className="mt-3 text-sm text-[var(--foreground-muted)]" role="status">

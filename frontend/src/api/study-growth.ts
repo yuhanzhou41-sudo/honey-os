@@ -37,3 +37,23 @@ export type FlexPreview = PlanningPreview;
 export type SavedPlan = { plan: StudyPlan };
 
 export const getRewardLedger = (id: string) => requestJson<{ entries: { source: string; amount: number; created_at: string }[] }>(root(id) + "ledger");
+
+export type GardenPlant = {
+  plan_id: string; title: string; plan_status: string; plant: string; enabled: boolean;
+  planted: boolean; closed: boolean; sunlight: number; standard_days: number;
+  tasks: number; completed: number; start_date: string; end_date: string;
+  summary: string | null; as_of: string; updated_at: string;
+};
+export type GardenDay = {
+  date: string; tasks: number; completed: number; focus_minutes: number;
+  attempts: number; correct: number; recalls: number; mastered: number; reward_points: number;
+  sources: Record<string, string[]>;
+};
+export type GardenSummary = {
+  plan_id: string; period: string; start_date: string; end_date: string; as_of: string;
+  archived: boolean; body: string; stats: Record<string, number | null>; days: GardenDay[];
+  final_summary: string | null;
+};
+export const getStudyGarden = () => requestJson<{ plants: GardenPlant[] }>("/api/study/growth/garden");
+export const getGardenSummary = (planId: string, period: string, date: string) =>
+  requestJson<GardenSummary>("/api/study/growth/garden-summary?" + new URLSearchParams({ plan_id: planId, period, date }));

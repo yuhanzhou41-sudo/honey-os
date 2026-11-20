@@ -111,6 +111,13 @@ def growth_routes(adapter):
                             "LEFT JOIN study_activity_archive arc ON arc.event_id=e.id AND arc.kind=a.kind "
                             "ORDER BY e.created_at DESC LIMIT 100",(kind,)))
                 return {"events":events}
+            if action in {"garden", "garden-summary"}:
+                from .garden import StudyGarden
+                garden = StudyGarden(study, memory=memory)
+                if action == "garden":
+                    return garden.listing()
+                return garden.summary(request.query.get("plan_id", ""), request.query.get("period", "week"),
+                                      request.query.get("date", local_today))
             if action=="overview":
                 day=request.query.get("date",local_today)
                 snapshots=[]
@@ -144,7 +151,7 @@ def growth_routes(adapter):
         async def scoped(request, name=action):
             return await handle(request,name)
         routes.append((method,f"/api/study/plans/{{plan_id}}/growth/{action}",adapter._authenticated_file_handler(scoped)))
-    for action,method in {"assign":"POST","events":"GET","overview":"GET"}.items():
+    for action,method in {"assign":"POST","events":"GET","overview":"GET","garden":"GET","garden-summary":"GET"}.items():
         async def global_action(request,name=action):
             return await handle(request,name)
         routes.append((method,f"/api/study/growth/{action}",adapter._authenticated_file_handler(global_action)))

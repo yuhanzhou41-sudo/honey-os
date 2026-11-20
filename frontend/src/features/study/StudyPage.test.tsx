@@ -130,6 +130,7 @@ it("requires a recall response before revealing the evidence and records mastery
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   listStudyPlans.mockResolvedValue({ plans: [plan] });
   listStudySessions.mockResolvedValue({ sessions: [] });
   getStudyPomodoroState.mockResolvedValue({
@@ -363,4 +364,44 @@ it("offers exactly the new V2 template and selected current plan downloads", asy
     .toBe("/api/study/plans/plan_phase51/markdown");
   expect(container.textContent).not.toContain("下载 V1 模板");
   expect(container.textContent).not.toContain("下载编写指南");
+});
+
+
+it("keeps the imported plan selected across remount and slow loading", async () => {
+  const imported = { ...plan, id: "plan_imported", title: "Imported dermatology" };
+  listStudyPlans.mockResolvedValue({ plans: [plan, imported] });
+  const first = renderStudyPage();
+  await screen.findByText("Phase 5 plan", { selector: "h2" });
+  fireEvent.click(screen.getByText(/计划管理/));
+  const select = screen.getByRole("combobox", { name: "当前计划" });
+  fireEvent.change(select, { target: { value: imported.id } });
+  await screen.findByText(imported.title, { selector: "h2" });
+  await waitFor(() => expect(localStorage.getItem("honeyos:study:selected-plan:default")).toBe(imported.id));
+  first.unmount();
+  let finish!: (value: { plans: StudyPlan[] }) => void;
+  listStudyPlans.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  renderStudyPage();
+  expect(localStorage.getItem("honeyos:study:selected-plan:default")).toBe(imported.id);
+  await act(async () => finish({ plans: [plan, imported] }));
+  expect(await screen.findByText(imported.title, { selector: "h2" })).toBeInTheDocument();
+});
+
+it("falls back when a remembered plan no longer exists", async () => {
+  localStorage.setItem("honeyos:study:selected-plan:default", "deleted-plan");
+  renderStudyPage();
+  expect(await screen.findByText("Phase 5 plan", { selector: "h2" })).toBeInTheDocument();
+  await waitFor(() => expect(localStorage.getItem("honeyos:study:selected-plan:default")).toBe(plan.id));
+});
+
+
+it("isolates remembered selections by profile", async () => {
+  localStorage.setItem("honeyos:study:selected-plan:default", "default-plan");
+  const before = window.location.pathname;
+  window.history.replaceState({}, "", "/p/student/study");
+  try {
+    renderStudyPage();
+    await screen.findByText("Phase 5 plan", { selector: "h2" });
+    await waitFor(() => expect(localStorage.getItem("honeyos:study:selected-plan:/p/student")).toBe(plan.id));
+    expect(localStorage.getItem("honeyos:study:selected-plan:default")).toBe("default-plan");
+  } finally { window.history.replaceState({}, "", before); }
 });

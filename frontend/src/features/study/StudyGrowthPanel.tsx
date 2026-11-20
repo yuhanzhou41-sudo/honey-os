@@ -23,7 +23,7 @@ export default function StudyGrowthPanel({ plan, onChanged }: { plan?: StudyPlan
   const [output, setOutput] = useState("");
   const [notice, setNotice] = useState("");
   const growth = useQuery({ queryKey: ["study-growth", plan?.id, plan?.updated_at],
-    queryFn: () => getGrowth(plan!.id), enabled: Boolean(plan), retry: false });
+    queryFn: () => getGrowth(plan!.id), enabled: Boolean(plan), retry: false, refetchInterval: 30_000 });
   const activities = useQuery({ queryKey: ["study-activities"], queryFn: getActivities, enabled: open, retry: false });
   const supervision = useQuery({ queryKey: ["study-supervision"], queryFn: getSupervision, enabled: open, retry: false });
   const [settings, setSettings] = useState<SupervisionSettings>();
@@ -40,7 +40,8 @@ export default function StudyGrowthPanel({ plan, onChanged }: { plan?: StudyPlan
   });
   if (!plan) return null;
   const state = growth.data;
-  const day = date || plan.start_date;
+  const today = new Date().toLocaleDateString("en-CA");
+  const day = date || (today >= plan.start_date && today <= plan.end_date ? today : plan.start_date);
   const config = state?.settings ?? { timezone: "Asia/Shanghai", minimum_mode: false };
   const run = (fn: () => Promise<void>) => action.mutate(fn);
   const field = "rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1";

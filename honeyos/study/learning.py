@@ -154,6 +154,9 @@ class StudyLearningMemory:
 
     def close(self, plan_id, reason, expected_updated_at, expected_facts_revision, *, definition=None):
         proposal=self.close_preview(plan_id,reason)
+        from .garden import StudyGarden
+        garden = StudyGarden(self.study, memory=self)
+        record = None if self.closure(plan_id) else garden.prepare(plan_id, closure=proposal)
         with self.study.repository._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             old=db.execute("SELECT * FROM study_plan_closures WHERE plan_id=?",(plan_id,)).fetchone()
@@ -168,6 +171,9 @@ class StudyLearningMemory:
             self.study.save_plan_definition(proposed,expected_updated_at=expected_updated_at,connection=db)
             db.execute("INSERT INTO study_plan_closures VALUES (?,?,?,?,?)",
                        (plan_id,reason,proposal["summary"],proposal["stats_json"],self.study._now().isoformat()))
+            if record is not None:
+                record["plan_status"] = proposed.status.value
+                garden.save(record, connection=db)
             db.execute("DELETE FROM study_weekly_reports WHERE plan_id=?",(plan_id,))
         from .reminders import sync_plan_reminders
         sync_plan_reminders(self.study,self.study.get_plan(plan_id),original)

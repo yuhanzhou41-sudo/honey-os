@@ -1,3 +1,5 @@
+import { profilePrefix } from "../../api/client";
+import StudyGardenPanel from "./StudyGardenPanel";
 import StudyGrowthPanel from "./StudyGrowthPanel";
 import { confirmManualStudyChange, getStudyPlanningCapabilities } from "../../api/study-planning";
 import PlanningRequestBuilder from "./PlanningRequestBuilder";
@@ -130,7 +132,10 @@ export function StudyPage() {
   const plansQuery = useQuery({ queryKey: plansKey, queryFn: listStudyPlans });
   const plans = plansQuery.data?.plans ?? [];
 
-  const [selectedPlanId, setSelectedPlanId] = useState("");
+  const selectionKey = "honeyos:study:selected-plan:" + (profilePrefix() || "default");
+  const [selectedPlanId, setSelectedPlanId] = useState(() => {
+    try { return localStorage.getItem(selectionKey) || ""; } catch { return ""; }
+  });
   const [selectedDate, setSelectedDate] = useState("");
   const [newPlanTitle, setNewPlanTitle] = useState("");
   const [newTaskTitle, setNewTaskTitle] = useState("");
@@ -146,6 +151,7 @@ export function StudyPage() {
   const [pomodoroOpen, setPomodoroOpen] = useState(false);
 
   useEffect(() => {
+    if (!plansQuery.isSuccess) return;
     if (!plans.length) {
       setSelectedPlanId("");
       return;
@@ -153,7 +159,15 @@ export function StudyPage() {
     if (!selectedPlanId || !plans.some((plan) => plan.id === selectedPlanId)) {
       setSelectedPlanId(plans[0].id);
     }
-  }, [plans, selectedPlanId]);
+  }, [plans, selectedPlanId, plansQuery.isSuccess]);
+
+  useEffect(() => {
+    if (!plansQuery.isSuccess) return;
+    try {
+      if (selectedPlanId && plans.some(plan => plan.id === selectedPlanId)) localStorage.setItem(selectionKey, selectedPlanId);
+      else if (!plans.length) localStorage.removeItem(selectionKey);
+    } catch { /* Storage may be disabled; the plan remains saved on the server. */ }
+  }, [selectedPlanId, plans, plansQuery.isSuccess, selectionKey]);
 
   const selectedPlan =
     plans.find((plan) => plan.id === selectedPlanId) ?? plans[0];
@@ -194,7 +208,13 @@ export function StudyPage() {
   const pomodoroTask =
     selectedPlan?.tasks.find((task) => task.id === pomodoroTaskId);
 
-  const refreshPlans = () => qc.invalidateQueries({ queryKey: plansKey });
+  const refreshPlans = async () => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: plansKey }),
+      qc.invalidateQueries({ queryKey: ["study-garden"] }),
+      qc.invalidateQueries({ queryKey: ["study-garden-summary"] }),
+    ]);
+  };
 
   const createPlan = useMutation({
     mutationFn: async () => {
@@ -375,6 +395,8 @@ export function StudyPage() {
         description="今天只看今天要完成的内容；资料、教材、复习、答疑、校园入口和番茄钟需要时再展开。"
       />
 
+      <StudyGardenPanel onSelectPlan={id => { setSelectedPlanId(id); }} />
+
       <StudyGrowthPanel key={selectedPlan?.id ?? "none"} plan={selectedPlan} onChanged={refreshPlans} />
 
       <details className="mt-4 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)]">
@@ -390,6 +412,7 @@ export function StudyPage() {
               当前计划
             </label>
             <select
+              aria-label="当前计划"
               value={selectedPlan?.id ?? ""}
               onChange={(event) => setSelectedPlanId(event.target.value)}
               className="mt-1 w-full rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2.5 text-sm"
