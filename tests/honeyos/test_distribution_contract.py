@@ -3,6 +3,8 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from honeyos.cli.bootstrap import activate_home
 from honeyos.companion.config import initialize_home
 from honeyos.companion.distribution import (
@@ -10,6 +12,13 @@ from honeyos.companion.distribution import (
     validate_distribution,
 )
 from honeyos.companion.runtime import write_runtime_identity
+
+
+@pytest.fixture(autouse=True)
+def provisioned_tool_requirements(monkeypatch):
+    """Test configured schemas without probing host tools or model providers."""
+    from honeyos.tools import registry
+    monkeypatch.setattr(registry, "_check_fn_cached", lambda _check: True)
 
 
 def _home(tmp_path):

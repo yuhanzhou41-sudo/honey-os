@@ -80,6 +80,6 @@ def test_release_version_is_0_3_1_and_consistent():
 
     assert honeyos.__version__ == "0.3.1"
     assert 'version = "0.3.1"' in pyproject
-    assert "`v0.3.1`" in readme
+    assert "raw.githubusercontent.com/springbrand-lab/honey-os/main/install.sh" in readme
     assert "VERSION=0.3.1" in bootstrap
     assert "refs/heads/main.tar.gz" in bootstrap

@@ -35,7 +35,10 @@ def test_public_readme_and_installer_use_honey_os_brand():
 
     assert readme.startswith("# 🍯 HoneyOS")
     assert "H2OS" not in readme
-    assert "Hermes" not in readme
+    product_copy, attribution = readme.split("HoneyOS 基于 Nous Research", 1)
+    assert "Hermes" not in product_copy
+    assert "Hermes Agent" in attribution
+    assert "MIT License" in attribution
     assert "curl -fsSL" in readme
     assert "raw.githubusercontent.com/springbrand-lab/honey-os/main/install.sh" in readme
     assert "uv run h2os" not in readme

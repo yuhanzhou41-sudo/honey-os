@@ -20,7 +20,8 @@ def test_compact_parser_enriches_research():
     assert d.model_tier == "strong"
     assert d.source == "local_qwen"
 
-def test_default_budget():
+def test_default_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("HONEYOS_HOME", str(tmp_path / ".honeyos"))
     c = build_default_router().local_classifier
     assert c.max_tokens == 64
     assert c.timeout_seconds == 12.0

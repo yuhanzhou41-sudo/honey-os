@@ -1,4 +1,3 @@
-from pathlib import Path
 import yaml
 from honeyos.routing.rules import route_by_rules
 from honeyos.routing.turn_router import build_default_router
@@ -22,8 +21,16 @@ def test_recall_variants():
         assert d.memory.mode == 'precision', text
         assert d.source == 'rules', text
 
-def test_local_profile_reused():
-    cfg = yaml.safe_load((Path.home()/'.honeyos'/'config.yaml').read_text(encoding='utf-8')) or {}
+def test_local_profile_reused(tmp_path, monkeypatch):
+    home = tmp_path / ".honeyos"
+    home.mkdir()
+    monkeypatch.setenv("HONEYOS_HOME", str(home))
+    cfg = {"model_profiles": {"local": {
+        "base_url": "http://127.0.0.1:8080/v1",
+        "api_mode": "chat_completions",
+        "model": "fixture-local-qwen",
+    }}}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
     expected = None
     for p in (cfg.get('model_profiles') or {}).values():
         if isinstance(p, dict) and '127.0.0.1:8080' in str(p.get('base_url') or '') and str(p.get('api_mode') or '') == 'chat_completions':

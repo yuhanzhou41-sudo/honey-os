@@ -16,6 +16,7 @@ from pathlib import Path
 import yaml
 
 from honeyos.migration.legacy import (
+    LEGACY_UPSTREAM_IDENTITY,
     migrate_legacy_model_credentials,
     migrate_legacy_skill_directory,
     rewrite_legacy_product_text,
@@ -75,15 +76,7 @@ _COMPANION_TEMPLATE_HEADINGS = frozenset(
         "# Capability Growth",
     }
 )
-_LEGACY_HERMES_IDENTITY = (
-    "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
-    "You are helpful, knowledgeable, and direct. You assist users with a wide range "
-    "of tasks including answering questions, writing and editing code, analyzing "
-    "information, creative work, and executing actions via your tools. You communicate "
-    "clearly, admit uncertainty when appropriate, and prioritize being genuinely useful "
-    "over being verbose unless otherwise directed below. Be targeted and efficient in "
-    "your exploration and investigations."
-)
+
 
 _COMPANION_SKILLS = (
     ("relationship-continuity", "honeyos", None),
@@ -463,7 +456,7 @@ def _markdown_sections(text: str) -> tuple[str, dict[str, str]]:
 def _preserved_custom_soul(soul: str, template: str) -> str:
     """Keep user-authored sections while removing superseded managed contracts."""
 
-    cleaned = soul.replace(_LEGACY_HERMES_IDENTITY, "")
+    cleaned = soul.replace(LEGACY_UPSTREAM_IDENTITY, "")
     cleaned = cleaned.replace(
         "你运行在 HoneyOS；这是产品身份，不覆盖用户已经形成的伴侣人设。",
         "",
@@ -741,7 +734,7 @@ def upgrade_companion_capabilities(home: Path) -> bool:
     template = (
         Path(__file__).parent / "templates" / "companion_soul.md"
     ).read_text(encoding="utf-8")
-    if "# HoneyOS Relationship" not in soul or _LEGACY_HERMES_IDENTITY in soul:
+    if "# HoneyOS Relationship" not in soul or LEGACY_UPSTREAM_IDENTITY in soul:
         custom_soul = _preserved_custom_soul(soul, template)
         _create_file(
             resolved / "backups" / "SOUL.pre-companion-v2.md",

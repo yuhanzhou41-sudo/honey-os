@@ -237,7 +237,11 @@ def test_upgrade_companion_capabilities_is_idempotent_and_preserves_user_state(
     assert migrated["memory"]["distillation"]["trigger_messages"] == 20
     assert migrated["memory"]["distillation"]["max_daily_runs"] == 12
     assert migrated["auxiliary"]["memory_distillation"]["provider"] == "auto"
-    assert first_soul.startswith("# My formed identity")
+    assert first_soul.startswith("# HoneyOS Relationship")
+    assert first_soul.count("# My formed identity") == 1
+    assert "Keep me." in first_soul
+    backup = tmp_path / "backups" / "SOUL.pre-companion-v2.md"
+    assert "# My formed identity" in backup.read_text(encoding="utf-8")
     assert first_soul.count("# Capability Growth") == 1
     assert (tmp_path / "skills" / "relationship-continuity" / "SKILL.md").exists()
 

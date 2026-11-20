@@ -28,7 +28,8 @@ def test_phase2_study_routes_registered_exactly_once():
         assert pairs.count(route) == 1
 
 
-def test_legacy_study_routes_remain_during_phase2_transition():
+def test_canonical_study_api_and_page_are_registered():
     pairs = [(method, path) for method, path, _ in _adapter()._http_route_table()]
-    assert pairs.count(("GET", "/api/companion/study")) == 1
+    assert pairs.count(("GET", "/api/study/plans")) == 1
+    assert not any(path.startswith("/api/companion/study") for _, path in pairs)
     assert pairs.count(("GET", "/study")) == 1

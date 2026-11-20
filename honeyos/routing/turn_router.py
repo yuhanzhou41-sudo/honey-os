@@ -36,10 +36,15 @@ class TurnRouter:
         ).validate()
 
 def build_default_router() -> TurnRouter:
-    from pathlib import Path
+    from honeyos.core.constants import get_honeyos_home
     import yaml
 
-    cfg = yaml.safe_load((Path.home() / '.honeyos' / 'config.yaml').read_text(encoding='utf-8')) or {}
+    try:
+        cfg = yaml.safe_load(
+            (get_honeyos_home() / 'config.yaml').read_text(encoding='utf-8')
+        ) or {}
+    except FileNotFoundError:
+        cfg = {}
     profiles = cfg.get('model_profiles') or {}
     selected = None
     for profile in profiles.values():
@@ -51,7 +56,9 @@ def build_default_router() -> TurnRouter:
             selected = profile
             break
     if selected is None:
-        return TurnRouter(local_classifier=LocalQwenRouterClient())
+        return TurnRouter(local_classifier=LocalQwenRouterClient(
+            timeout_seconds=12.0, max_tokens=64,
+        ))
     base_url = str(selected.get('base_url') or '').rstrip('/')
     model = str(selected.get('model') or '')
     return TurnRouter(local_classifier=LocalQwenRouterClient(

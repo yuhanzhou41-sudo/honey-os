@@ -49,7 +49,9 @@ def test_installers_invoke_only_honeyos() -> None:
     for path in (bootstrap, installer):
         content = path.read_text(encoding="utf-8").lower()
         assert "honeyos" in content
-        assert "honey-os" not in content
+        # The repository URL is not a console command.
+        commands = content.replace("springbrand-lab/honey-os", "")
+        assert "honey-os" not in commands
         assert "h2os" not in content
         assert "hermes" not in content
     assert not (ROOT / "Install-HoneyOS.command").exists()
