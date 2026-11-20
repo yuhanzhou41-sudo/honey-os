@@ -1,7 +1,7 @@
 # HoneyOS Study Growth & Learning Memory — 统一开发计划与进度台账
 
 > **唯一入口 / Living Master Plan v1.0** ｜建立：2026-11-19 ｜最近更新：2026-11-20 ｜维护者：执行任务的 AI/Codex 与用户
-> **当前阶段：A–J完成；下载入口与外部AI格式说明修正已发布，运行源码6808ea21。**
+> **当前阶段：刷新选择持久化与学习花园已发布，运行源码c26c7ccc；A–J与后续修正已完成。**
 > **设计基线：`BC-DF-1.0`（B/C 设计已冻结；不等于代码实现、运行验收或生产可用）。**
 > **本文件是唯一可修改的主进度台账**；`frozen/` 为规范依据，除正式变更决议外不可随意修改；`archive/` 仅作历史参考，不是当前指令。
 > **范围：**计划生成 Skill / StudyPlan Markdown V1/V2 / 多计划时间容量 / 保底与机动 / 阳光和小花盆 / 番茄钟、题库、错题、闪卡 / 学习记忆 / 周评与结束归档 / Qwen 主动联系 / UI、测试和发布。
@@ -514,3 +514,12 @@ HoneyOS Study Growth本计划A–J已完成。用户要求缺冻结包不阻断�
 - 提醒与学习聊天上下文原已在d443b234提交并部署：复用existing poller、StudyLearningMemory/StudyGrowth事实与现有消息/SSE通道，主动监督仍显式授权，默认不代开。
 - 整体后端220项通过（含5项花园），最终再补第6项迟到投影覆盖保护测试；前端全套84项通过，tsc与Vite构建通过。覆盖慢加载刷新、已删除选择回退、profile隔离、空期/闰年/跨年、关闭失败回滚与删除后留存。
 - 其他会话校园源码及react_dist存在未提交改动，保留原样；共享api_server.py的33行修改未纳入本次提交。下一步从精确源码提交制作独立包、隔离UI验收、备份及正式复验。
+
+#### 2026-11-20 12:04（北京时间）— 刷新与学习花园正式发布 — RELEASED
+
+- 功能提交c26c7ccc，正式运行`/home/zyh20/projects/honeyos-releases/study-garden-c26c7ccc`，进程PID21131/PYTHONPATH一致。CSS index-DrsrJum6.css，JS index-D0Vlc7kH.js。
+- 整体后端220 passed in 280.38s，最后6项花园专项全部通过；前端24文件84项全通过，tsc与构建通过。合成候选HTTP验证生长植物及完成纪念花并存；正式garden及week/month/year接口200，Study与Memories页面新包200。
+- 正式库仍2计划、94任务、0专注/答题/回忆，任务ID/状态/日期逐项与备份一致，integrity_check=ok，foreign_key_check为空；提醒授权JSON完全一致。花园目前有1个真实已启用计划，未替用户开启其他成长或提醒。
+- 备份与恢复升级演练通过，恢复点`/home/zyh20/.honeyos/release-backups/study-garden-20261120-120222`含study/state SQLite backup、旧gateway-release.conf、before.json及release-verification.json。发布只切PYTHONPATH，保留其他校园配置和未提交修改，不push。
+- 浏览器原生UI控制连续timeout/不可读，因此不宣称已完成人工式点击验收。已通过组件测试、冷候选HTTP与正式HTTP验收，界面可由用户刷新查看。
+- 学习/记忆页均可进入花园；活动植物随真实事实更新，完成时事务内留存植物与日事实快照，点击可查看自然周/月/年统计与每日来源；不会恢复已删除周报正文。
