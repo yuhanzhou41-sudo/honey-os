@@ -4,9 +4,8 @@ import asyncio
 
 from aiohttp import web
 
-from .markdown import export_study_plan_markdown
 from .planning import (
-    authoring_guide, build_planning_request, planning_capabilities,
+    annotated_plan_markdown, authoring_guide, build_planning_request, planning_capabilities,
     preview_chat_plan, save_chat_plan, template_markdown,
 )
 from .reminders import change_reminder, list_reminders
@@ -21,11 +20,11 @@ def planning_routes(adapter):
         try:
             value = request.query.get("version")
             version = int(value) if value is not None else None
-            raw = template_markdown(version)
+            raw = annotated_plan_markdown() if version in (None, 2) else template_markdown(version)
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.Response(text=raw, content_type="text/markdown",
-                            headers={"Content-Disposition": "attachment; filename=study-plan-template.md"})
+                            headers={"Content-Disposition": "attachment; filename=study-plan-template-v%d.md" % (version or 2)})
 
     async def guide(_request):
         return web.Response(text="# StudyPlan Authoring Guide\n\n" + authoring_guide() + "\n",
@@ -50,8 +49,8 @@ def planning_routes(adapter):
             plan = await asyncio.to_thread(StudyService().get_plan, request.match_info["plan_id"])
         except KeyError:
             return web.json_response({"error": "找不到学习计划。"}, status=404)
-        return web.Response(text=export_study_plan_markdown(plan), content_type="text/markdown",
-                            headers={"Content-Disposition": "attachment; filename=study-plan.md"})
+        return web.Response(text=annotated_plan_markdown(plan), content_type="text/markdown",
+                            headers={"Content-Disposition": "attachment; filename=current-study-plan.md"})
 
     async def run(request, *, save):
         body, error = await adapter._read_json_body(request)

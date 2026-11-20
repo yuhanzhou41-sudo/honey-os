@@ -3,7 +3,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { listStudyResources, type StudyPlan } from "../../api/study";
 import {
   buildPlanningRequest, getStudyPlanningCapabilities,
-  planAuthoringGuideUrl, planTemplateUrl,
 } from "../../api/study-planning";
 
 export default function PlanningRequestBuilder({ plan }: { plan?: StudyPlan }) {
@@ -15,6 +14,7 @@ export default function PlanningRequestBuilder({ plan }: { plan?: StudyPlan }) {
   const [constraints, setConstraints] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [markdown, setMarkdown] = useState("");
+  const [copyNotice, setCopyNotice] = useState("");
   const capabilities = useQuery({
     queryKey: ["study-planning-capabilities"], queryFn: getStudyPlanningCapabilities,
     enabled: open, retry: false,
@@ -28,28 +28,26 @@ export default function PlanningRequestBuilder({ plan }: { plan?: StudyPlan }) {
       objective, start_date: start, end_date: end, constraints,
       resource_ids: selected, ...(revision && plan ? { plan_id: plan.id } : {}),
     }),
-    onSuccess: setMarkdown,
+    onSuccess: value => { setMarkdown(value); setCopyNotice(""); },
   });
 
-  function download() {
-    const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "planning_request.md";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  async function copyRequest() {
+    try {
+      await navigator.clipboard.writeText(markdown);
+      setCopyNotice("已复制，可连同上方新模板或当前计划一起交给外部 AI。");
+    } catch {
+      setCopyNotice("复制失败，请手动选择下方预览文字复制。");
+    }
   }
 
   return <details className="mt-3 rounded border border-[var(--border)] p-3"
     onToggle={event => setOpen(event.currentTarget.open)}>
     <summary className="cursor-pointer text-sm">交给其他 AI 制定计划</summary>
     {capabilities.data && <p className="my-2 text-sm">
-      当前支持 V{capabilities.data.supported_schema_version} ·{" "}
-      <a href={planAuthoringGuideUrl()} download className="underline">下载编写指南</a>
-      {" · "}<a href={planTemplateUrl(1)} download className="underline">下载 V1 模板</a>
+      当前格式 V{capabilities.data.supported_schema_version}。格式规则已包含在上方新计划模板和当前计划文件中。这里仅整理目标、所选资料与容量信息，不是可导入计划。
     </p>}
     {capabilities.isError && <p role="alert">当前版本能力暂时无法读取。</p>}
-    <form onChangeCapture={() => setMarkdown("")} onSubmit={event => {
+    <form onChangeCapture={() => { setMarkdown(""); setCopyNotice(""); }} onSubmit={event => {
       event.preventDefault(); setMarkdown(""); build.mutate();
     }}>
       <fieldset disabled={build.isPending} className="my-3 space-y-3 text-sm">
@@ -90,8 +88,9 @@ export default function PlanningRequestBuilder({ plan }: { plan?: StudyPlan }) {
     {markdown && <div className="space-y-2">
       <textarea aria-label="规划请求预览" readOnly value={markdown} rows={12}
         className="w-full rounded border border-[var(--border)] p-2 text-xs" />
-      <button type="button" onClick={download} className="text-sm text-[var(--accent)]">下载 planning_request.md</button>
-      <p className="text-xs text-[var(--foreground-muted)]">让其他 AI 单独输出 study_plan.md 和 planning_notes.md，再把 study_plan.md 导入预览。</p>
+      <button type="button" onClick={copyRequest} className="text-sm text-[var(--accent)]">复制请求给外部 AI</button>
+      {copyNotice && <p role="status" className="text-xs">{copyNotice}</p>}
+      <p className="text-xs text-[var(--foreground-muted)]">新建时让 AI 单独输出 study_plan.md 和 planning_notes.md，只导入 study_plan.md；调整当前计划时保留 ID，将结果交回 Honey 聊天进行调整预览，不重复导入。</p>
     </div>}
   </details>;
 }

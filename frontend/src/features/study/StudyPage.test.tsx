@@ -350,3 +350,17 @@ it("keeps the newest file preview when an earlier response arrives late", async 
   expect(screen.queryByRole("heading", { name: "First preview" })).toBeNull();
   expect(screen.getByRole("heading", { name: "Second preview" })).toBeInTheDocument();
 });
+
+
+it("offers exactly the new V2 template and selected current plan downloads", async () => {
+  const { container } = renderStudyPage();
+  await screen.findByText("Phase 5 plan", { selector: "h2" });
+  const downloads = Array.from(container.querySelectorAll<HTMLAnchorElement>("a[download]"));
+  expect(downloads).toHaveLength(2);
+  expect(downloads.find(link => link.textContent?.includes("新计划模板"))?.getAttribute("href"))
+    .toBe("/api/study/plans/template?version=2");
+  expect(downloads.find(link => link.textContent?.includes("当前计划"))?.getAttribute("href"))
+    .toBe("/api/study/plans/plan_phase51/markdown");
+  expect(container.textContent).not.toContain("下载 V1 模板");
+  expect(container.textContent).not.toContain("下载编写指南");
+});

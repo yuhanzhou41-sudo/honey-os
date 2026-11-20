@@ -416,7 +416,8 @@ export function StudyPage() {
                 }
               }}>删除整个计划</SecondaryButton>}
             </div>
-            {selectedPlan && <a className="mt-2 block text-sm underline" download href={planExportUrl(selectedPlan.id)}>下载当前计划 Markdown</a>}
+            {selectedPlan && <a className="mt-2 block text-sm underline" download href={planExportUrl(selectedPlan.id)}>下载当前计划（含 ID 与状态）</a>}
+            {selectedPlan && <p className="mt-1 text-xs text-[var(--foreground-muted)]">用于查看或交给 AI 调整当前所选计划；保留原 ID，不作为新计划重复导入。</p>}
             {deletePlanMutation.error && <p role="alert" className="mt-2 text-sm text-red-600">{messageOf(deletePlanMutation.error)}</p>}
             {createPlan.error ? (
               <p className="mt-2 text-xs text-red-500">
@@ -427,9 +428,9 @@ export function StudyPage() {
 
           <div>
             <p className="text-xs text-[var(--foreground-muted)]">
-              导入 StudyPlan Markdown
-              {" · "}<a className="underline" href={planTemplateUrl()} download>下载计划模板</a>
+              <a className="underline" href={planTemplateUrl(2)} download>下载新计划模板（V2，内附 AI 格式规则）</a>
             </p>
+            <p className="my-2 text-xs text-[var(--foreground-muted)]">新建计划：把模板交给外部 AI，要求返回独立的 study_plan.md。下方只选择 AI 生成的计划文件；规划请求与使用说明不能导入。</p>
             <label className="mt-1 flex cursor-pointer items-center justify-between gap-3 rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-3 py-3 text-sm">
               <span className="truncate">
                 {importFileName || "选择 .md 文件进行预览"}

@@ -11,7 +11,7 @@ from honeyos.gateway.platforms.api_server import APIServerAdapter
 from honeyos.study.markdown import StudyPlanMarkdownError, parse_study_plan_markdown
 from honeyos.study.models import StudyPlan
 from honeyos.study.planning import (
-    authoring_guide, build_planning_request, planning_capabilities,
+    annotated_plan_markdown, authoring_guide, build_planning_request, planning_capabilities,
     planning_instructions, template_markdown,
 )
 from honeyos.study.planning_http import planning_routes
@@ -153,3 +153,22 @@ def test_manual_preview_is_read_only_and_rejects_stale_confirmation(study):
     current = study.get_plan(saved.id)
     changed = study.confirm_update(saved.id, {"title": "Confirmed"}, expected_updated_at=current.updated_at.isoformat())
     assert changed.title == "Confirmed"
+
+
+def test_self_explaining_download_is_importable_and_preserves_current_ids(study):
+    template = annotated_plan_markdown()
+    assert template.startswith("---\n# 新计划模板（V2）")
+    assert "source_type仅允许markdown_import、manual、honeyos_generated" in template
+    assert "40分钟任务不能放进30分钟槽" in template
+    preview = study.preview_markdown_plan(template)
+    assert preview.schema_version == 2 and not study.list_plans()
+    saved = study.import_markdown_plan(template)
+    exported = annotated_plan_markdown(saved)
+    assert "当前计划快照（V2）" in exported
+    parsed = parse_study_plan_markdown(exported)
+    assert parsed.id == saved.id
+    assert [t.id for t in parsed.tasks] == [t.id for t in saved.tasks]
+    assert [t.status for t in parsed.tasks] == [t.status for t in saved.tasks]
+    assert [s.id for s in parsed.flex_slots] == [s.id for s in saved.flex_slots]
+    old = study.repository.save_new_plan(StudyPlan(title="V1",start_date=date(2026,11,20),end_date=date(2026,11,20)))
+    assert parse_study_plan_markdown(annotated_plan_markdown(old)).schema_version == 1
