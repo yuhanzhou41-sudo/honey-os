@@ -4,16 +4,14 @@ import type { StudyPlan } from "../../api/study";
 import { confirmChatStudyPlan, confirmManualStudyChange, previewChatStudyPlan } from "../../api/study-planning";
 import {
   assignActivity, getActivities, getGrowth, getLearningDay, getLearningWeek, getRewardLedger,
-  getSupervision, growthAction, setSupervision,
-  type Closure, type FlexPreview, type GrowthState, type SupervisionSettings,
+  growthAction,
+  type Closure, type FlexPreview, type GrowthState,
 } from "../../api/study-growth";
-import { useHoneyStore } from "../../runtime/honey-store";
 
 const levels: Record<string,string> = { full: "全部完成", standard: "达到标准", minimum: "完成保底", incomplete: "尚未完成", no_tasks: "无任务" };
 
 export default function StudyGrowthPanel({ plan, onChanged }: { plan?: StudyPlan; onChanged: () => void }) {
   const client = useQueryClient();
-  const sessionId = useHoneyStore(state => state.sessionId);
   const [open, setOpen] = useState(false);
   const [date, setDate] = useState("");
   const [taskId, setTaskId] = useState("");
@@ -25,16 +23,12 @@ export default function StudyGrowthPanel({ plan, onChanged }: { plan?: StudyPlan
   const growth = useQuery({ queryKey: ["study-growth", plan?.id, plan?.updated_at],
     queryFn: () => getGrowth(plan!.id), enabled: Boolean(plan), retry: false, refetchInterval: 30_000 });
   const activities = useQuery({ queryKey: ["study-activities"], queryFn: getActivities, enabled: open, retry: false });
-  const supervision = useQuery({ queryKey: ["study-supervision"], queryFn: getSupervision, enabled: open, retry: false });
-  const [settings, setSettings] = useState<SupervisionSettings>();
-  const activeSettings = settings ?? supervision.data;
   const action = useMutation({
     mutationFn: async (run: () => Promise<void>) => { setNotice(""); await run(); },
     onError: async () => { await client.invalidateQueries({ queryKey: ["study-growth"] }); onChanged(); },
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: ["study-growth"] });
       await client.invalidateQueries({ queryKey: ["study-activities"] });
-      await client.invalidateQueries({ queryKey: ["study-supervision"] });
       onChanged(); setNotice("已更新。");
     },
   });
@@ -143,21 +137,6 @@ export default function StudyGrowthPanel({ plan, onChanged }: { plan?: StudyPlan
         </div>
       </fieldset>
       {output && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap text-xs">{output}</pre>}
-      {activeSettings && <fieldset disabled={action.isPending} className="mt-4 space-y-2 text-sm">
-        <legend>学习主动监督</legend>
-        <label className="flex gap-2"><input type="checkbox" checked={activeSettings.enabled} onChange={event =>
-          setSettings({ ...activeSettings, enabled: event.target.checked })} />授权在当前聊天主动发送学习提醒</label>
-        <label>提醒时间（小时） <input className={field} type="number" min="0" max="23" value={activeSettings.remind_hour}
-          onChange={event => setSettings({ ...activeSettings, remind_hour: Number(event.target.value) })} /></label>
-        <label>安静时段 <input aria-label="安静开始小时" className={field} type="number" min="0" max="23" value={activeSettings.quiet_start}
-          onChange={event => setSettings({ ...activeSettings, quiet_start: Number(event.target.value) })} /> 至{" "}
-          <input aria-label="安静结束小时" className={field} type="number" min="0" max="23" value={activeSettings.quiet_end}
-          onChange={event => setSettings({ ...activeSettings, quiet_end: Number(event.target.value) })} /></label>
-        <p>按 {activeSettings.timezone} 计算，每天最多一次，多个计划合并；专注中暂停提醒。</p>
-        <button onClick={() => run(async () => { setSettings(await setSupervision({
-          ...activeSettings, session_id: sessionId ?? activeSettings.session_id,
-        })); })}>保存监督设置</button>
-      </fieldset>}
     </details>
     {action.isPending && <p role="status">正在处理…</p>}
     {notice && <p role="status">{notice}</p>}

@@ -2,12 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { StudyPlan } from "../../api/study";
-import { getActivities, getGrowth, getSupervision, growthAction, setSupervision } from "../../api/study-growth";
+import { getActivities, getGrowth, growthAction } from "../../api/study-growth";
 import StudyGrowthPanel from "./StudyGrowthPanel";
 
 vi.mock("../../api/study-growth", () => ({
-  getGrowth: vi.fn(), getActivities: vi.fn(), getSupervision: vi.fn(), growthAction: vi.fn(),
-  setSupervision: vi.fn(), getLearningDay: vi.fn(), getLearningWeek: vi.fn(), assignActivity: vi.fn(),
+  getGrowth: vi.fn(), getActivities: vi.fn(), growthAction: vi.fn(),
+  getLearningDay: vi.fn(), getLearningWeek: vi.fn(), assignActivity: vi.fn(),
 }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); });
 const plan = {
@@ -18,9 +18,6 @@ function setup(enabled: boolean) {
   vi.mocked(getGrowth).mockResolvedValue({ enabled, plan_id: plan.id, sunlight: 20, plant: "发芽", days: [],
     settings: { timezone: "Asia/Shanghai", minimum_mode: false } });
   vi.mocked(getActivities).mockResolvedValue({ events: [] });
-  vi.mocked(getSupervision).mockResolvedValue({
-    enabled: false, timezone: "Asia/Shanghai", quiet_start: 22, quiet_end: 8, remind_hour: 18, session_id: "",
-  });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}><StudyGrowthPanel plan={plan} onChanged={vi.fn()} /></QueryClientProvider>);
 }
@@ -33,7 +30,6 @@ it("requires explicit activation and leaves supervision disabled", async () => {
   await waitFor(() => expect(growthAction).toHaveBeenCalledWith(plan.id, "enable", {
     timezone: "Asia/Shanghai", minimum_mode: false,
   }));
-  expect(setSupervision).not.toHaveBeenCalled();
 });
 it("cancelling final archive only previews and never closes", async () => {
   vi.spyOn(window, "confirm").mockReturnValue(false);

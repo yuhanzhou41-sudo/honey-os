@@ -1,13 +1,13 @@
 import { profilePrefix } from "../../api/client";
 import StudyGardenPanel from "./StudyGardenPanel";
+import StudyReminderPanel from "./StudyReminderPanel";
 import StudyGrowthPanel from "./StudyGrowthPanel";
 import { confirmManualStudyChange, getStudyPlanningCapabilities } from "../../api/study-planning";
 import PlanningRequestBuilder from "./PlanningRequestBuilder";
 import StudyCapacityPanel, { CapacitySummary } from "./StudyCapacityPanel";
 import type { StudyCapacityDay } from "../../api/study";
 import { FlexSlotList, TaskDefinitionDetails } from "./StudyDefinitionDetails";
-import { fetchCompanionBootstrap } from "../../api/companion";
-import { listStudyReminders, planExportUrl, planTemplateUrl, setStudyReminder } from "../../api/study-planning";
+import { planExportUrl, planTemplateUrl } from "../../api/study-planning";
 import StudyReviewPanel, { StudyQuestionDialog } from "./StudyReviewPanel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -394,6 +394,8 @@ export function StudyPage() {
         title="学习"
         description="今天只看今天要完成的内容；资料、教材、复习、答疑、校园入口和番茄钟需要时再展开。"
       />
+
+      {selectedPlan ? <StudyReminderPanel key={selectedPlan.id} planId={selectedPlan.id} /> : null}
 
       <StudyGardenPanel onSelectPlan={id => { setSelectedPlanId(id); }} />
 
@@ -967,7 +969,6 @@ function PlanWorkspace({
             <DayTaskCard
               key={task.id}
               task={task}
-              planId={plan.id}
               schemaVersion={plan.schema_version}
               editing={taskEditingId === task.id}
               draft={taskEditingId === task.id ? taskDraft : null}
@@ -1000,7 +1001,6 @@ function PlanWorkspace({
 
 function DayTaskCard({
   task,
-  planId,
   schemaVersion,
   editing,
   draft,
@@ -1015,7 +1015,6 @@ function DayTaskCard({
   onFocus,
 }: {
   task: StudyTask;
-  planId: string;
   schemaVersion: 1 | 2;
   editing: boolean;
   draft: TaskDraft | null;
@@ -1200,7 +1199,6 @@ function DayTaskCard({
           ) : null}
         </div>
       </div>
-      <TaskReminderControl planId={planId} task={task} />
     </article>
   );
 }
@@ -1969,39 +1967,4 @@ function Frame({ children }: { children: React.ReactNode }) {
       {children}
     </section>
   );
-}
-
-
-function TaskReminderControl({ planId, task }: { planId: string; task: StudyTask }) {
-  const cache = useQueryClient();
-  const queryKey = ["study-reminders", planId];
-  const saved = useQuery({
-    queryKey,
-    queryFn: () => listStudyReminders(planId),
-  });
-  const value = saved.data?.reminders[task.id] || "";
-  const [draft, setDraft] = useState<string>();
-  const mutation = useMutation({
-    mutationFn: async (time: string | null) => {
-      const sessionId = time ? (await fetchCompanionBootstrap()).session_id : undefined;
-      return setStudyReminder(planId, task.id, time, sessionId);
-    },
-    onSuccess: ({ time }) => {
-      cache.setQueryData<{ reminders: Record<string, string> }>(queryKey, previous => ({
-        reminders: { ...previous?.reminders, [task.id]: time || "" },
-      }));
-      setDraft(undefined);
-    },
-  });
-  return <details className="mt-2 text-sm">
-    <summary>{value ? "学习提醒 · " + value : "设置学习提醒"}</summary>
-    <div className="mt-2 flex flex-wrap items-center gap-2">
-      <label>任务当天 <input type="time" aria-label="学习提醒时刻" value={draft ?? value}
-        disabled={mutation.isPending} onChange={event => setDraft(event.target.value)} /></label>
-      <SecondaryButton disabled={!(draft ?? value) || mutation.isPending}
-        onClick={() => mutation.mutate(draft ?? value)}>保存提醒</SecondaryButton>
-      {value && <SecondaryButton disabled={mutation.isPending} onClick={() => mutation.mutate(null)}>取消提醒</SecondaryButton>}
-    </div>
-    {(mutation.error || saved.error) && <p role="alert">{messageOf(mutation.error || saved.error)}</p>}
-  </details>;
 }

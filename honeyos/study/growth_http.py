@@ -16,23 +16,6 @@ from .activity import assign_event
 logger=logging.getLogger(__name__)
 
 def growth_routes(adapter):
-    async def supervision(request):
-        from .supervision import StudySupervision
-        store=await asyncio.to_thread(lambda:StudySupervision(StudyService()))
-        if request.method=="GET":
-            return web.json_response((await asyncio.to_thread(store.settings)).model_dump())
-        body,error=await adapter._read_json_body(request)
-        if error is not None:
-            return error
-        if body.get("enabled") is True:
-            _,error=await adapter._get_existing_session_or_404(body.get("session_id",""))
-            if error is not None:
-                return error
-        try:
-            return web.json_response(await asyncio.to_thread(store.configure,body))
-        except (ValueError,TypeError,ZoneInfoNotFoundError) as exc:
-            return web.json_response({"error":str(exc)},status=400)
-
     async def handle(request,action):
         body={}
         if request.method!="GET":
@@ -138,15 +121,12 @@ def growth_routes(adapter):
             return web.json_response({"error":"计划、任务或学习事件不存在。"},status=404)
         except (ValueError,TypeError,ZoneInfoNotFoundError) as exc:
             return web.json_response({"error":str(exc)},status=400)
+    routes=[]
     actions={
         "state":"GET","ledger":"GET","enable":"POST","memory":"GET","weekly":"GET","recovery":"POST",
         "flex-preview":"POST","flex-confirm":"POST","flex-undo":"POST",
         "close-preview":"POST","close-confirm":"POST",
     }
-    routes=[
-        ("GET","/api/study/growth/supervision",adapter._authenticated_file_handler(supervision)),
-        ("PUT","/api/study/growth/supervision",adapter._authenticated_file_handler(supervision)),
-    ]
     for action,method in actions.items():
         async def scoped(request, name=action):
             return await handle(request,name)

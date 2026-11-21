@@ -62,3 +62,24 @@ export async function confirmManualStudyChange(planId: string, patch: object, ta
     json("POST", { ...body, expected_updated_at: preview.expected_updated_at }),
   );
 }
+
+export type ReminderMode = "gentle" | "standard" | "strong" | "custom";
+export type PlanReminderSettings = {
+  enabled: boolean;
+  mode: ReminderMode;
+  times: string[];
+  timezone: string;
+};
+export type PlanReminderPreset = { label: string; times: string[] };
+export type PlanReminderSummary = {
+  settings: PlanReminderSettings;
+  presets: Record<ReminderMode, PlanReminderPreset>;
+  sent_total: number;
+  sent_today: number;
+};
+const reminderPath = (id: string) =>
+  "/api/study/plans/" + encodeURIComponent(id) + "/reminder";
+export const getPlanReminder = (id: string) =>
+  requestJson<PlanReminderSummary>(reminderPath(id));
+export const setPlanReminder = (id: string, settings: PlanReminderSettings) =>
+  requestJson<PlanReminderSummary>(reminderPath(id), json("PUT", settings));

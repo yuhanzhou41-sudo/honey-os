@@ -9,6 +9,7 @@ from .planning import (
     preview_chat_plan, save_chat_plan, template_markdown,
 )
 from .reminders import change_reminder, list_reminders
+from .supervision import StudyReminders
 from .service import StudyService
 
 
@@ -165,6 +166,27 @@ def planning_routes(adapter):
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response({"time": body["time"]})
 
+    async def plan_reminder(request):
+        plan_id = request.match_info["plan_id"]
+        if request.method == "GET":
+            try:
+                summary = await asyncio.to_thread(
+                    lambda: StudyReminders(StudyService()).summary(plan_id))
+            except KeyError:
+                return web.json_response({"error": "找不到学习计划。"}, status=404)
+            return web.json_response(summary)
+        body, error = await adapter._read_json_body(request)
+        if error is not None:
+            return error
+        try:
+            summary = await asyncio.to_thread(
+                lambda: StudyReminders(StudyService()).configure(plan_id, body))
+        except KeyError:
+            return web.json_response({"error": "找不到学习计划。"}, status=404)
+        except (ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(summary)
+
     routes = [
         ("POST", "/api/study/plans/{plan_id}/changes/preview", change),
         ("POST", "/api/study/plans/{plan_id}/changes/confirm", change),
@@ -179,5 +201,7 @@ def planning_routes(adapter):
         ("POST", "/api/study/chat-plans/confirm", save),
         ("GET", "/api/study/plans/{plan_id}/reminders", reminders),
         ("PUT", "/api/study/plans/{plan_id}/tasks/{task_id}/reminder", set_reminder),
+        ("GET", "/api/study/plans/{plan_id}/reminder", plan_reminder),
+        ("PUT", "/api/study/plans/{plan_id}/reminder", plan_reminder),
     ]
     return [(method, path, adapter._authenticated_file_handler(handler)) for method, path, handler in routes]
