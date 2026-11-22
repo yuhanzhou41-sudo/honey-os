@@ -210,6 +210,7 @@ export function StudyPage() {
   const refreshPlans = async () => {
     await Promise.all([
       qc.invalidateQueries({ queryKey: plansKey }),
+      qc.invalidateQueries({ queryKey: ["study-growth"] }),
       qc.invalidateQueries({ queryKey: ["study-garden"] }),
       qc.invalidateQueries({ queryKey: ["study-garden-summary"] }),
     ]);

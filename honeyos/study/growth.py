@@ -40,29 +40,41 @@ def day_level(tasks, minimum_mode=False):
     return "incomplete"
 
 
-# Sunflower growth stages driven by fed sunlight. "盛开" only applies once a plan is completed and transplanted.
-PLANT_FEED_THRESHOLDS = (("发芽", 10), ("幼苗", 30), ("长叶", 60), ("花苞", 100))
+# Each completed task earns sunlight. Total obtainable sunlight is the task count times this value,
+# so a plan that is fully completed always has enough sunlight to grow its sunflower all the way.
+TASK_REWARD = 10
+# Growth stages as a share of the plan's total task sunlight. "盛开" only applies once a plan is completed.
+PLANT_STAGE_RATIOS = (("发芽", 0.05), ("幼苗", 0.20), ("长叶", 0.50), ("花苞", 0.80))
 
 
-def plant_stage_from_fed(fed_sunlight):
+def plant_total_sunlight(task_count):
+    return TASK_REWARD * max(1, int(task_count))
+
+
+def plant_stage_from_fed(fed_sunlight, total_sunlight):
+    if total_sunlight <= 0:
+        return "种子"
+    ratio = fed_sunlight / total_sunlight
     stage = "种子"
-    for name, threshold in PLANT_FEED_THRESHOLDS:
-        if fed_sunlight >= threshold:
+    for name, threshold in PLANT_STAGE_RATIOS:
+        if ratio + 1e-9 >= threshold:
             stage = name
     return stage
 
 
-def peak_seed_fed(peak):
+def peak_seed_fed(peak, total_sunlight):
     """Map legacy plant_peak (standard-day milestone) to a feed amount so existing plants do not regress."""
     if peak >= 7:
-        return 100
-    if peak >= 5:
-        return 60
-    if peak >= 3:
-        return 30
-    if peak >= 1:
-        return 10
-    return 0
+        ratio = 0.8
+    elif peak >= 5:
+        ratio = 0.5
+    elif peak >= 3:
+        ratio = 0.2
+    elif peak >= 1:
+        ratio = 0.05
+    else:
+        ratio = 0.0
+    return round(total_sunlight * ratio)
 
 
 class StudyGrowth:
@@ -104,8 +116,9 @@ class StudyGrowth:
             # One-time migration: seed existing plants from their legacy standard-day peak so they do not regress.
             for row in db.execute("SELECT plan_id, plant_peak FROM study_growth_settings"):
                 if not db.execute("SELECT 1 FROM study_growth_fed WHERE plan_id=?", (row["plan_id"],)).fetchone():
+                    count = db.execute("SELECT COUNT(*) FROM study_tasks WHERE plan_id=?", (row["plan_id"],)).fetchone()[0]
                     db.execute("INSERT INTO study_growth_fed(plan_id, fed_sunlight) VALUES (?,?)",
-                               (row["plan_id"], peak_seed_fed(row["plant_peak"])))
+                               (row["plan_id"], peak_seed_fed(row["plant_peak"], plant_total_sunlight(count))))
 
     def settings(self, plan_id):
         self.study.get_plan(plan_id)
@@ -163,7 +176,11 @@ class StudyGrowth:
             available = earned - fed
             if amount > available:
                 raise ValueError(f"阳光不足，当前可喂 {max(0, available)} 点。")
-            fed += amount
+            total = plant_total_sunlight(len(plan.tasks))
+            remaining = max(0, total - fed)
+            if remaining <= 0:
+                raise ValueError("这株向日葵已经长满了，计划完成后就会盛开并移栽。")
+            fed += min(amount, remaining)
             db.execute("INSERT INTO study_growth_fed(plan_id,fed_sunlight) VALUES (?,?) "
                        "ON CONFLICT(plan_id) DO UPDATE SET fed_sunlight=excluded.fed_sunlight", (plan_id, fed))
         return self.state(plan_id)
@@ -374,6 +391,17 @@ class StudyGrowth:
         if standard >= 5 and any(day["date"] == seventh.isoformat() and day["level"] in {"standard", "full"} and day["reward_eligible"] for day in days):
             desired[f"stage:{plan_id}:7"] = 120
             source_dates[f"stage:{plan_id}:7"] = seventh.isoformat()
+        # Task completion is the primary sunlight source: one reward per completed task revision.
+        total = plant_total_sunlight(len(plan.tasks))
+        with self.study.repository._connect() as db:
+            completed_events = [(row["task_id"], row["revision"], row["completed_at"]) for row in db.execute(
+                "SELECT e.task_id,e.revision,e.completed_at FROM study_task_completion_events e JOIN study_tasks t ON t.id=e.task_id "
+                "WHERE t.plan_id=? AND e.active=1", (plan_id,))]
+        for task_id, revision, completed_at in completed_events:
+            if revision > baseline.get(task_id, 0):
+                source = f"task:{plan_id}:{task_id}:{revision}"
+                desired[source] = TASK_REWARD
+                source_dates[source] = datetime.fromisoformat(completed_at).astimezone(zone).date().isoformat()
         now = self.study._now().isoformat()
         with self.study.repository._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -418,7 +446,7 @@ class StudyGrowth:
             fed = fed_row["fed_sunlight"] if fed_row else 0
             history = [dict(row) for row in db.execute(
                 "SELECT * FROM study_flex_history WHERE plan_id=? ORDER BY created_at DESC", (plan_id,))]
-        plant = plant_stage_from_fed(fed)
+        plant = plant_stage_from_fed(fed, total)
         momentum = 0
         for day in days:
             if day["level"] in {"standard", "full"}:
@@ -427,6 +455,8 @@ class StudyGrowth:
                 momentum = max(0, momentum - 1)
         return {"enabled": True, "plan_id": plan_id, "sunlight": sunlight,
                 "available_sunlight": max(0, sunlight - fed), "fed_sunlight": fed,
+                "plant_total": total, "plant_progress": round(min(1.0, fed / total), 4) if total else 0.0,
+                "feedable_sunlight": max(0, min(sunlight - fed, total - fed)),
                 "final_summary": final_summary, "plant": plant,
                 "standard_days": standard, "momentum": momentum, "days": days,
                 "settings": config.model_dump(), "history": history}

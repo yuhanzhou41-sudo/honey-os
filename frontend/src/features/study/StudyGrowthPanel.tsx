@@ -45,26 +45,40 @@ export default function StudyGrowthPanel({ plan, onChanged, onSelectPlan }: { pl
   const run = (fn: () => Promise<void>) => action.mutate(fn);
   const field = "rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1";
 
+  const total = state?.plant_total ?? 0;
+  const fed = state?.fed_sunlight ?? 0;
+  const feedable = state?.feedable_sunlight ?? 0;
+  const percent = Math.round((state?.plant_progress ?? 0) * 100);
+
   return <section className="mt-5 rounded border border-[var(--border)] p-4">
     <div className="flex flex-wrap items-center gap-6">
       <SunflowerArt stage={state?.plant ?? "种子"} size={140} />
       <div className="space-y-2 text-sm">
-        <p>累计阳光 <strong>{state?.sunlight ?? "—"}</strong> · 可喂 <strong>{state?.available_sunlight ?? "—"}</strong> · 已喂 <strong>{state?.fed_sunlight ?? "—"}</strong></p>
+        <p>累计阳光 <strong>{state?.sunlight ?? "—"}</strong> · 可喂 <strong>{feedable}</strong> · 已喂 <strong>{fed}/{total || "—"}</strong></p>
+        <div className="flex items-center gap-2">
+          <div className="h-2 w-48 overflow-hidden rounded-full bg-[var(--border)]" role="progressbar" aria-label="向日葵生长进度"
+            aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
+            <div className="h-full rounded-full bg-[var(--accent)]" style={{ width: `${percent}%` }} />
+          </div>
+          <span className="text-xs text-[var(--foreground-muted)]">{percent}%</span>
+        </div>
         <p>当前阶段 <strong>{state?.plant ?? "—"}</strong>{state?.enabled ? ` · 标准学习日 ${state.standard_days} · 学习势能 ${state.momentum}` : ""}</p>
         {state?.enabled && <div className="flex flex-wrap items-center gap-2">
           <label className="text-xs text-[var(--foreground-muted)]">喂食数量
             <input type="number" min="1" value={feedAmount} onChange={event => setFeedAmount(Number(event.target.value))}
               className={field + " ml-1 w-20"} aria-label="喂食阳光数量" /></label>
-          <button disabled={action.isPending || (state.available_sunlight ?? 0) < 1}
-            onClick={() => run(async () => { await feedPlant(plan.id, feedAmount); })}>喂给向日葵</button>
-          <button disabled={action.isPending || (state.available_sunlight ?? 0) < 10}
+          <button disabled={action.isPending || feedable < 1}
+            onClick={() => run(async () => { await feedPlant(plan.id, Math.max(1, Math.min(feedAmount, feedable))); })}>喂给向日葵</button>
+          <button disabled={action.isPending || feedable < 10}
             onClick={() => run(async () => { await feedPlant(plan.id, 10); })}>+10</button>
-          <button disabled={action.isPending || (state.available_sunlight ?? 0) < 50}
+          <button disabled={action.isPending || feedable < 50}
             onClick={() => run(async () => { await feedPlant(plan.id, 50); })}>+50</button>
-          <button disabled={action.isPending || (state.available_sunlight ?? 0) < 1}
-            onClick={() => run(async () => { await feedPlant(plan.id, state.available_sunlight ?? 0); })}>喂全部</button>
+          <button disabled={action.isPending || feedable < 1}
+            onClick={() => run(async () => { await feedPlant(plan.id, feedable); })}>喂全部</button>
         </div>}
-        {state?.enabled && (state.available_sunlight ?? 0) > 0 && <p className="text-xs text-[var(--foreground-muted)]">完成任务获得阳光，喂给向日葵后植物会生长；计划完成时向日葵会盛开并移栽到学习记忆花园。</p>}
+        {state?.enabled && total > 0 && fed >= total && <p className="text-xs text-[var(--foreground-muted)]">向日葵已长满，计划完成后会盛开并移栽到花园。</p>}
+        {state?.enabled && feedable > 0 && <p className="text-xs text-[var(--foreground-muted)]">完成一个任务 +10 阳光；点喂食让向日葵生长，计划完成后自动移栽到花园。</p>}
+        <a className="inline-block text-sm text-[var(--accent)] underline" href="/memories?section=study">查看学习花园 →</a>
       </div>
     </div>
     {plants.length > 1 && <div className="mt-4 flex flex-wrap gap-2">

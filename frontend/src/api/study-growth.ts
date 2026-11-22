@@ -8,6 +8,7 @@ export type GrowthState = {
   enabled: boolean; plan_id: string; sunlight: number; plant: string; final_summary?: string; standard_days?: number;
   momentum?: number; settings?: GrowthSettings; days: GrowthDay[];
   available_sunlight?: number; fed_sunlight?: number;
+  plant_total?: number; plant_progress?: number; feedable_sunlight?: number;
   history?: { request_id: string; task_id: string; old_date: string; new_date: string; minutes: number; active: number }[];
 };
 export type Closure = {

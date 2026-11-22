@@ -325,9 +325,9 @@ pwd
 ### RFC-BC-002 — 植物成长由「学习日峰值驱动」改为「用户喂食阳光驱动」— 状态：APPROVED
 - 发现日期、任务 ID、实际源码证据与用户可观察影响：2026-11-22，任务「学习板块阳光—向日葵联动」。用户要求：完成任务获得阳光后，由用户**主动选择**喂给植物阳光，植物才生长（UI 随阶段变化）；计划完成则向日葵盛开并移栽到「学习记忆花园」。原 DEC-02 的「有效标准学习日/里程碑峰值自动推动成长」与新需求冲突——会让用户未喂食时植物也自动生长。
 - 与 `frozen/01~03` 哪一条冲突：不直接冲突冻结格式；覆盖已批准决策 DEC-02 的成长驱动语义。
-- 方案 A（最小变更）及风险：新增持久化表 `study_growth_fed(plan_id PRIMARY KEY, fed_sunlight)`，阶段由 `plant_stage_from_fed(fed_sunlight)` 推导；`state()` 返回 `available_sunlight = sunlight - fed_sunlight`、`fed_sunlight`；新增 `feed(plan_id, amount)` 校验可用余额后累加。`sunlight` 语义不变（累计获得），保证旧测试不破。风险：老计划若直接清零会视觉倒退 → 在 `__init__` 一次性按 `plant_peak` seed `fed_sunlight`（peak≥7→100, ≥5→60, ≥3→30, ≥1→10, else 0），seed 只迁移一次、不进 state/feed，新计划永远从「种子」开始。
+- 方案 A（最小变更）及风险：新增持久化表 `study_growth_fed(plan_id PRIMARY KEY, fed_sunlight)`，阶段由已喂阳光占「计划总阳光」的比例推导（`plant_stage_from_fed(fed, total)`，阈值 5%/20%/50%/80% → 发芽/幼苗/长叶/花苞）；计划总阳光 = 任务数 × 10（`TASK_REWARD=10`），每完成一个任务奖励 10 阳光、取消完成自动回冲。`state()` 返回 `available_sunlight`、`fed_sunlight`、`plant_total`、`plant_progress`、`feedable_sunlight`；新增 `feed(plan_id, amount)` 校验可用余额与剩余生长空间后累加。风险：老计划若直接清零会视觉倒退 → 在 `__init__` 一次性按 `plant_peak` seed `fed_sunlight`（peak≥7→80%, ≥5→50%, ≥3→20%, ≥1→5%, else 0），seed 只迁移一次、不进 state/feed，新计划永远从「种子」开始。
 - 方案 B（必要时，最多两个方案）及风险：无。
-- 对 V1/运行数据库/Skill/导出模板/其它计划的影响：运行库新增表 `study_growth_fed`（已在生产 `/home/zyh20/.honeyos/study/study.db` 迁移建表，老计划 seed 核对无倒退）；前端新增向日葵 SVG `SunflowerArt`、喂食 UI、多花盆切换条；花园从学习主页移除，收进「记忆区」（与周/月/年总结同处）。多任务场景：每个 `plan_id` 独立阳光/植物/花盆，点击花盆条切换时三者联动，`selectedPlanId` 经 localStorage 持久化，刷新保留。
+- 对 V1/运行数据库/Skill/导出模板/其它计划的影响：运行库新增表 `study_growth_fed`（已在生产 `/home/zyh20/.honeyos/study/study.db` 迁移建表，老计划 seed 核对无倒退）；前端新增向日葵 SVG `SunflowerArt`、喂食 UI（可喂/已喂/总量与进度条）、花园入口链接；花园从学习主页移除，收进「记忆区」（与周/月/年总结同处，支持 `/memories?section=study` 直达）。多任务场景：每个 `plan_id` 独立阳光/植物/花盆，点击花盆条切换时三者联动，`selectedPlanId` 经 localStorage 持久化，刷新保留。**部署修正：** 生产叠加包 `api_server.py` 原先未注册 `growth_routes`，导致成长与花园接口全部 404；已补 `growth_routes` 注册（import + 路由拼接）并验证接口由 404 变为鉴权拦截 401。
 - 必须新增的回归测试：后端 `tests/honeyos/study/test_growth.py` 新增 3 个喂食用例（余额校验、超额拒绝、阶段递进），共 189 项通过；前端 `StudyGrowthPanel.test.tsx` 新增喂食断言。
 - 用户明确决定与日期（未批准不能实施冲突变更）：用户在本任务明确要求该机制；已批准计划见 `sunflower_growth_plan.md`，2026-11-22。
 - 修改冻结文档版本号和引用的计划：不修改冻结文档；DEC-02 标记为被本 RFC 覆盖。

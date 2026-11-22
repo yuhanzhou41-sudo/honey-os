@@ -61,10 +61,11 @@ def test_rewards_no_backfill_retry_and_reversal(app,monkeypatch):
     for task in plan.tasks:
         study.set_task_status(plan.id,task.id,"completed")
     first=growth.state(plan.id)
-    assert first["sunlight"] in (10,20,30)
+    assert first["sunlight"] >= 20
     assert growth.state(plan.id)["sunlight"] == first["sunlight"]
     study.set_task_status(plan.id,plan.tasks[0].id,"planned")
-    assert growth.state(plan.id)["sunlight"] == 0
+    # 撤销一个任务的完成状态后只保留另一个任务的奖励，且不补发。
+    assert growth.state(plan.id)["sunlight"] == 10
     assert growth.state(plan.id)["plant"] == first["plant"]
 
 def test_feed_grows_sunflower_and_deducts_available(app, monkeypatch):
@@ -78,20 +79,19 @@ def test_feed_grows_sunflower_and_deducts_available(app, monkeypatch):
     for task in plan.tasks:
         study.set_task_status(plan.id, task.id, "completed")
     state = growth.state(plan.id)
-    earned = state["sunlight"]
-    assert earned >= 10
-    assert state["available_sunlight"] == earned
+    total = state["plant_total"]
+    assert total == 20
     assert state["fed_sunlight"] == 0
     assert state["plant"] == "种子"
     grown = growth.feed(plan.id, 10)
     assert grown["fed_sunlight"] == 10
-    assert grown["available_sunlight"] == earned - 10
-    assert grown["plant"] == "发芽"
-    rest = grown["available_sunlight"]
-    if rest > 0:
-        grown = growth.feed(plan.id, rest)
-        assert grown["plant"] == plant_stage_from_fed(earned)
-        assert grown["available_sunlight"] == 0
+    assert grown["plant_progress"] == 0.5
+    assert grown["plant"] == plant_stage_from_fed(10, total)
+    rest = grown["feedable_sunlight"]
+    assert rest == 10
+    grown = growth.feed(plan.id, rest)
+    assert grown["fed_sunlight"] == total
+    assert grown["plant"] == "花苞"
     with pytest.raises(ValueError):
         growth.feed(plan.id, 1)
 
@@ -116,7 +116,7 @@ def test_legacy_plant_seeded_from_peak_does_not_regress(app, monkeypatch):
         db.execute("DELETE FROM study_growth_fed WHERE plan_id=?", (plan.id,))
     StudyGrowth(study)
     state = growth.state(plan.id)
-    assert state["fed_sunlight"] == 60
+    assert state["fed_sunlight"] == 10
     assert state["plant"] == "长叶"
 
 def test_recovery_preview_is_small_and_readonly(app):

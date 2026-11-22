@@ -16,8 +16,9 @@ const plan = {
   updated_at: "2026-11-20T00:00:00Z", tasks: [], flex_slots: [],
 } as unknown as StudyPlan;
 function setup(enabled: boolean) {
-  vi.mocked(getGrowth).mockResolvedValue({ enabled, plan_id: plan.id, sunlight: 20, available_sunlight: 20,
-    fed_sunlight: 0, plant: "发芽", days: [], settings: { timezone: "Asia/Shanghai", minimum_mode: false } });
+  vi.mocked(getGrowth).mockResolvedValue({ enabled, plan_id: plan.id, sunlight: 30, available_sunlight: 30,
+    fed_sunlight: 0, plant_total: 20, plant_progress: 0, feedable_sunlight: 20, plant: "发芽", days: [],
+    settings: { timezone: "Asia/Shanghai", minimum_mode: false } });
   vi.mocked(getActivities).mockResolvedValue({ events: [] });
   vi.mocked(getStudyGarden).mockResolvedValue({ plants: [] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

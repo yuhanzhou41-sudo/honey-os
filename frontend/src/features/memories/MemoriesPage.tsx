@@ -105,7 +105,8 @@ export function MemoriesPage() {
     removeMemory,
   } = useHoneyStore();
 
-  const [section, setSection] = useState<"mine" | "history" | "study">("mine");
+  const [section, setSection] = useState<"mine" | "history" | "study">(() =>
+    new URLSearchParams(window.location.search).get("section") === "study" ? "study" : "mine");
   const [historyView, setHistoryView] = useState<"library" | "trash">("library");
   const [filter, setFilter] = useState("all");
   const [partition, setPartition] = useState("all");
