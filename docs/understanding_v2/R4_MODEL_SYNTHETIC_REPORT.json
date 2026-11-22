@@ -1,0 +1,75 @@
+{
+  "approved_request_cap": 3,
+  "cases": [
+    {
+      "action": "RUN",
+      "actual_gate": "RUN_PREFERENCE",
+      "case_id": "S01",
+      "error_type": "",
+      "expected_gate": "RUN_PREFERENCE",
+      "gate_match": true,
+      "label_count": 2,
+      "latency_s": 15.64,
+      "proposal_count": 2,
+      "raw_preview": "{\"proposals\":[{\"operation\":\"support\",\"category_id\":\"learning_work_style\",\"scope_key\":\"general\",\"canonical_key\":\"learning_work_style_mechanism_first\",\"text\":\"用户倾向于先理解原理机制再记忆结论，以增强记忆牢固性。\",\"support_refs\":[\"S01-e1\"],\"counter_refs\":[]},{\"operation\":\"propose\",\"category_id\":\"interest_preference\",\"scope_key\":\"general\",\"canonical_key\":\"interest_preference_understanding_over_memorization\",\"text\":\"用户对深入理解事物机",
+      "requests": 1,
+      "status": "completed"
+    },
+    {
+      "action": "SKIP",
+      "actual_gate": "SKIP_FACT_ONLY",
+      "case_id": "S18",
+      "expected_gate": "SKIP_FACT_ONLY",
+      "gate_match": true,
+      "requests": 0,
+      "status": "skipped"
+    },
+    {
+      "action": "SKIP",
+      "actual_gate": "SKIP_CHATTER",
+      "case_id": "S20",
+      "expected_gate": "SKIP_CHATTER",
+      "gate_match": true,
+      "requests": 0,
+      "status": "skipped"
+    },
+    {
+      "action": "RUN",
+      "actual_gate": "RUN_PREFERENCE",
+      "case_id": "S21",
+      "error_type": "",
+      "expected_gate": "RUN_PREFERENCE",
+      "gate_match": true,
+      "label_count": 4,
+      "latency_s": 23.8,
+      "proposal_count": 4,
+      "raw_preview": "{\"proposals\":[{\"operation\":\"propose\",\"category_id\":\"interest_preference\",\"scope_key\":\"general\",\"canonical_key\":\"pref_mechanism_over_exam\",\"text\":\"The user shows a preference for understanding underlying mechanisms over valuing exam outcomes.\",\"support_refs\":[\"S21-e1\"],\"counter_refs\":[]},{\"operation\":\"support\",\"category_id\":\"behavior_pattern\",\"scope_key\":\"general\",\"canonical_key\":\"behavior_exam_ind",
+      "requests": 1,
+      "status": "completed"
+    },
+    {
+      "action": "RUN",
+      "actual_gate": "RUN_CONFLICT",
+      "case_id": "S22",
+      "error_type": "",
+      "expected_gate": "RUN_CONFLICT",
+      "gate_match": true,
+      "label_count": 3,
+      "latency_s": 16.42,
+      "proposal_count": 3,
+      "raw_preview": "{\"proposals\":[{\"operation\":\"propose\",\"category_id\":\"learning_work_style\",\"scope_key\":\"general\",\"canonical_key\":\"learning_approach\",\"text\":\"I prefer understanding underlying mechanisms before memorizing conclusions.\",\"support_refs\":[\"S22-e1\"],\"counter_refs\":[]},{\"operation\":\"support\",\"category_id\":\"interest_preference\",\"scope_key\":\"general\",\"canonical_key\":\"curiosity_about_process\",\"text\":\"I am int",
+      "requests": 1,
+      "status": "completed"
+    }
+  ],
+  "dataset_sha256": "3c32ddfbc19a61e710662d3d48720cfd784e7d84bcd29de9840f8f30cf6affc9",
+  "gate_cases": 5,
+  "gate_correct": 5,
+  "mode": "synthetic-model",
+  "model": "D:/LocalLLM/models/qwen3-4b-instruct-2507-Q4_K_M.gguf",
+  "pipeline_completed": 3,
+  "proposals_total": 9,
+  "requests_issued": 3,
+  "run_cases": 3,
+  "synthetic": true
+}

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import os
 import sqlite3
@@ -41,6 +42,15 @@ def _as_utc(value: datetime) -> datetime:
 
 
 @dataclass(frozen=True)
+class UnderstandingSettings:
+    """Explicit production gate for the post-distillation U2 producer."""
+
+    enabled: bool = False
+    namespace: str = "general"
+    max_daily_calls: int = 6
+
+
+@dataclass(frozen=True)
 class DistillationSettings:
     enabled: bool = True
     trigger_messages: int = 20
@@ -49,6 +59,7 @@ class DistillationSettings:
     max_operations: int = 6
     max_attempts: int = 3
     max_daily_runs: int = 12
+    understanding: Any = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +110,24 @@ def load_distillation_settings(home: Path) -> DistillationSettings:
         except (TypeError, ValueError):
             return default
 
+    understanding_raw = raw.get("understanding", {})
+    if not isinstance(understanding_raw, dict):
+        understanding_raw = {}
+    understanding_namespace = str(
+        understanding_raw.get("namespace") or "general"
+    ).strip()[:120]
+    if not understanding_namespace:
+        understanding_namespace = "general"
+    try:
+        max_daily_calls = max(1, int(understanding_raw.get("max_daily_calls", 6)))
+    except (TypeError, ValueError):
+        max_daily_calls = 6
+    understanding = UnderstandingSettings(
+        enabled=bool(understanding_raw.get("enabled", False)),
+        namespace=understanding_namespace,
+        max_daily_calls=max_daily_calls,
+    )
+
     return DistillationSettings(
         enabled=bool(raw.get("enabled", True)),
         trigger_messages=positive_int("trigger_messages", 20),
@@ -107,6 +136,7 @@ def load_distillation_settings(home: Path) -> DistillationSettings:
         max_operations=positive_int("max_operations", 6),
         max_attempts=positive_int("max_attempts", 3),
         max_daily_runs=positive_int("max_daily_runs", 12),
+        understanding=understanding,
     )
 
 
@@ -387,11 +417,15 @@ class MemoryDistiller:
         *,
         settings: DistillationSettings | None = None,
         extractor: Extractor | None = None,
+        post_completed_hook: Any | None = None,
     ) -> None:
         self.home = Path(home).expanduser().resolve()
         self.db_path = self.home / "continuity.db"
         self.settings = settings or load_distillation_settings(self.home)
         self.extractor = extractor or extract_with_auxiliary_model
+        # Optional additive lifecycle hook. It runs only after the original
+        # completed transaction and can never change DistillationResult.
+        self.post_completed_hook = post_completed_hook
         self.memories = StructuredMemoryStore(self.home)
 
     def _connect(self) -> sqlite3.Connection:
@@ -1028,6 +1062,23 @@ class MemoryDistiller:
                 DiaryStore(self.home).mark_memory_buckets_processed(
                     job.diary_buckets
                 )
+            if self.post_completed_hook is not None:
+                try:
+                    maybe_awaitable = self.post_completed_hook(
+                        job=job,
+                        result=DistillationResult(
+                            run_id=job.run_id,
+                            status="completed",
+                            applied=applied,
+                            rejected=rejected,
+                            chapter_id=chapter.id,
+                        ),
+                        main_runtime=dict(main_runtime or {}),
+                    )
+                    if inspect.isawaitable(maybe_awaitable):
+                        await maybe_awaitable
+                except Exception:
+                    logger.exception("post-completed understanding hook failed")
             return DistillationResult(
                 run_id=job.run_id,
                 status="completed",

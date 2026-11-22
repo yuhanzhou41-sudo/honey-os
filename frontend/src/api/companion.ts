@@ -125,6 +125,74 @@ export type HistoricalMemoryPage = {
   sources: Array<{ key: string; label: string; count: number }>;
 };
 
+// U2 user-understanding labels. These are scoped, possibly-wrong views of the
+// user; `body` is never a confirmed fact and must be presented as tentative.
+export type UnderstandingLabel = {
+  id: string;
+  category: string;
+  scope_key: string;
+  canonical_key: string;
+  body: string;
+  state: string;
+  grade: "low" | "medium" | "high";
+  revision: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UnderstandingPage = {
+  items: UnderstandingLabel[];
+  total: number;
+  limit: number;
+  offset: number;
+  policy_epoch: number;
+};
+
+export type UnderstandingDetail = {
+  label: UnderstandingLabel;
+  evidence: Array<{
+    evidence_ref: string;
+    event_group: string;
+    relation: "support" | "counter";
+    source_revision: string;
+    source_status: "recorded_unverified" | "available" | "unavailable";
+  }>;
+  versions: Array<{ revision: number; state: string; grade: string; actor: string; created_at: string }>;
+};
+
+// Must match memory.distillation.understanding.namespace in the gateway config.
+const UNDERSTANDING_NAMESPACE = "general";
+
+const understandingScope = (lane: string, namespace: string) => {
+  const params = new URLSearchParams({ lane, namespace });
+  return params;
+};
+
+export const fetchUnderstanding = (lane: string, namespace = UNDERSTANDING_NAMESPACE, offset = 0) => {
+  const params = understandingScope(lane, namespace);
+  params.set("limit", "50");
+  params.set("offset", String(offset));
+  return requestJson<UnderstandingPage>(`/api/companion/understanding?${params}`);
+};
+
+export const fetchUnderstandingDetail = (id: string, lane: string, namespace = UNDERSTANDING_NAMESPACE) =>
+  requestJson<UnderstandingDetail>(
+    `/api/companion/understanding/${encodeURIComponent(id)}?${understandingScope(lane, namespace)}`,
+  );
+
+export const updateUnderstanding = (id: string, lane: string, body: string, namespace = UNDERSTANDING_NAMESPACE) =>
+  requestJson<{ success: true; policy_epoch: number; actor: "user_edit" }>(
+    `/api/companion/understanding/${encodeURIComponent(id)}?${understandingScope(lane, namespace)}`,
+    { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body }) },
+  );
+
+export const actOnUnderstanding = (
+  id: string, lane: string, action: "suppress" | "restore" | "forget", namespace = UNDERSTANDING_NAMESPACE,
+) => requestJson<{ success: true; policy_epoch: number; action: string }>(
+  `/api/companion/understanding/${encodeURIComponent(id)}/action?${understandingScope(lane, namespace)}`,
+  { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) },
+);
+
 export type DiaryEntry = {
   id: string;
   author: "user" | "assistant";
@@ -196,6 +264,8 @@ export type CompanionBootstrap = {
     memory_location?: string;
     conversation_model?: string;
     distillation_model?: string;
+    // Resolved by the gateway from memory.distillation.understanding.namespace.
+    understanding_namespace?: string;
   };
 };
 

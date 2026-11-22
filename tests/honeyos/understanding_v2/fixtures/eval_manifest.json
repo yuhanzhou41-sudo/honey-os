@@ -1,0 +1,28 @@
+{
+  "version": "r5-synthetic-v1",
+  "synthetic": true,
+  "model": "UNRESOLVED_UNTIL_APPROVED",
+  "generation": {"temperature": 0, "repetitions": 1},
+  "cases": [
+    {"case_id": "S01", "group": "preference", "expected_gate": "RUN_PREFERENCE",
+     "scope_keys": ["general"],
+     "evidence": [{"ref": "S01-e1", "text": "我更喜欢先弄懂机制再背结论，这样记得更牢。"}],
+     "estimated_input_tokens": 420, "estimated_output_tokens": 180},
+    {"case_id": "S18", "group": "fact_only", "expected_gate": "SKIP_FACT_ONLY",
+     "scope_keys": ["general"],
+     "evidence": [{"ref": "S18-e1", "text": "学校是X。"}],
+     "estimated_input_tokens": 0, "estimated_output_tokens": 0},
+    {"case_id": "S20", "group": "chatter", "expected_gate": "SKIP_CHATTER",
+     "scope_keys": ["general"],
+     "evidence": [{"ref": "S20-e1", "text": "晚安！"}],
+     "estimated_input_tokens": 0, "estimated_output_tokens": 0},
+    {"case_id": "S21", "group": "mixed", "expected_gate": "RUN_PREFERENCE",
+     "scope_keys": ["general"],
+     "evidence": [{"ref": "S21-e1", "text": "我更喜欢先理解机制，学校的考试安排我不太在意。"}],
+     "estimated_input_tokens": 480, "estimated_output_tokens": 180},
+    {"case_id": "S22", "group": "conflict", "expected_gate": "RUN_CONFLICT",
+     "scope_keys": ["general"],
+     "evidence": [{"ref": "S22-e1", "text": "以前我总是先背结论，但现在我更愿意先弄懂机制再决定。"}],
+     "estimated_input_tokens": 520, "estimated_output_tokens": 220}
+  ]
+}

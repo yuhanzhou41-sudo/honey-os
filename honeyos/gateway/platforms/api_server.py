@@ -2687,6 +2687,10 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/new-ui/{asset_path:.*}", self._handle_companion_react),
             ("GET", "/api/companion/bootstrap", self._handle_companion_bootstrap),
             ("GET", "/api/companion/memories", self._handle_companion_memories),
+            ("GET", "/api/companion/understanding", self._handle_companion_understanding),
+            ("GET", "/api/companion/understanding/{label_id}", self._handle_companion_understanding_detail),
+            ("PATCH", "/api/companion/understanding/{label_id}", self._handle_companion_understanding_edit),
+            ("POST", "/api/companion/understanding/{label_id}/action", self._handle_companion_understanding_action),
             # === Cognitive Memory Library Phase A/B (read-only) ===
             ("GET", "/api/memory/library", self._handle_memory_library),
             ("GET", "/api/memory/library/{memory_id}", self._handle_memory_library_item),
@@ -3187,6 +3191,7 @@ class APIServerAdapter(BasePlatformAdapter):
             }
 
         distillation_model = "auto"
+        understanding_namespace = "general"
         try:
             from honeyos.runtime.config import load_config_readonly
 
@@ -3200,6 +3205,18 @@ class APIServerAdapter(BasePlatformAdapter):
             configured_model = task.get("model") if isinstance(task, dict) else None
             if isinstance(configured_model, str) and configured_model.strip():
                 distillation_model = configured_model.strip()
+            memory = config.get("memory", {})
+            distillation = memory.get("distillation", {}) if isinstance(memory, dict) else {}
+            understanding = (
+                distillation.get("understanding", {})
+                if isinstance(distillation, dict)
+                else {}
+            )
+            configured_namespace = (
+                understanding.get("namespace") if isinstance(understanding, dict) else None
+            )
+            if isinstance(configured_namespace, str) and configured_namespace.strip():
+                understanding_namespace = configured_namespace.strip()[:120]
         except Exception:
             logger.debug("Failed to read companion distillation model", exc_info=True)
 
@@ -3241,6 +3258,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "memory_location": "local",
                     "conversation_model": str(self._model_name or ""),
                     "distillation_model": distillation_model,
+                    "understanding_namespace": understanding_namespace,
                 },
             }
         )
@@ -3554,6 +3572,125 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.debug("Could not check memory source availability", exc_info=True)
             return set()
         return source_ids - existing
+
+    @staticmethod
+    def _understanding_scope(request: "web.Request") -> tuple[str, str, str]:
+        # This surface is the authenticated local companion. Never accept an
+        # owner from the client; lane and namespace are explicit to prevent a
+        # broad/all-graph query.
+        owner = "local-owner"
+        lane = str(request.query.get("lane") or "").strip()
+        namespace = str(request.query.get("namespace") or "").strip()
+        if not lane or not namespace or len(lane) > 240 or len(namespace) > 120:
+            raise ValueError("lane and namespace are required")
+        return owner, lane, namespace
+
+    @staticmethod
+    def _understanding_store(*, create: bool = False):
+        from honeyos.core.constants import get_honeyos_home
+        from honeyos.understanding.u2_store import UnderstandingStore
+        path = get_honeyos_home() / "understanding_v2.db"
+        if not path.exists() and not create:
+            return None
+        store = UnderstandingStore(path)
+        if create:
+            store.initialize()
+        return store
+
+    async def _handle_companion_understanding(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            owner, lane, namespace = self._understanding_scope(request)
+            limit = int(request.query.get("limit", "50"))
+            offset = int(request.query.get("offset", "0"))
+            state = str(request.query.get("state") or "").strip()
+            store = await asyncio.to_thread(self._understanding_store)
+            if store is None:
+                return web.json_response({"items": [], "total": 0, "limit": max(1, min(limit, 100)),
+                                          "offset": max(0, offset), "policy_epoch": 0})
+            rows, total = await asyncio.to_thread(
+                store.page_labels, owner, lane, namespace,
+                limit=limit, offset=offset, state=state,
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({
+            "items": [dict(row) for row in rows], "total": total,
+            "limit": max(1, min(limit, 100)), "offset": max(0, offset),
+            "policy_epoch": store.policy_epoch(),
+        })
+
+    async def _handle_companion_understanding_detail(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            owner, lane, namespace = self._understanding_scope(request)
+            store = await asyncio.to_thread(self._understanding_store)
+            if store is None:
+                return web.json_response({"error": "understanding not found"}, status=404)
+            from honeyos.understanding.u2_manage import explain
+            result = await asyncio.to_thread(
+                explain, store, str(request.match_info["label_id"]),
+                owner=owner, lane=lane, namespace=namespace,
+            )
+        except (KeyError, PermissionError):
+            return web.json_response({"error": "understanding not found"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(result)
+
+    async def _handle_companion_understanding_edit(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        try:
+            owner, lane, namespace = self._understanding_scope(request)
+            store = await asyncio.to_thread(self._understanding_store)
+            if store is None:
+                return web.json_response({"error": "understanding not found"}, status=404)
+            from honeyos.understanding.u2_manage import edit
+            epoch = await asyncio.to_thread(
+                edit, store, str(request.match_info["label_id"]), str(body.get("body") or ""),
+                owner=owner, lane=lane, namespace=namespace,
+            )
+        except (KeyError, PermissionError):
+            return web.json_response({"error": "understanding not found"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"success": True, "policy_epoch": epoch, "actor": "user_edit"})
+
+    async def _handle_companion_understanding_action(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        action = str(body.get("action") or "")
+        if action not in {"suppress", "restore", "forget"}:
+            return web.json_response({"error": "unsupported action"}, status=400)
+        try:
+            owner, lane, namespace = self._understanding_scope(request)
+            store = await asyncio.to_thread(self._understanding_store)
+            if store is None:
+                return web.json_response({"error": "understanding not found"}, status=404)
+            from honeyos.understanding import u2_manage
+            operation = getattr(u2_manage, action)
+            epoch = await asyncio.to_thread(
+                operation, store, str(request.match_info["label_id"]),
+                owner=owner, lane=lane, namespace=namespace,
+            )
+        except (KeyError, PermissionError):
+            return web.json_response({"error": "understanding not found"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=409)
+        return web.json_response({"success": True, "action": action, "policy_epoch": epoch})
 
     async def _handle_memory_library(
         self, request: "web.Request"

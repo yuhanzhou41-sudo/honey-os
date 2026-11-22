@@ -319,6 +319,11 @@ def companion_config(
                 "max_operations": 6,
                 "max_attempts": 3,
                 "max_daily_runs": 12,
+                "understanding": {
+                    "enabled": False,
+                    "namespace": "general",
+                    "max_daily_calls": 6,
+                },
             },
         },
         "auxiliary": {
@@ -587,6 +592,16 @@ def upgrade_companion_capabilities(home: Path) -> bool:
         "max_daily_runs": 12,
     }.items():
         distillation.setdefault(key, value)
+    understanding = distillation.setdefault("understanding", {})
+    if not isinstance(understanding, dict):
+        understanding = {}
+        distillation["understanding"] = understanding
+    for key, value in {
+        "enabled": False,
+        "namespace": "general",
+        "max_daily_calls": 6,
+    }.items():
+        understanding.setdefault(key, value)
 
     auxiliary = config.setdefault("auxiliary", {})
     if not isinstance(auxiliary, dict):

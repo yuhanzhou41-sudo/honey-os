@@ -5818,6 +5818,97 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _detached_restart_helper_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
 
+    def _recover_honeyos_u2_pending(self, *, settings=None) -> Dict[str, int]:
+        """Actual worker entry for saved-response recovery after restart.
+
+        Recovery is gated by the explicit ``understanding.enabled`` setting, so
+        a disabled U2 never creates a database, touches saved jobs, or writes
+        labels. A caller that already resolved settings may pass them in;
+        otherwise they are read from the live config (default: disabled).
+
+        Evidence identity is re-resolved against the live continuity store, so
+        forgotten, expired, revision-changed, or non-analysis sources block the
+        job. An explicit ``_u2_recovery_resolver`` may still be injected for
+        isolated tests; production uses the existing ContinuitySourceResolver.
+        No model request is ever issued here.
+        """
+        try:
+            from honeyos.core.constants import get_honeyos_home
+            from honeyos.companion.distillation import load_distillation_settings
+            from honeyos.understanding.u2_pipeline import recover_pending_jobs
+            from honeyos.understanding.u2_sources import build_continuity_recovery_resolver
+            from honeyos.understanding.u2_store import UnderstandingStore
+            home = get_honeyos_home()
+            if settings is None:
+                settings = load_distillation_settings(home).understanding
+            if not getattr(settings, "enabled", False):
+                # Disabled: do not create, open, clean, or invalidate any job.
+                return {"completed": 0, "blocked": 0, "failed": 0, "model_calls": 0}
+            path = home / "understanding_v2.db"
+            if not path.exists():
+                return {"completed": 0, "blocked": 0, "failed": 0, "model_calls": 0}
+            store = UnderstandingStore(path)
+            resolver = getattr(self, "_u2_recovery_resolver", None)
+            if not callable(resolver):
+                resolver = build_continuity_recovery_resolver(
+                    store=store, db_path=home / "continuity.db")
+            return recover_pending_jobs(store=store, resolve_evidence=resolver)
+        except Exception:
+            logger.debug("HoneyOS U2 saved-response recovery failed", exc_info=True)
+            return {"completed": 0, "blocked": 0, "failed": 1, "model_calls": 0}
+
+    async def _honeyos_u2_post_completed(self, *, job, result, main_runtime,
+                                         settings) -> None:
+        """Live U2 producer bound to the completed distillation lifecycle.
+
+        This is strictly additive: the distillation transaction has already
+        committed, and any U2 error is swallowed here so chat and the original
+        DistillationResult are never changed. The producer is off unless the
+        explicit ``memory.distillation.understanding.enabled`` gate is set.
+        """
+        if not getattr(settings, "enabled", False):
+            return
+        if str(getattr(result, "status", "") or "") != "completed":
+            return
+        try:
+            from honeyos.core.constants import get_honeyos_home
+            from honeyos.understanding.u2_pipeline import produce_after_distillation
+            from honeyos.understanding.u2_store import UnderstandingStore
+
+            home = get_honeyos_home()
+            store = UnderstandingStore(home / "understanding_v2.db")
+            store.initialize()
+            # The authenticated local companion is the only supported owner;
+            # never accept an owner from the model or from source content.
+            user_messages = {
+                int(message["_row_id"]): str(message["content"])
+                for message in job.messages
+                if str(message.get("role") or "").lower() == "user"
+            }
+            receipt = await produce_after_distillation(
+                home=home,
+                owner="local-owner",
+                lane=job.lane_key,
+                namespace=settings.namespace,
+                run_id=job.run_id,
+                source_hash=job.source_hash,
+                session_id=job.session_id,
+                user_messages=user_messages,
+                model_runtime=dict(main_runtime or {}),
+                enabled=True,
+                max_daily_calls=settings.max_daily_calls,
+                store=store,
+                now=job.now,
+            )
+            if receipt is not None and receipt.get("action") == "BLOCKED":
+                logger.debug(
+                    "HoneyOS U2 producer blocked for %s: %s",
+                    job.run_id,
+                    receipt.get("reason"),
+                )
+        except Exception:
+            logger.debug("HoneyOS U2 post-completed producer failed", exc_info=True)
+
     def _schedule_honeyos_memory_distillation(
         self,
         *,
@@ -5837,9 +5928,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         distiller = active_honeyos_distiller()
         if distiller is None:
             return False
+        understanding = getattr(getattr(distiller, "settings", None), "understanding", None)
+        if understanding is not None and getattr(distiller, "post_completed_hook", None) is None:
+            # Bind the live producer to the actual resolved provider/model of
+            # the completed foreground turn. The hook runs only after the
+            # distillation transaction commits and can never change its result.
+            distiller.post_completed_hook = lambda **kwargs: self._honeyos_u2_post_completed(
+                settings=understanding, **kwargs
+            )
 
         async def _run() -> None:
             try:
+                # Restart recovery is bounded and model-free. The resolver is
+                # deliberately an explicit binding: without a current source
+                # permission/revision check, saved responses remain blocked.
+                self._recover_honeyos_u2_pending(settings=understanding)
                 async def _current_messages():
                     return await self.async_session_store.load_transcript(
                         session_id, include_row_ids=True,

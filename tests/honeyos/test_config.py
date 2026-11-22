@@ -66,6 +66,11 @@ def test_initialize_home_creates_companion_contract(tmp_path, monkeypatch):
         "max_operations": 6,
         "max_attempts": 3,
         "max_daily_runs": 12,
+        "understanding": {
+            "enabled": False,
+            "namespace": "general",
+            "max_daily_calls": 6,
+        },
     }
     assert config["auxiliary"]["memory_distillation"] == {
         "provider": "auto",

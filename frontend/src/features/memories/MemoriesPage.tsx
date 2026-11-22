@@ -13,19 +13,24 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  actOnUnderstanding,
   deleteHistoricalMemory,
   fetchCompanionBootstrap,
   fetchHistoricalMemories,
   fetchHistoricalMemory,
   fetchHistoricalTrash,
+  fetchUnderstanding,
+  fetchUnderstandingDetail,
   permanentlyDeleteHistoricalMemory,
   restoreHistoricalMemory,
   updateCompanionMemory,
   updateHistoricalMemory,
+  updateUnderstanding,
   type HistoricalMemoryDetail,
   type HistoricalMemoryItem,
   type MemoryItem,
   type RecentChapter,
+  type UnderstandingLabel,
 } from "../../api/companion";
 import { PageHeader } from "../../components/honey/PageHeader";
 import { ErrorState, LoadingState } from "../../components/honey/PageState";
@@ -105,8 +110,10 @@ export function MemoriesPage() {
     removeMemory,
   } = useHoneyStore();
 
-  const [section, setSection] = useState<"mine" | "history" | "study">(() =>
-    new URLSearchParams(window.location.search).get("section") === "study" ? "study" : "mine");
+  const [section, setSection] = useState<"mine" | "history" | "study" | "understanding">(() => {
+    const requested = new URLSearchParams(window.location.search).get("section");
+    return requested === "study" || requested === "understanding" ? requested : "mine";
+  });
   const [historyView, setHistoryView] = useState<"library" | "trash">("library");
   const [filter, setFilter] = useState("all");
   const [partition, setPartition] = useState("all");
@@ -127,6 +134,42 @@ export function MemoriesPage() {
     refetchOnMount: "always",
     refetchInterval: section === "mine" ? 5_000 : false,
     staleTime: 0,
+  });
+
+  const lane = memoryRefresh.data?.session_key || "";
+  const understandingNamespace = memoryRefresh.data?.settings?.understanding_namespace || "";
+  const [understandingOffset, setUnderstandingOffset] = useState(0);
+
+  useEffect(() => {
+    setUnderstandingOffset(0);
+  }, [lane, understandingNamespace]);
+
+  const understanding = useQuery({
+    queryKey: ["understanding", lane, understandingNamespace, understandingOffset],
+    queryFn: () => fetchUnderstanding(lane, understandingNamespace, understandingOffset),
+    enabled: section === "understanding" && Boolean(lane) && Boolean(understandingNamespace),
+    staleTime: 0,
+  });
+
+  const understandingMutation = useMutation({
+    mutationFn: (input: { item: UnderstandingLabel; action: "suppress" | "restore" | "forget" }) =>
+      actOnUnderstanding(input.item.id, lane, input.action, understandingNamespace),
+    onSuccess: async (data) => {
+      setNotice(data.action === "forget" ? "已逻辑忘记；原聊天没有被删除" :
+        data.action === "restore" ? "已恢复为待重新评估，不继承旧置信度" : "已禁止用于新回复");
+      await queryClient.invalidateQueries({ queryKey: ["understanding"] });
+    },
+    onError: () => setNotice("理解管理操作没有成功，请检查当前范围或来源状态"),
+  });
+
+  const understandingEdit = useMutation({
+    mutationFn: (input: { item: UnderstandingLabel; body: string }) =>
+      updateUnderstanding(input.item.id, lane, input.body, understandingNamespace),
+    onSuccess: async () => {
+      setNotice("已保存为用户编辑；不会自动提升证据等级");
+      await queryClient.invalidateQueries({ queryKey: ["understanding"] });
+    },
+    onError: () => setNotice("编辑没有保存成功"),
   });
 
   useEffect(() => {
@@ -242,12 +285,35 @@ export function MemoriesPage() {
   const visibleChapters =
     filter === "all" || filter === "recent_chapter" ? recentChapters : [];
 
-  const sectionTabs = <div className="mt-6 grid grid-cols-3 gap-2 rounded-[var(--radius-lg)] bg-[var(--surface)] p-1">
+  const sectionTabs = <div className="mt-6 grid grid-cols-2 gap-2 rounded-[var(--radius-lg)] bg-[var(--surface)] p-1 sm:grid-cols-4">
     <SectionButton active={section === "mine"} onClick={() => setSection("mine")}>我的记忆</SectionButton>
     <SectionButton active={section === "history"} onClick={() => setSection("history")}>历史记忆</SectionButton>
     <SectionButton active={section === "study"} onClick={() => setSection("study")}>学习花园与记忆</SectionButton>
+    <SectionButton active={section === "understanding"} onClick={() => setSection("understanding")}>Honey 的理解</SectionButton>
   </div>;
   if (section === "study") return <PageFrame><PageHeader title="记忆" description="学习的每一步，都留在自己的花园里。" />{sectionTabs}<StudyGardenPanel standalone /></PageFrame>;
+  if (section === "understanding") {
+    return (
+      <PageFrame>
+        <PageHeader title="记忆" description="Honey 对你的理解会单独保存在这里，可以随时纠正或撤回。" />
+        {sectionTabs}
+        {notice ? <p className="mt-3 text-sm text-[var(--foreground-muted)]" role="status">{notice}</p> : null}
+        <UnderstandingPanel
+          items={understanding.data?.items || []}
+          total={understanding.data?.total || 0}
+          pageSize={understanding.data?.limit || 50}
+          offset={understandingOffset}
+          loading={understanding.isLoading}
+          failed={understanding.isError}
+          lane={lane}
+          namespace={understandingNamespace}
+          onOffsetChange={setUnderstandingOffset}
+          onAction={(item, action) => understandingMutation.mutate({ item, action })}
+          onEdit={(item, body) => understandingEdit.mutate({ item, body })}
+        />
+      </PageFrame>
+    );
+  }
   if (loading) return <PageFrame><PageHeader title="记忆" description="日常记忆与学习花园在这里分别查看。" />{sectionTabs}<LoadingState /></PageFrame>;
   if (error) return <PageFrame><PageHeader title="记忆" description="日常记忆与学习花园在这里分别查看。" />{sectionTabs}<ErrorState /></PageFrame>;
 
@@ -600,6 +666,154 @@ export function MemoriesPage() {
         />
       ) : null}
     </PageFrame>
+  );
+}
+
+function UnderstandingPanel({
+  items,
+  total,
+  pageSize,
+  offset,
+  loading,
+  failed,
+  lane,
+  namespace,
+  onOffsetChange,
+  onAction,
+  onEdit,
+}: {
+  items: UnderstandingLabel[];
+  total: number;
+  pageSize: number;
+  offset: number;
+  loading: boolean;
+  failed: boolean;
+  lane: string;
+  namespace: string;
+  onOffsetChange: (offset: number) => void;
+  onAction: (item: UnderstandingLabel, action: "suppress" | "restore" | "forget") => void;
+  onEdit: (item: UnderstandingLabel, body: string) => void;
+}) {
+  if (!lane) return <p className="mt-6 text-sm text-[var(--foreground-muted)]">正在确认当前会话范围…</p>;
+  if (!namespace) {
+    return (
+      <p className="mt-6 text-sm text-[var(--foreground-muted)]" role="status">
+        当前还没有配置可管理的理解分区，不会读取其他分区的数据。
+      </p>
+    );
+  }
+  if (loading) return <LoadingState />;
+  if (failed) {
+    return (
+      <div className="mt-6 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface)] p-5" role="alert">
+        <p className="font-semibold">理解列表暂时没有加载成功</p>
+        <p className="mt-1 text-sm leading-6 text-[var(--foreground-muted)]">
+          可能还没有可读取的理解库，或当前范围不可用。这里不会显示未经验证的内容。
+        </p>
+      </div>
+    );
+  }
+  if (!items.length) return <EmptyState title="还没有形成可管理的理解" body="这里不会为了填满页面而制造标签。" />;
+  const start = offset + 1;
+  const end = offset + items.length;
+  return (
+    <section className="mt-6" aria-label="Honey 的理解">
+      <p className="text-sm leading-6 text-[var(--foreground-muted)]">
+        这些是 Honey 有范围、可能不准确的看法，不是已确认的事实。当前分区：{namespace}。
+        共 {total} 条。
+      </p>
+      <div className="mt-4 grid gap-3">
+        {items.map((item) => (
+          <UnderstandingCard key={item.id} item={item} lane={lane} namespace={namespace} onAction={onAction} onEdit={onEdit} />
+        ))}
+      </div>
+      {total > pageSize ? (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--foreground-muted)]">
+          <span>第 {start}-{end} 条 / 共 {total} 条</span>
+          <div className="flex gap-2">
+            <Button variant="secondary" disabled={offset === 0}
+              onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}>上一页</Button>
+            <Button variant="secondary" disabled={end >= total}
+              onClick={() => onOffsetChange(offset + pageSize)}>下一页</Button>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function understandingSourceStatus(status: string): string {
+  if (status === "recorded_unverified") return "当前有效性待来源复核";
+  if (status === "unavailable") return "来源不可用";
+  if (status === "available") return "来源有效";
+  return "来源状态未知，暂不视为已验证";
+}
+
+function UnderstandingCard({
+  item, lane, namespace, onAction, onEdit,
+}: {
+  item: UnderstandingLabel;
+  lane: string;
+  namespace: string;
+  onAction: (item: UnderstandingLabel, action: "suppress" | "restore" | "forget") => void;
+  onEdit: (item: UnderstandingLabel, body: string) => void;
+}) {
+  const [editingBody, setEditingBody] = useState<string | null>(null);
+  const [showEvidence, setShowEvidence] = useState(false);
+  const detail = useQuery({
+    queryKey: ["understanding-detail", item.id, lane, namespace],
+    queryFn: () => fetchUnderstandingDetail(item.id, lane, namespace),
+    enabled: showEvidence,
+    staleTime: 0,
+  });
+  const suppressed = item.state === "user_suppressed";
+  return (
+    <article className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)] p-4">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--foreground-muted)]">
+        <span>{item.category}</span><span>范围：{item.scope_key}</span>
+        <span>证据等级：{item.grade}</span><span>状态：{item.state}</span><span>v{item.revision}</span>
+      </div>
+      {editingBody !== null ? (
+        <div className="mt-3 grid gap-2">
+          <textarea
+            value={editingBody}
+            maxLength={360}
+            onChange={(event) => setEditingBody(event.target.value)}
+            className="min-h-24 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] p-3 text-sm"
+          />
+          <div className="flex gap-2">
+            <Button disabled={!editingBody.trim()} onClick={() => { onEdit(item, editingBody); setEditingBody(null); }}>
+              保存为用户编辑
+            </Button>
+            <Button variant="secondary" onClick={() => setEditingBody(null)}>取消</Button>
+          </div>
+        </div>
+      ) : (
+        <p className="mt-3 text-sm leading-6">{item.body || "正文已因禁止或忘记而移除"}</p>
+      )}
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button variant="secondary" onClick={() => setShowEvidence((value) => !value)}>来源与版本</Button>
+        {!suppressed && <Button variant="secondary" onClick={() => setEditingBody(item.body)}>编辑/纠正</Button>}
+        {!suppressed && <Button variant="secondary" onClick={() => onAction(item, "suppress")}>禁止使用</Button>}
+        {suppressed && <Button variant="secondary" onClick={() => onAction(item, "restore")}>恢复并重新评估</Button>}
+        <Button variant="secondary" onClick={() => onAction(item, "forget")}>逻辑忘记</Button>
+      </div>
+      {showEvidence ? (
+        <div className="mt-3 rounded-[var(--radius-md)] bg-[var(--surface)] p-3 text-xs leading-5">
+          {detail.isLoading ? <p>正在核对来源…</p> : detail.isError ? <p>来源暂时不可用</p> : (
+            <>
+              {(detail.data?.evidence || []).length ? (detail.data?.evidence || []).map((evidence) => (
+                <p key={`${evidence.evidence_ref}-${evidence.relation}`}>
+                  {evidence.relation === "support" ? "支持" : "反证"} · {evidence.evidence_ref} ·
+                  revision {evidence.source_revision} · {understandingSourceStatus(evidence.source_status)}
+                </p>
+              )) : <p>没有可展示的来源记录</p>}
+              <p>历史版本：{detail.data?.versions.length || 0}</p>
+            </>
+          )}
+        </div>
+      ) : null}
+    </article>
   );
 }
 

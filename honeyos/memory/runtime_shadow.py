@@ -584,6 +584,13 @@ def run_cognitive_memory_shadow(
     adaptive: bool = False,
 ) -> ShadowRetrievalResult:
     """Fail-open Phase F1 entry point used by the turn prologue."""
+    if adaptive:
+        try:
+            from honeyos.study.memory_salience import sync_active_study_memory_salience
+
+            sync_active_study_memory_salience()
+        except Exception:
+            logger.debug("Study memory salience synchronization failed", exc_info=True)
     retriever = (
         CognitiveMemoryShadowRetriever(max_results=EXPANDED_RECALL_ITEMS, char_budget=EXPANDED_RECALL_CHARS)
         if expanded else CognitiveMemoryShadowRetriever()
