@@ -67,6 +67,58 @@ def test_rewards_no_backfill_retry_and_reversal(app,monkeypatch):
     assert growth.state(plan.id)["sunlight"] == 0
     assert growth.state(plan.id)["plant"] == first["plant"]
 
+def test_feed_grows_sunflower_and_deducts_available(app, monkeypatch):
+    from honeyos.study.growth import plant_stage_from_fed
+    study, growth = app
+    now = datetime(2026, 11, 19, 10, tzinfo=timezone.utc)
+    monkeypatch.setattr(study, "_now", lambda: now)
+    plan = make_plan(study)
+    growth.enable(plan.id, {"timezone": "Asia/Shanghai"})
+    now += timedelta(seconds=1)
+    for task in plan.tasks:
+        study.set_task_status(plan.id, task.id, "completed")
+    state = growth.state(plan.id)
+    earned = state["sunlight"]
+    assert earned >= 10
+    assert state["available_sunlight"] == earned
+    assert state["fed_sunlight"] == 0
+    assert state["plant"] == "种子"
+    grown = growth.feed(plan.id, 10)
+    assert grown["fed_sunlight"] == 10
+    assert grown["available_sunlight"] == earned - 10
+    assert grown["plant"] == "发芽"
+    rest = grown["available_sunlight"]
+    if rest > 0:
+        grown = growth.feed(plan.id, rest)
+        assert grown["plant"] == plant_stage_from_fed(earned)
+        assert grown["available_sunlight"] == 0
+    with pytest.raises(ValueError):
+        growth.feed(plan.id, 1)
+
+def test_feed_requires_enabled_plan(app):
+    study, growth = app
+    plan = make_plan(study)
+    with pytest.raises(ValueError):
+        growth.feed(plan.id, 5)
+
+def test_legacy_plant_seeded_from_peak_does_not_regress(app, monkeypatch):
+    study, growth = app
+    now = datetime(2026, 11, 19, 10, tzinfo=timezone.utc)
+    monkeypatch.setattr(study, "_now", lambda: now)
+    plan = make_plan(study)
+    growth.enable(plan.id, {"timezone": "Asia/Shanghai"})
+    now += timedelta(seconds=1)
+    for task in plan.tasks:
+        study.set_task_status(plan.id, task.id, "completed")
+    growth.state(plan.id)
+    with study.repository._connect() as db:
+        db.execute("UPDATE study_growth_settings SET plant_peak=5 WHERE plan_id=?", (plan.id,))
+        db.execute("DELETE FROM study_growth_fed WHERE plan_id=?", (plan.id,))
+    StudyGrowth(study)
+    state = growth.state(plan.id)
+    assert state["fed_sunlight"] == 60
+    assert state["plant"] == "长叶"
+
 def test_recovery_preview_is_small_and_readonly(app):
     study,growth=app
     plan=make_plan(study)

@@ -40,6 +40,31 @@ def day_level(tasks, minimum_mode=False):
     return "incomplete"
 
 
+# Sunflower growth stages driven by fed sunlight. "盛开" only applies once a plan is completed and transplanted.
+PLANT_FEED_THRESHOLDS = (("发芽", 10), ("幼苗", 30), ("长叶", 60), ("花苞", 100))
+
+
+def plant_stage_from_fed(fed_sunlight):
+    stage = "种子"
+    for name, threshold in PLANT_FEED_THRESHOLDS:
+        if fed_sunlight >= threshold:
+            stage = name
+    return stage
+
+
+def peak_seed_fed(peak):
+    """Map legacy plant_peak (standard-day milestone) to a feed amount so existing plants do not regress."""
+    if peak >= 7:
+        return 100
+    if peak >= 5:
+        return 60
+    if peak >= 3:
+        return 30
+    if peak >= 1:
+        return 10
+    return 0
+
+
 class StudyGrowth:
     def __init__(self, study):
         self.study = study
@@ -71,7 +96,16 @@ class StudyGrowth:
                     source TEXT NOT NULL, amount INTEGER NOT NULL, created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS study_reward_plan ON study_reward_ledger(plan_id,id);
+                CREATE TABLE IF NOT EXISTS study_growth_fed (
+                    plan_id TEXT PRIMARY KEY REFERENCES study_plans(id) ON DELETE CASCADE,
+                    fed_sunlight INTEGER NOT NULL DEFAULT 0
+                );
             """)
+            # One-time migration: seed existing plants from their legacy standard-day peak so they do not regress.
+            for row in db.execute("SELECT plan_id, plant_peak FROM study_growth_settings"):
+                if not db.execute("SELECT 1 FROM study_growth_fed WHERE plan_id=?", (row["plan_id"],)).fetchone():
+                    db.execute("INSERT INTO study_growth_fed(plan_id, fed_sunlight) VALUES (?,?)",
+                               (row["plan_id"], peak_seed_fed(row["plant_peak"])))
 
     def settings(self, plan_id):
         self.study.get_plan(plan_id)
@@ -97,6 +131,41 @@ class StudyGrowth:
             db.execute("INSERT INTO study_day_modes VALUES (?,?,?) "
                        "ON CONFLICT(plan_id,local_date) DO UPDATE SET minimum_mode=excluded.minimum_mode",
                        (plan_id,local_date,int(settings.minimum_mode)))
+        return self.state(plan_id)
+
+    def feed(self, plan_id, amount):
+        """Spend available sunlight to grow the plan's sunflower."""
+        plan = self.study.get_plan(plan_id)
+        if not self.settings(plan_id):
+            raise ValueError("请先启用本计划的成长记录。")
+        if plan.status.value in {"completed", "archived"}:
+            raise ValueError("已结束计划不能再喂食。")
+        with self.study.repository._connect() as db:
+            closed = None
+            if db.execute("SELECT name FROM sqlite_master WHERE name='study_plan_closures'").fetchone():
+                closed = db.execute("SELECT 1 FROM study_plan_closures WHERE plan_id=?", (plan_id,)).fetchone()
+        if closed:
+            raise ValueError("已结束计划不能再喂食。")
+        try:
+            amount = int(amount)
+        except (TypeError, ValueError):
+            raise ValueError("喂食数量须为正整数。")
+        if amount <= 0:
+            raise ValueError("喂食数量须大于0。")
+        # Reconcile rewards before computing the spendable balance.
+        self.state(plan_id)
+        with self.study.repository._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            earned = db.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM study_reward_ledger WHERE plan_id=?", (plan_id,)).fetchone()[0]
+            fed_row = db.execute("SELECT fed_sunlight FROM study_growth_fed WHERE plan_id=?", (plan_id,)).fetchone()
+            fed = fed_row["fed_sunlight"] if fed_row else 0
+            available = earned - fed
+            if amount > available:
+                raise ValueError(f"阳光不足，当前可喂 {max(0, available)} 点。")
+            fed += amount
+            db.execute("INSERT INTO study_growth_fed(plan_id,fed_sunlight) VALUES (?,?) "
+                       "ON CONFLICT(plan_id) DO UPDATE SET fed_sunlight=excluded.fed_sunlight", (plan_id, fed))
         return self.state(plan_id)
 
     def flex_preview(self, plan_id, task_id, slot_id):
@@ -259,7 +328,8 @@ class StudyGrowth:
                 closed = db.execute("SELECT summary FROM study_plan_closures WHERE plan_id=?",(plan_id,)).fetchone()
                 final_summary = closed["summary"] if closed else None
         if not setting:
-            return {"enabled": False, "sunlight": 0, "plant": "种子", "days": [], "plan_id": plan_id, "final_summary": final_summary}
+            return {"enabled": False, "sunlight": 0, "available_sunlight": 0, "fed_sunlight": 0,
+                    "plant": "种子", "days": [], "plan_id": plan_id, "final_summary": final_summary}
         config = GrowthSettings.model_validate_json(setting["settings_json"])
         zone = ZoneInfo(config.timezone)
         today = self.study._now().astimezone(zone).date()
@@ -344,15 +414,19 @@ class StudyGrowth:
             db.execute("UPDATE study_growth_settings SET plant_peak=MAX(plant_peak,?) WHERE plan_id=?", (standard, plan_id))
             sunlight = db.execute("SELECT COALESCE(SUM(amount),0) FROM study_reward_ledger WHERE plan_id=?", (plan_id,)).fetchone()[0]
             peak = db.execute("SELECT plant_peak FROM study_growth_settings WHERE plan_id=?", (plan_id,)).fetchone()[0]
+            fed_row = db.execute("SELECT fed_sunlight FROM study_growth_fed WHERE plan_id=?", (plan_id,)).fetchone()
+            fed = fed_row["fed_sunlight"] if fed_row else 0
             history = [dict(row) for row in db.execute(
                 "SELECT * FROM study_flex_history WHERE plan_id=? ORDER BY created_at DESC", (plan_id,))]
-        plant = "花苞" if peak >= 7 else "长叶" if peak >= 5 else "幼苗" if peak >= 3 else "发芽" if peak >= 1 else "种子"
+        plant = plant_stage_from_fed(fed)
         momentum = 0
         for day in days:
             if day["level"] in {"standard", "full"}:
                 momentum += 1
             elif day["level"] == "incomplete":
                 momentum = max(0, momentum - 1)
-        return {"enabled": True, "plan_id": plan_id, "sunlight": sunlight, "final_summary": final_summary, "plant": plant,
+        return {"enabled": True, "plan_id": plan_id, "sunlight": sunlight,
+                "available_sunlight": max(0, sunlight - fed), "fed_sunlight": fed,
+                "final_summary": final_summary, "plant": plant,
                 "standard_days": standard, "momentum": momentum, "days": days,
                 "settings": config.model_dump(), "history": history}

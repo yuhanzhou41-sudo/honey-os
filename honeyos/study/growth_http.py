@@ -37,6 +37,8 @@ def growth_routes(adapter):
             local_today=study._now().astimezone(zone).date().isoformat()
             if action=="enable":
                 return growth.enable(plan_id,body)
+            if action=="feed":
+                return growth.feed(plan_id,body.get("amount"))
             if action=="state":
                 return growth.state(plan_id)
             if action=="ledger":
@@ -123,7 +125,7 @@ def growth_routes(adapter):
             return web.json_response({"error":str(exc)},status=400)
     routes=[]
     actions={
-        "state":"GET","ledger":"GET","enable":"POST","memory":"GET","weekly":"GET","recovery":"POST",
+        "state":"GET","ledger":"GET","enable":"POST","feed":"POST","memory":"GET","weekly":"GET","recovery":"POST",
         "flex-preview":"POST","flex-confirm":"POST","flex-undo":"POST",
         "close-preview":"POST","close-confirm":"POST",
     }

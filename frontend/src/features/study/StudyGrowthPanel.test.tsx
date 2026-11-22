@@ -2,12 +2,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { StudyPlan } from "../../api/study";
-import { getActivities, getGrowth, growthAction } from "../../api/study-growth";
+import { feedPlant, getActivities, getGrowth, getStudyGarden, growthAction } from "../../api/study-growth";
 import StudyGrowthPanel from "./StudyGrowthPanel";
 
 vi.mock("../../api/study-growth", () => ({
   getGrowth: vi.fn(), getActivities: vi.fn(), growthAction: vi.fn(),
   getLearningDay: vi.fn(), getLearningWeek: vi.fn(), assignActivity: vi.fn(),
+  getStudyGarden: vi.fn(), feedPlant: vi.fn(),
 }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); });
 const plan = {
@@ -15,9 +16,10 @@ const plan = {
   updated_at: "2026-11-20T00:00:00Z", tasks: [], flex_slots: [],
 } as unknown as StudyPlan;
 function setup(enabled: boolean) {
-  vi.mocked(getGrowth).mockResolvedValue({ enabled, plan_id: plan.id, sunlight: 20, plant: "发芽", days: [],
-    settings: { timezone: "Asia/Shanghai", minimum_mode: false } });
+  vi.mocked(getGrowth).mockResolvedValue({ enabled, plan_id: plan.id, sunlight: 20, available_sunlight: 20,
+    fed_sunlight: 0, plant: "发芽", days: [], settings: { timezone: "Asia/Shanghai", minimum_mode: false } });
   vi.mocked(getActivities).mockResolvedValue({ events: [] });
+  vi.mocked(getStudyGarden).mockResolvedValue({ plants: [] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}><StudyGrowthPanel plan={plan} onChanged={vi.fn()} /></QueryClientProvider>);
 }
@@ -30,6 +32,14 @@ it("requires explicit activation and leaves supervision disabled", async () => {
   await waitFor(() => expect(growthAction).toHaveBeenCalledWith(plan.id, "enable", {
     timezone: "Asia/Shanghai", minimum_mode: false,
   }));
+});
+it("feeds sunlight to the sunflower when the user chooses to", async () => {
+  vi.mocked(feedPlant).mockResolvedValue({ enabled: true, plan_id: plan.id, sunlight: 20, available_sunlight: 10,
+    fed_sunlight: 10, plant: "发芽", days: [], settings: { timezone: "Asia/Shanghai", minimum_mode: false } });
+  setup(true);
+  await screen.findByText("发芽");
+  fireEvent.click(screen.getByRole("button", { name: "喂给向日葵" }));
+  await waitFor(() => expect(feedPlant).toHaveBeenCalledWith(plan.id, 10));
 });
 it("cancelling final archive only previews and never closes", async () => {
   vi.spyOn(window, "confirm").mockReturnValue(false);

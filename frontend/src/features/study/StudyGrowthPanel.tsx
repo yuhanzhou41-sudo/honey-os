@@ -3,14 +3,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { StudyPlan } from "../../api/study";
 import { confirmChatStudyPlan, confirmManualStudyChange, previewChatStudyPlan } from "../../api/study-planning";
 import {
-  assignActivity, getActivities, getGrowth, getLearningDay, getLearningWeek, getRewardLedger,
-  growthAction,
+  assignActivity, feedPlant, getActivities, getGrowth, getLearningDay, getLearningWeek, getRewardLedger,
+  getStudyGarden, growthAction,
   type Closure, type FlexPreview, type GrowthState,
 } from "../../api/study-growth";
+import { SunflowerArt } from "./SunflowerArt";
 
 const levels: Record<string,string> = { full: "全部完成", standard: "达到标准", minimum: "完成保底", incomplete: "尚未完成", no_tasks: "无任务" };
 
-export default function StudyGrowthPanel({ plan, onChanged }: { plan?: StudyPlan; onChanged: () => void }) {
+export default function StudyGrowthPanel({ plan, onChanged, onSelectPlan }: { plan?: StudyPlan; onChanged: () => void; onSelectPlan?: (id: string) => void }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const [date, setDate] = useState("");
@@ -20,14 +21,18 @@ export default function StudyGrowthPanel({ plan, onChanged }: { plan?: StudyPlan
   const [eventId, setEventId] = useState("");
   const [output, setOutput] = useState("");
   const [notice, setNotice] = useState("");
+  const [feedAmount, setFeedAmount] = useState(10);
   const growth = useQuery({ queryKey: ["study-growth", plan?.id, plan?.updated_at],
     queryFn: () => getGrowth(plan!.id), enabled: Boolean(plan), retry: false, refetchInterval: 30_000 });
   const activities = useQuery({ queryKey: ["study-activities"], queryFn: getActivities, enabled: open, retry: false });
+  const garden = useQuery({ queryKey: ["study-garden"], queryFn: getStudyGarden, retry: false, refetchInterval: 30_000 });
+  const plants = garden.data?.plants ?? [];
   const action = useMutation({
     mutationFn: async (run: () => Promise<void>) => { setNotice(""); await run(); },
     onError: async () => { await client.invalidateQueries({ queryKey: ["study-growth"] }); onChanged(); },
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: ["study-growth"] });
+      await client.invalidateQueries({ queryKey: ["study-garden"] });
       await client.invalidateQueries({ queryKey: ["study-activities"] });
       onChanged(); setNotice("已更新。");
     },
@@ -41,11 +46,36 @@ export default function StudyGrowthPanel({ plan, onChanged }: { plan?: StudyPlan
   const field = "rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1";
 
   return <section className="mt-5 rounded border border-[var(--border)] p-4">
-    <div className="flex flex-wrap gap-6 text-sm">
-      <p>阳光点 <strong>{state ? state.sunlight : "—"}</strong></p>
-      <p>小花盆 <span aria-hidden="true">{({ 种子: "🫘", 发芽: "🌱", 幼苗: "🌱", 长叶: "🌿", 花苞: "🌷" } as Record<string,string>)[state?.plant ?? "种子"]}</span> <strong>{state?.plant ?? "—"}</strong></p>
-      {state?.enabled && <p>标准学习日 {state.standard_days} · 学习势能 {state.momentum}</p>}
+    <div className="flex flex-wrap items-center gap-6">
+      <SunflowerArt stage={state?.plant ?? "种子"} size={140} />
+      <div className="space-y-2 text-sm">
+        <p>累计阳光 <strong>{state?.sunlight ?? "—"}</strong> · 可喂 <strong>{state?.available_sunlight ?? "—"}</strong> · 已喂 <strong>{state?.fed_sunlight ?? "—"}</strong></p>
+        <p>当前阶段 <strong>{state?.plant ?? "—"}</strong>{state?.enabled ? ` · 标准学习日 ${state.standard_days} · 学习势能 ${state.momentum}` : ""}</p>
+        {state?.enabled && <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs text-[var(--foreground-muted)]">喂食数量
+            <input type="number" min="1" value={feedAmount} onChange={event => setFeedAmount(Number(event.target.value))}
+              className={field + " ml-1 w-20"} aria-label="喂食阳光数量" /></label>
+          <button disabled={action.isPending || (state.available_sunlight ?? 0) < 1}
+            onClick={() => run(async () => { await feedPlant(plan.id, feedAmount); })}>喂给向日葵</button>
+          <button disabled={action.isPending || (state.available_sunlight ?? 0) < 10}
+            onClick={() => run(async () => { await feedPlant(plan.id, 10); })}>+10</button>
+          <button disabled={action.isPending || (state.available_sunlight ?? 0) < 50}
+            onClick={() => run(async () => { await feedPlant(plan.id, 50); })}>+50</button>
+          <button disabled={action.isPending || (state.available_sunlight ?? 0) < 1}
+            onClick={() => run(async () => { await feedPlant(plan.id, state.available_sunlight ?? 0); })}>喂全部</button>
+        </div>}
+        {state?.enabled && (state.available_sunlight ?? 0) > 0 && <p className="text-xs text-[var(--foreground-muted)]">完成任务获得阳光，喂给向日葵后植物会生长；计划完成时向日葵会盛开并移栽到学习记忆花园。</p>}
+      </div>
     </div>
+    {plants.length > 1 && <div className="mt-4 flex flex-wrap gap-2">
+      {plants.map(p => <button key={p.plan_id} type="button" aria-pressed={p.plan_id === plan.id}
+        title={`${p.title} · ${p.plant} · ${p.sunlight} 阳光`}
+        onClick={() => onSelectPlan?.(p.plan_id)}
+        className={`rounded-xl border p-2 text-center ${p.plan_id === plan.id ? "border-[var(--accent)] bg-[var(--surface-raised)]" : "border-[var(--border)] bg-[var(--surface)]"}`}>
+        <SunflowerArt stage={p.plant} planted={p.planted} size={48} />
+        <span className="block max-w-[5rem] truncate text-xs">{p.title}</span>
+      </button>)}
+    </div>}
     {state?.final_summary && <p className="mt-2">{state.final_summary}</p>}
     {plan.schema_version === 1 && <button className="mt-2 text-sm text-[var(--accent)]" onClick={() => run(async () => { await confirmManualStudyChange(plan.id, { schema_version: 2 }); })}>预览升级为V2任务属性</button>}
     {growth.isError && <p role="alert">成长记录暂时无法读取。</p>}

@@ -7,6 +7,7 @@ export type GrowthDay = { date: string; level: string; completed: number; tasks:
 export type GrowthState = {
   enabled: boolean; plan_id: string; sunlight: number; plant: string; final_summary?: string; standard_days?: number;
   momentum?: number; settings?: GrowthSettings; days: GrowthDay[];
+  available_sunlight?: number; fed_sunlight?: number;
   history?: { request_id: string; task_id: string; old_date: string; new_date: string; minutes: number; active: number }[];
 };
 export type Closure = {
@@ -18,6 +19,8 @@ export function growthAction<T>(id: string, action: string, body: object) {
   return requestJson<T>(root(id) + action, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 export const getGrowth = (id: string) => requestJson<GrowthState>(root(id) + "state");
+export const feedPlant = (id: string, amount: number) =>
+  requestJson<GrowthState>(root(id) + "feed", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amount }) });
 export const getLearningDay = (id: string, date: string) => requestJson<Record<string, unknown>>(root(id) + "memory?date=" + date);
 export const getLearningWeek = (id: string, date: string) =>
   requestJson<{ body?: string; stats?: Record<string, unknown>; archived?: boolean; final?: Closure }>(root(id) + "weekly?date=" + date);

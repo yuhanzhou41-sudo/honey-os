@@ -288,7 +288,7 @@ describe("StudyPage Phase 5.3B adaptive workspace", () => {
     expect(
       await screen.findByRole("heading", { level: 2, name: "Phase 5 plan" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("阳光点")).toBeInTheDocument();
+    expect(screen.getByText(/累计阳光/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "资料" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "教材" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "校园" })).toBeInTheDocument();

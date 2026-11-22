@@ -1,26 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getGardenSummary, getStudyGarden, type GardenPlant } from "../../api/study-growth";
-
-function PlantArt({ plant }: { plant: GardenPlant }) {
-  const stage = plant.planted ? 5 : ({ 种子: 0, 发芽: 1, 幼苗: 2, 长叶: 3, 花苞: 4 }[plant.plant] ?? 0);
-  return <svg viewBox="0 0 160 160" className="mx-auto h-28 w-28" role="img" aria-label={plant.planted ? "已完成计划的纪念花" : plant.plant}>
-    <ellipse cx="80" cy="145" rx="46" ry="7" fill="#50684a" opacity=".12" />
-    <path d="M51 107H109L102 141Q80 150 58 141Z" fill={plant.planted ? "#b37768" : "#bd946c"} />
-    <rect x="47" y="103" width="66" height="10" rx="4" fill={plant.planted ? "#d89d8d" : "#d9b58c"} />
-    {stage === 0 ? <ellipse cx="80" cy="96" rx="7" ry="4" fill="#82634b" /> : <>
-      <path d={`M80 105 Q76 86 80 ${stage >= 3 ? 48 : 76}`} stroke="#5f8055" strokeWidth="5" fill="none" strokeLinecap="round" />
-      <path d="M79 91Q49 93 49 70Q72 69 79 91" fill="#82a971" />
-      <path d="M80 82Q109 83 110 59Q85 61 80 82" fill="#638c5d" />
-      {stage >= 3 && <path d="M79 66Q58 67 57 47Q75 47 79 66" fill="#a5bd87" />}
-      {stage === 4 && <ellipse cx="80" cy="43" rx="10" ry="15" fill="#cf9a9c" />}
-      {stage === 5 && <g fill="#dca4ae">
-        {[0, 72, 144, 216, 288].map(angle => <ellipse key={angle} cx="80" cy="28" rx="10" ry="16" transform={`rotate(${angle} 80 43)`} />)}
-        <circle cx="80" cy="43" r="9" fill="#e3c87c" />
-      </g>}
-    </>}
-  </svg>;
-}
+import { getGardenSummary, getStudyGarden } from "../../api/study-growth";
+import { SunflowerArt } from "./SunflowerArt";
 
 export default function StudyGardenPanel({ onSelectPlan, standalone = false }: {
   onSelectPlan?: (id: string) => void; standalone?: boolean;
@@ -46,7 +27,7 @@ export default function StudyGardenPanel({ onSelectPlan, standalone = false }: {
         aria-pressed={selected?.plan_id === plant.plan_id}
         onClick={() => setSelectedId(plant.plan_id)}
         className={`rounded-2xl border p-4 text-left transition-colors ${selected?.plan_id === plant.plan_id ? "border-[var(--accent)] bg-[var(--surface-raised)]" : "border-[var(--border)] bg-[var(--surface)]"}`}>
-        <PlantArt plant={plant} />
+        <SunflowerArt stage={plant.plant} planted={plant.planted} size={112} />
         <span className="block font-medium">{plant.title}</span>
         <span className="mt-1 block text-xs text-[var(--foreground-muted)]">{plant.planted ? "已种入花园 · 纪念花" : plant.closed ? "已停止 · " + plant.plant : "生长中 · " + plant.plant}</span>
         <span className="mt-2 block text-sm">{plant.completed}/{plant.tasks} 项 · {plant.sunlight} 阳光 · {plant.standard_days} 个标准学习日</span>

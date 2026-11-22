@@ -1,5 +1,4 @@
 import { profilePrefix } from "../../api/client";
-import StudyGardenPanel from "./StudyGardenPanel";
 import StudyReminderPanel from "./StudyReminderPanel";
 import StudyGrowthPanel from "./StudyGrowthPanel";
 import { confirmManualStudyChange, getStudyPlanningCapabilities } from "../../api/study-planning";
@@ -397,9 +396,8 @@ export function StudyPage() {
 
       {selectedPlan ? <StudyReminderPanel key={selectedPlan.id} planId={selectedPlan.id} /> : null}
 
-      <StudyGardenPanel onSelectPlan={id => { setSelectedPlanId(id); }} />
-
-      <StudyGrowthPanel key={selectedPlan?.id ?? "none"} plan={selectedPlan} onChanged={refreshPlans} />
+      <StudyGrowthPanel key={selectedPlan?.id ?? "none"} plan={selectedPlan} onChanged={refreshPlans}
+        onSelectPlan={id => { setSelectedPlanId(id); }} />
 
       <details className="mt-4 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-raised)]">
         <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium">
