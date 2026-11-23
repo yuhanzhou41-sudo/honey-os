@@ -2679,6 +2679,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/diary", self._handle_companion_react),
             ("GET", "/study", self._handle_companion_react),
             ("GET", "/relationship", self._handle_companion_react),
+            ("GET", "/understanding", self._handle_companion_react),
             ("GET", "/settings", self._handle_companion_react),
             ("GET", "/onboarding", self._handle_companion_react),
             ("GET", "/{asset_path:assets/.*}", self._handle_companion_react),
