@@ -408,6 +408,12 @@ def _write_live_config(home, *, enabled: bool = True, namespace: str = "general"
 
 
 def _fake_extractor(calls):
+    # S4.5: the distillation model emits operations AND an optional
+    # ``understandings`` array in the SAME request. Each understanding cites
+    # the persisted operation by INDEX (0-based); GatewayRunner resolves that
+    # index to a real continuity:{id} ref after operations are applied. There
+    # is no longer a separate U2 proposal LLM call, so async_call_llm is never
+    # invoked by this path (u2_calls stays 0 in the live tests below).
     async def extractor(job, active_items, main_runtime):
         calls.append(job.run_id)
         user = next(message for message in job.messages if message["role"] == "user")
@@ -419,6 +425,14 @@ def _fake_extractor(calls):
                 "kind": "episode",
                 "content": "我记得我们聊过先理解机制",
                 "evidence_message_ids": [user["_row_id"]],
+            }],
+            "understandings": [{
+                "operation": "propose",
+                "category_id": "learning_work_style",
+                "scope_key": "general",
+                "canonical_key": "mechanism_first",
+                "text": "似乎偏好先理解机制",
+                "operation_indices": [0],
             }],
         }, ensure_ascii=False)
 
@@ -496,14 +510,19 @@ def test_gateway_live_producer_runs_once_and_respects_signal_gate(monkeypatch, t
     )) is True
 
     store = UnderstandingStore(tmp_path / "understanding_v2.db")
-    assert len(extractor_calls) == 1 and len(u2_calls) == 1
+    store.initialize()
+    # S4.5 folds U2 into the distillation batch: no separate proposal LLM
+    # call is issued, so u2_calls stays 0 while a label is still written
+    # directly from result.understandings.
+    assert len(extractor_calls) == 1 and len(u2_calls) == 0
     labels = store.list_labels("local-owner", "lane", "general")
     assert len(labels) == 1 and labels[0]["grade"] == "low"
     with store.connect() as db:
-        jobs = db.execute("SELECT status FROM jobs").fetchall()
-    assert [row[0] for row in jobs] == ["completed"]
+        evidence = db.execute("SELECT COUNT(*) FROM evidence").fetchone()[0]
+    assert evidence == 1
 
-    # Same completed source cannot produce a second review or proposal call.
+    # Same completed source cannot produce a second distillation or a second
+    # U2 write (idempotent replay).
     asyncio.run(_schedule_and_drain(
         runner,
         lane_key="lane", chat_type="dm", session_id="s1",
@@ -514,12 +533,13 @@ def test_gateway_live_producer_runs_once_and_respects_signal_gate(monkeypatch, t
         reason="new",
         main_runtime={"provider": "prov", "model": "mdl"},
     ))
-    assert len(extractor_calls) == 1 and len(u2_calls) == 1
+    assert len(extractor_calls) == 1 and len(u2_calls) == 0
     assert len(store.list_labels("local-owner", "lane", "general")) == 1
     with store.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM evidence").fetchone()[0] == 1
 
-    # A factual batch is distilled but the live U2 gate never calls the model.
+    # A different session is distilled but still issues no separate U2 model
+    # call; the identical canonical key reuses the existing label (no new one).
     asyncio.run(_schedule_and_drain(
         runner,
         lane_key="lane", chat_type="dm", session_id="s2",
@@ -530,11 +550,18 @@ def test_gateway_live_producer_runs_once_and_respects_signal_gate(monkeypatch, t
         reason="new",
         main_runtime={"provider": "prov", "model": "mdl"},
     ))
-    assert len(extractor_calls) == 2 and len(u2_calls) == 1
+    assert len(extractor_calls) == 2 and len(u2_calls) == 0
     assert len(store.list_labels("local-owner", "lane", "general")) == 1
 
 
-def test_gateway_live_producer_failure_never_changes_distillation(monkeypatch, tmp_path):
+def test_gateway_live_u2_failure_never_changes_distillation(monkeypatch, tmp_path):
+    """S4.5: an in-process U2 write failure is fail-open and atomic.
+
+    The pre-S4.5 design issued a separate proposal LLM call; S4.5 applies
+    ``result.understandings`` in-process in ``_honeyos_u2_post_completed``.
+    A failure in that apply path must NOT flip the distillation run to
+    ``failed`` and must NOT leave a partial label/evidence row behind.
+    """
     from honeyos.gateway.run import GatewayRunner
 
     monkeypatch.setattr("honeyos.core.constants.get_honeyos_home", lambda: tmp_path)
@@ -545,10 +572,14 @@ def test_gateway_live_producer_failure_never_changes_distillation(monkeypatch, t
         lambda: MemoryDistiller(tmp_path, extractor=_fake_extractor(extractor_calls)),
     )
 
-    async def failing_call(task=None, **kwargs):
-        raise RuntimeError("proposal transport failed")
+    def boom(*args, **kwargs):
+        raise RuntimeError("u2 apply failed")
 
-    monkeypatch.setattr("honeyos.agent.auxiliary_client.async_call_llm", failing_call)
+    # _honeyos_u2_post_completed imports apply_proposal lazily from this module
+    # on each call, so patching the module attribute is honoured.
+    import honeyos.understanding.u2_maintenance as u2_maintenance
+    monkeypatch.setattr(u2_maintenance, "apply_proposal", boom)
+
     runner = object.__new__(GatewayRunner)
     assert asyncio.run(_schedule_and_drain(
         runner,
@@ -565,10 +596,11 @@ def test_gateway_live_producer_failure_never_changes_distillation(monkeypatch, t
         status = db.execute("SELECT status FROM distillation_runs").fetchone()[0]
     assert status == "completed"
     store = UnderstandingStore(tmp_path / "understanding_v2.db")
+    store.initialize()
     assert store.list_labels("local-owner", "lane", "general") == []
     with store.connect() as db:
-        rows = db.execute("SELECT status FROM jobs").fetchall()
-    assert [row[0] for row in rows] == ["call_started"]
+        assert db.execute("SELECT COUNT(*) FROM labels").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM evidence").fetchone()[0] == 0
 
 
 def test_live_evidence_reads_authorized_original_text_and_drops_revoked(tmp_path):
@@ -666,8 +698,8 @@ def test_e2e_enabled_gateway_flow_then_management_lifecycle(monkeypatch, tmp_pat
     detail = explain(store, label_id, owner="local-owner", lane="lane", namespace="general")
     assert detail["label"]["state"] == "user_suppressed"
     assert detail["label"]["body"] == "" and detail["evidence"] == []
-    # Management never triggers another proposal request.
-    assert len(u2_calls) == calls_after_producer == 1
+    # Management never triggers another U2 model call (S4.5: zero extra calls).
+    assert len(u2_calls) == calls_after_producer == 0
 
 
 def test_e2e_disabled_then_enabled_recovery_is_bounded_and_source_checked(monkeypatch, tmp_path):

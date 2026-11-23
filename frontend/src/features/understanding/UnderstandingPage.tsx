@@ -5,9 +5,11 @@ import { useMemo, useRef, useState } from "react";
 import {
   detachUnderstandingEvidence,
   fetchUnderstandingGraph,
+  fetchUnderstandingLabel,
   suppressUnderstandingLabel,
   type GraphEvidence,
   type GraphLabel,
+  type LabelVersion,
 } from "../../api/understanding";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -26,14 +28,82 @@ const KIND_LABELS: Record<string, string> = {
   open_loop: "待续",
 };
 
+const STATE_LABELS: Record<string, string> = {
+  tentative: "初步",
+  supported: "已支持",
+  disputed: "存疑",
+  needs_reassessment: "待复核",
+  user_suppressed: "已被你禁止",
+};
+
 const ROW_H = 76;
 const LABEL_X = 90;
 const MEMORY_X = 610;
 
 type Point = { x: number; y: number };
 
+type TimelineEvent = {
+  at: number;
+  kind: "formed" | "support" | "counter" | "revision";
+  title: string;
+  detail?: string;
+};
+
 function relColor(relation: string): string {
   return relation === "counter" ? "#d97706" : "#2563eb";
+}
+
+function fmtTime(value: string | null | undefined): string {
+  if (!value) return "时间未知";
+  const t = Date.parse(value);
+  return Number.isFinite(t) ? new Date(t).toLocaleString() : "时间未知";
+}
+
+function buildTimeline(label: GraphLabel): TimelineEvent[] {
+  const events: TimelineEvent[] = [];
+  const formed = Date.parse(label.created_at ?? "");
+  if (Number.isFinite(formed)) {
+    events.push({ at: formed, kind: "formed", title: "标签形成" });
+  }
+  label.evidence.forEach((ev) => {
+    const at = Date.parse(ev.occurred_at ?? "");
+    const mem = ev.memory?.content ?? ev.ref;
+    events.push({
+      at: Number.isFinite(at) ? at : formed,
+      kind: ev.relation === "counter" ? "counter" : "support",
+      title: ev.relation === "counter" ? "出现反证" : "获得支持",
+      detail: mem.length > 40 ? `${mem.slice(0, 40)}…` : mem,
+    });
+  });
+  (label.versions ?? []).forEach((v: LabelVersion) => {
+    const at = Date.parse(v.created_at ?? "");
+    events.push({
+      at: Number.isFinite(at) ? at : formed,
+      kind: "revision",
+      title: `修订 r${v.revision} · ${actorLabel(v.actor)}`,
+      detail: `${STATE_LABELS[v.state] ?? v.state} / ${v.grade || "—"}`,
+    });
+  });
+  return events.sort((a, b) => b.at - a.at);
+}
+
+function actorLabel(actor: string): string {
+  switch (actor) {
+    case "user_edit":
+      return "你修改了描述";
+    case "user_suppress":
+      return "你禁止了标签";
+    case "user_restore":
+      return "你恢复了标签";
+    case "user_detach":
+      return "你解除了关联";
+    case "source_withdrawal":
+      return "来源撤回，自动重算";
+    case "recompute":
+      return "系统重算可信度";
+    default:
+      return actor || "系统";
+  }
 }
 
 export default function UnderstandingPage() {
@@ -41,6 +111,7 @@ export default function UnderstandingPage() {
   const [category, setCategory] = useState<string>("all");
   const [sinceDays, setSinceDays] = useState<number>(0);
   const [selected, setSelected] = useState<string | null>(null);
+  const [selectedMemory, setSelectedMemory] = useState<string | null>(null);
   const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
   const dragRef = useRef<Point | null>(null);
 
@@ -49,14 +120,26 @@ export default function UnderstandingPage() {
     queryFn: () => fetchUnderstandingGraph({ limit: 200 }),
   });
 
+  const labelDetail = useQuery({
+    queryKey: ["understanding-label", selected],
+    queryFn: () => fetchUnderstandingLabel(selected!),
+    enabled: !!selected,
+  });
+
   const suppress = useMutation({
     mutationFn: (labelId: string) => suppressUnderstandingLabel(labelId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["understanding-graph"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["understanding-graph"] });
+      if (selected) queryClient.invalidateQueries({ queryKey: ["understanding-label", selected] });
+    },
   });
   const detach = useMutation({
     mutationFn: ({ labelId, ref }: { labelId: string; ref: string }) =>
       detachUnderstandingEvidence(labelId, ref),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["understanding-graph"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["understanding-graph"] });
+      if (selected) queryClient.invalidateQueries({ queryKey: ["understanding-label", selected] });
+    },
   });
 
   const labels = graph.data?.labels ?? [];
@@ -99,12 +182,30 @@ export default function UnderstandingPage() {
     };
   }, [filtered]);
 
-  const active: GraphLabel | undefined = filtered.find((l) => l.id === selected);
+  // Labels citing the currently selected memory (client-side from the graph).
+  const memoryRelatedLabels = useMemo(() => {
+    if (!selectedMemory) return [];
+    return filtered.filter((l) => l.evidence.some((ev) => ev.ref === selectedMemory));
+  }, [filtered, selectedMemory]);
+
+  const active: GraphLabel | undefined = labelDetail.data ?? filtered.find((l) => l.id === selected);
+  const timeline = useMemo(() => (active ? buildTimeline(active) : []), [active]);
+
+  const selectedMemoryEv = selectedMemory ? layout.memoryMeta.get(selectedMemory) : undefined;
 
   const categories = useMemo(() => {
     const set = new Set(labels.map((l) => l.category_id));
     return ["all", ...Array.from(set)];
   }, [labels]);
+
+  function edgeOpacity(labelId: string): number {
+    if (selected && selected !== labelId) return 0.2;
+    if (selectedMemory) {
+      const label = filtered.find((l) => l.id === labelId);
+      if (!label?.evidence.some((ev) => ev.ref === selectedMemory)) return 0.2;
+    }
+    return 0.85;
+  }
 
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
@@ -127,6 +228,15 @@ export default function UnderstandingPage() {
     dragRef.current = null;
   }
 
+  function selectLabel(id: string) {
+    setSelected(id);
+    setSelectedMemory(null);
+  }
+  function selectMemory(ref: string) {
+    setSelectedMemory(ref);
+    setSelected(null);
+  }
+
   if (graph.isLoading) {
     return <div style={{ padding: 24, color: "#667085" }}>正在加载 Honey 对你的理解…</div>;
   }
@@ -144,7 +254,7 @@ export default function UnderstandingPage() {
         <div style={{ padding: "16px 20px", borderBottom: "1px solid #eaecf0" }}>
           <h1 style={{ margin: 0, fontSize: 20 }}>Honey 对我的理解</h1>
           <p style={{ margin: "4px 0 12px", color: "#667085", fontSize: 13 }}>
-            共 {graph.data?.total ?? 0} 条理解标签。节点与连线均来自真实记忆数据。
+            共 {graph.data?.total ?? 0} 条理解标签。节点与连线均来自真实记忆数据；点击标签或记忆节点查看详情与时间轨迹。
           </p>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
             <label style={{ fontSize: 13 }}>
@@ -207,7 +317,7 @@ export default function UnderstandingPage() {
                         strokeWidth={ev.relation === "counter" ? 2 : 1.5}
                         strokeDasharray={ev.relation === "counter" ? "5 4" : undefined}
                         fill="none"
-                        opacity={selected && selected !== label.id ? 0.25 : 0.8}
+                        opacity={edgeOpacity(label.id)}
                       />
                     );
                   }),
@@ -216,7 +326,7 @@ export default function UnderstandingPage() {
                   const p = layout.labelPos.get(label.id)!;
                   const isSel = selected === label.id;
                   return (
-                    <g key={label.id} onClick={() => setSelected(label.id)} style={{ cursor: "pointer" }}>
+                    <g key={label.id} onClick={() => selectLabel(label.id)} style={{ cursor: "pointer" }}>
                       <circle cx={p.x} cy={p.y} r={isSel ? 12 : 9}
                         fill={label.suppressed ? "#98a2b3" : "#7c3aed"} />
                       <text x={p.x - 16} y={p.y + 4} textAnchor="end" fontSize={13}
@@ -230,10 +340,13 @@ export default function UnderstandingPage() {
                   const ev = layout.memoryMeta.get(ref);
                   const mem = ev?.memory;
                   if (!mem) return null;
+                  const isSel = selectedMemory === ref;
                   return (
-                    <g key={ref}>
+                    <g key={ref} onClick={() => selectMemory(ref)} style={{ cursor: "pointer" }}>
                       <rect x={p.x} y={p.y - 22} width={230} height={44} rx={8}
-                        fill="#ffffff" stroke="#d0d5dd" />
+                        fill={isSel ? "#eef2ff" : "#ffffff"}
+                        stroke={isSel ? "#7c3aed" : "#d0d5dd"}
+                        strokeWidth={isSel ? 2 : 1} />
                       <text x={p.x + 12} y={p.y - 6} fontSize={12} fill="#344054">
                         {KIND_LABELS[mem.kind] ?? mem.kind}
                         {mem.imprint?.status === "known" ? ` · 印象:${mem.imprint.label ?? mem.imprint.axis ?? ""}` : ""}
@@ -250,21 +363,77 @@ export default function UnderstandingPage() {
         )}
       </div>
 
-      <aside style={{ width: 360, borderLeft: "1px solid #eaecf0", padding: 20, overflowY: "auto" }}>
-        {!active ? (
+      <aside style={{ width: 380, borderLeft: "1px solid #eaecf0", padding: 20, overflowY: "auto" }}>
+        {selectedMemory && selectedMemoryEv?.memory ? (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h2 style={{ fontSize: 16, margin: "0 0 4px" }}>
+                {KIND_LABELS[selectedMemoryEv.memory.kind] ?? selectedMemoryEv.memory.kind}
+              </h2>
+              <button type="button" style={{ fontSize: 12, color: "#667085" }}
+                onClick={() => setSelectedMemory(null)}>关闭</button>
+            </div>
+            <div style={{ fontSize: 13, margin: "8px 0", lineHeight: 1.6, color: "#101828" }}>
+              {selectedMemoryEv.memory.content}
+            </div>
+            <div style={{ fontSize: 11, color: "#98a2b3", marginBottom: 8 }}>
+              会话 {selectedMemoryEv.memory.source_session_id} · {fmtTime(selectedMemoryEv.memory.created_at)}
+            </div>
+            <div style={{ fontSize: 11, color: "#6941c6", marginBottom: 12 }}>
+              {selectedMemoryEv.memory.imprint?.status === "known"
+                ? `历史情绪印记：${selectedMemoryEv.memory.imprint.label ?? selectedMemoryEv.memory.imprint.axis ?? "有反应"}`
+                : selectedMemoryEv.memory.imprint?.status === "unknown"
+                  ? "历史情绪印记：未知"
+                  : "无历史情绪印记"}
+            </div>
+            <div style={{ fontSize: 12, color: "#475467", marginBottom: 6, fontWeight: 600 }}>
+              相关标签（{memoryRelatedLabels.length}）
+            </div>
+            {memoryRelatedLabels.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#98a2b3" }}>当前图谱中没有标签引用这条记忆。</div>
+            ) : (
+              memoryRelatedLabels.map((l) => (
+                <button key={l.id} type="button"
+                  onClick={() => selectLabel(l.id)}
+                  style={{
+                    display: "block", width: "100%", textAlign: "left", marginBottom: 6,
+                    padding: "8px 10px", border: "1px solid #eaecf0", borderRadius: 8,
+                    background: "#fff", cursor: "pointer", fontSize: 12, color: "#101828",
+                  }}>
+                  <div>{l.text || "(已隐藏)"}</div>
+                  <div style={{ fontSize: 11, color: "#98a2b3", marginTop: 2 }}>
+                    {STATE_LABELS[l.state] ?? l.state} · {l.grade || "—"}
+                    {l.evidence.find((e) => e.ref === selectedMemory)?.relation === "counter" ? " · 反证" : " · 支持"}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        ) : !active ? (
           <div style={{ color: "#667085", fontSize: 13 }}>
-            点击左侧标签节点查看详情、支持与反证证据、历史情绪印记，并可忘记标签或解除错误关联。
+            点击左侧标签节点查看详情、支持与反证证据、时间轨迹，并可忘记标签或解除错误关联；点击右侧记忆节点查看完整内容与相关标签。
           </div>
         ) : (
           <div>
-            <h2 style={{ fontSize: 16, margin: "0 0 4px" }}>{active.text || "(已隐藏)"}</h2>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <h2 style={{ fontSize: 16, margin: "0 0 4px" }}>{active.text || "(已隐藏)"}</h2>
+              {selected && (
+                <button type="button" style={{ fontSize: 12, color: "#667085" }}
+                  onClick={() => setSelected(null)}>关闭</button>
+              )}
+            </div>
             <div style={{ fontSize: 12, color: "#667085", marginBottom: 12 }}>
               {CATEGORY_LABELS[active.category_id] ?? active.category_id} · 范围 {active.scope_key}
-              <br />状态：{active.suppressed ? "已被你禁止" : active.state} · 修订 {active.revision}
+              <br />状态：{active.suppressed ? "已被你禁止" : (STATE_LABELS[active.state] ?? active.state)} · 可信度 {active.grade || "—"} · 修订 {active.revision}
             </div>
             <div style={{ fontSize: 12, color: "#667085", marginBottom: 8 }}>
               支持 {active.evidence.filter((e) => e.relation !== "counter").length} 条 ·
               反证 {active.evidence.filter((e) => e.relation === "counter").length} 条
+              {labelDetail.isFetching ? " · 正在加载修订历史…" : ""}
+            </div>
+
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#344054", margin: "12px 0 6px" }}>
+              证据
             </div>
             {active.evidence.length === 0 ? (
               <div style={{ fontSize: 13, color: "#667085" }}>该标签目前没有可用证据。</div>
@@ -280,7 +449,8 @@ export default function UnderstandingPage() {
                     <>
                       <div style={{ fontSize: 13, margin: "4px 0" }}>{ev.memory.content}</div>
                       <div style={{ fontSize: 11, color: "#98a2b3" }}>
-                        {KIND_LABELS[ev.memory.kind] ?? ev.memory.kind} · {ev.memory.created_at}
+                        {KIND_LABELS[ev.memory.kind] ?? ev.memory.kind} · {fmtTime(ev.memory.created_at)}
+                        {ev.occurred_at ? ` · 发生于 ${fmtTime(ev.occurred_at)}` : ""}
                       </div>
                       <div style={{ fontSize: 11, color: "#6941c6", marginTop: 2 }}>
                         {ev.memory.imprint?.status === "known"
@@ -289,6 +459,11 @@ export default function UnderstandingPage() {
                             ? "历史情绪印记：未知"
                             : "无历史情绪印记"}
                       </div>
+                      <button type="button"
+                        onClick={() => selectMemory(ev.ref)}
+                        style={{ marginTop: 4, fontSize: 11, color: "#7c3aed", border: "none", background: "none", padding: 0, cursor: "pointer" }}>
+                        查看记忆详情 →
+                      </button>
                     </>
                   ) : (
                     <div style={{ fontSize: 12, color: "#667085" }}>{ev.ref}</div>
@@ -303,6 +478,35 @@ export default function UnderstandingPage() {
                 </div>
               ))
             )}
+
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#344054", margin: "16px 0 6px" }}>
+              时间轨迹
+            </div>
+            {timeline.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#98a2b3" }}>暂无变化记录。</div>
+            ) : (
+              <div style={{ position: "relative", paddingLeft: 14 }}>
+                <div style={{
+                  position: "absolute", left: 4, top: 4, bottom: 4, width: 2,
+                  background: "#eaecf0",
+                }} />
+                {timeline.map((ev, i) => (
+                  <div key={i} style={{ position: "relative", marginBottom: 10 }}>
+                    <div style={{
+                      position: "absolute", left: -14, top: 4, width: 8, height: 8,
+                      borderRadius: "50%",
+                      background: ev.kind === "counter" ? "#d97706"
+                        : ev.kind === "revision" ? "#7c3aed"
+                        : ev.kind === "formed" ? "#101828" : "#2563eb",
+                    }} />
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#344054" }}>{ev.title}</div>
+                    {ev.detail && <div style={{ fontSize: 11, color: "#667085" }}>{ev.detail}</div>}
+                    <div style={{ fontSize: 10, color: "#98a2b3" }}>{fmtTime(new Date(ev.at).toISOString())}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {!active.suppressed && (
               <button
                 type="button"

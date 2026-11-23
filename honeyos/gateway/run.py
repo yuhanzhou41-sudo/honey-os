@@ -5853,7 +5853,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not callable(resolver):
                 resolver = build_continuity_recovery_resolver(
                     store=store, db_path=home / "continuity.db")
-            return recover_pending_jobs(store=store, resolve_evidence=resolver)
+            return recover_pending_jobs(store=store, resolve_evidence=resolver,
+                                        continuity_db_path=home / "continuity.db")
         except Exception:
             logger.debug("HoneyOS U2 saved-response recovery failed", exc_info=True)
             return {"completed": 0, "blocked": 0, "failed": 1, "model_calls": 0}
@@ -5944,6 +5945,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         store, owner=owner, lane=lane, namespace=namespace,
                         proposal=proposal,
                         evidence_meta={ref: evidence_meta[ref] for ref in refs},
+                        continuity_db_path=home / "continuity.db",
                     )
                     applied += 1
                 except PermissionError:

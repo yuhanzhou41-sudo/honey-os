@@ -169,7 +169,8 @@ async def produce_after_distillation(*, home: Path, owner: str, lane: str,
 
 
 def recover_saved_response(*, envelope: BatchEnvelope, evidence: tuple[EvidenceUnit, ...],
-                           store: UnderstandingStore, response_json: str, jid: str) -> int:
+                           store: UnderstandingStore, response_json: str, jid: str,
+                           continuity_db_path=None) -> int:
     """Apply a durable response without issuing another model request.
 
     Evidence rows use stable refs and INSERT OR IGNORE, so repeating recovery
@@ -193,14 +194,15 @@ def recover_saved_response(*, envelope: BatchEnvelope, evidence: tuple[EvidenceU
     for proposal in proposals:
         apply_proposal(store, owner=envelope.owner_id, lane=envelope.lane,
                        namespace=envelope.namespace, proposal=proposal,
-                       evidence_meta=evidence_meta)
+                       evidence_meta=evidence_meta,
+                       continuity_db_path=continuity_db_path)
     store.complete(jid)
     return len(proposals)
 
 
 def recover_pending_jobs(*, store: UnderstandingStore,
                          resolve_evidence: Callable[[dict], tuple[EvidenceUnit, ...] | None],
-                         limit: int = 20) -> dict[str, int]:
+                         limit: int = 20, continuity_db_path=None) -> dict[str, int]:
     """Bounded worker entry for restart recovery; never performs model calls."""
     with store.connect() as db:
         rows = db.execute("""SELECT * FROM jobs
@@ -220,7 +222,8 @@ def recover_pending_jobs(*, store: UnderstandingStore,
                 row["pipeline_version"],
             )
             recover_saved_response(envelope=envelope, evidence=evidence, store=store,
-                                   response_json=row["response_json"], jid=row["id"])
+                                   response_json=row["response_json"], jid=row["id"],
+                                   continuity_db_path=continuity_db_path)
             result["completed"] += 1
         except (PermissionError, RuntimeError, ValueError, KeyError):
             result["blocked"] += 1

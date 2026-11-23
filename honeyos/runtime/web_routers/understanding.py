@@ -186,6 +186,30 @@ def get_understanding_label(label_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="label not found")
         label = _label_row(row)
         label["evidence"] = _evidence_for(conn, label_id, _memory_lookup(home))
+        try:
+            version_rows = conn.execute(
+                "SELECT revision, body, state, grade, actor, created_at "
+                "FROM label_versions WHERE label_id=? ORDER BY revision",
+                (label_id,),
+            ).fetchall()
+        except sqlite3.Error:
+            # Legacy stores created before label_versions existed have no
+            # timeline table; degrade to an empty version list instead of
+            # 500ing the detail view on an upgraded home.
+            version_rows = []
+        suppressed = bool(label.get("suppressed"))
+        label["versions"] = [
+            {
+                "revision": int(r["revision"]),
+                # Never leak historical body text once the user forgot the label.
+                "body": "" if suppressed else str(r["body"] or ""),
+                "state": str(r["state"] or ""),
+                "grade": str(r["grade"] or ""),
+                "actor": str(r["actor"] or ""),
+                "created_at": r["created_at"],
+            }
+            for r in version_rows
+        ]
         return label
     finally:
         conn.close()
@@ -216,7 +240,9 @@ def suppress_understanding_label(label_id: str) -> dict[str, Any]:
 def detach_understanding_evidence(
     label_id: str, ref: str = Query(..., description="Evidence ref to detach"),
 ) -> dict[str, Any]:
-    """Remove ONE tag<->memory relation without deleting either node."""
+    """Remove ONE tag<->memory relation without deleting either node, then
+    re-evaluate the label so a detached relation cannot leave a stale
+    high-confidence grade/state. A user-suppressed label is never revived."""
     home = _home()
     conn = _connect(home / _U2_DB)
     if conn is None:
@@ -227,6 +253,18 @@ def detach_understanding_evidence(
             (label_id, ref),
         )
         conn.commit()
-        return {"ok": True, "label_id": label_id, "removed": int(cur.rowcount)}
+        removed = int(cur.rowcount)
     finally:
         conn.close()
+    recomputed: dict[str, Any] = {}
+    if removed:
+        from honeyos.understanding.u2_maintenance import recompute_label
+        from honeyos.understanding.u2_store import UnderstandingStore
+
+        recomputed = recompute_label(
+            UnderstandingStore(home / _U2_DB), label_id,
+            continuity_db_path=home / _CONTINUITY_DB,
+            actor="user_detach",
+        )
+    return {"ok": True, "label_id": label_id, "removed": removed,
+            "recomputed": recomputed}

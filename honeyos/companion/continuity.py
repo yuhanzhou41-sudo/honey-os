@@ -600,20 +600,27 @@ class StructuredMemoryStore:
         if not lane_key:
             return 0
         cutoff = (_as_utc(now) - timedelta(days=90)).isoformat()
+        where = (
+            "WHERE lane_key = ? AND status = 'active' AND kind='episode' "
+            "AND created_by='background' AND user_edited=0 AND importance='low' "
+            "AND updated_at < ?"
+        )
+        archived_ids: list[str] = []
         try:
             with self._connect() as connection:
-                cursor = connection.execute(
-                    """
-                    UPDATE structured_memories SET status='archived'
-                    WHERE lane_key = ? AND status = 'active'
-                      AND kind='episode' AND created_by='background'
-                      AND user_edited=0 AND importance='low' AND updated_at < ?
-                    """,
+                rows = connection.execute(
+                    f"SELECT id FROM structured_memories {where}", (lane_key, cutoff),
+                ).fetchall()
+                archived_ids = [str(row["id"]) for row in rows]
+                connection.execute(
+                    f"UPDATE structured_memories SET status='archived' {where}",
                     (lane_key, cutoff),
                 )
-            return cursor.rowcount
         except (OSError, sqlite3.Error, ValueError, TypeError):
             return 0
+        for memory_id in archived_ids:
+            self._recompute_u2_for_memory(memory_id)
+        return len(archived_ids)
 
     def reinforce_episode(
         self, *, lane_key: str, item_id: str, session_id: str, message_id: int, now: datetime,
@@ -647,6 +654,27 @@ class StructuredMemoryStore:
         except (OSError, sqlite3.Error):
             return False
 
+    def _recompute_u2_for_memory(self, memory_id: str) -> None:
+        """Best-effort U2 grade/state re-evaluation after a source change.
+
+        Fail-open: a U2 store error must never block the continuity mutation.
+        """
+        try:
+            u2_path = self.home / "understanding_v2.db"
+            if not u2_path.is_file():
+                return
+            from honeyos.understanding.u2_maintenance import (
+                recompute_labels_for_memory,
+            )
+            from honeyos.understanding.u2_store import UnderstandingStore
+
+            recompute_labels_for_memory(
+                UnderstandingStore(u2_path), continuity_db_path=self.db_path,
+                memory_id=memory_id,
+            )
+        except Exception:
+            return
+
     def change_status(
         self,
         *,
@@ -661,6 +689,7 @@ class StructuredMemoryStore:
         if not lane_key or not item_id or status is None:
             return False
         timestamp = _as_utc(now or _utc_now())
+        changed = False
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
@@ -672,9 +701,12 @@ class StructuredMemoryStore:
                     """,
                     (status, timestamp.isoformat(), item_id, lane_key, status),
                 )
-            return cursor.rowcount == 1
+                changed = cursor.rowcount == 1
         except (OSError, sqlite3.Error):
             return False
+        if changed and status == "forgotten":
+            self._recompute_u2_for_memory(item_id)
+        return changed
 
     def update_content(
         self,

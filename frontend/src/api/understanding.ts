@@ -23,6 +23,15 @@ export type GraphEvidence = {
   memory: GraphMemory | null;
 };
 
+export type LabelVersion = {
+  revision: number;
+  body: string;
+  state: string;
+  grade: string;
+  actor: string;
+  created_at: string | null;
+};
+
 export type GraphLabel = {
   id: string;
   category_id: string;
@@ -36,6 +45,7 @@ export type GraphLabel = {
   updated_at: string | null;
   suppressed: boolean;
   evidence: GraphEvidence[];
+  versions?: LabelVersion[];
 };
 
 export type GraphResponse = {
@@ -61,6 +71,12 @@ export function fetchUnderstandingGraph(params?: {
   );
 }
 
+export function fetchUnderstandingLabel(labelId: string): Promise<GraphLabel> {
+  return requestJson<GraphLabel>(
+    `/api/understanding/labels/${encodeURIComponent(labelId)}`,
+  );
+}
+
 export function suppressUnderstandingLabel(labelId: string): Promise<{ ok: boolean }> {
   return requestJson(`/api/understanding/labels/${encodeURIComponent(labelId)}/suppress`, {
     method: "POST",
@@ -70,7 +86,7 @@ export function suppressUnderstandingLabel(labelId: string): Promise<{ ok: boole
 export function detachUnderstandingEvidence(
   labelId: string,
   ref: string,
-): Promise<{ ok: boolean; removed: number }> {
+): Promise<{ ok: boolean; removed: number; recomputed?: { changed: boolean; state?: string; grade?: string } }> {
   return requestJson(
     `/api/understanding/labels/${encodeURIComponent(labelId)}/evidence?ref=${encodeURIComponent(ref)}`,
     { method: "DELETE" },
