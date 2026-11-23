@@ -102,7 +102,11 @@ def test_old_memory_weak_cue_fades_but_explicit_date_finds_dormant_memory(tmp_pa
     assert not target.retrieve(dates, **options).selected
 
 
-def test_current_appraisal_changes_order_only_among_matching_memories(tmp_path):
+def test_current_appraisal_does_not_reweight_external_history(tmp_path):
+    # S4.5 Task D: external (DeepSeek) history must be retrieved by pure
+    # relevance only. Honey's *current* simulated physiology must NOT
+    # reorder these user-owned memories. (Previously this test asserted the
+    # opposite; that behaviour is now explicitly forbidden.)
     from honeyos.companion.physiology_shadow import PhysiologyShadow, TurnEvidence
 
     repo = CognitiveMemoryRepository(tmp_path)
@@ -128,7 +132,8 @@ def test_current_appraisal_changes_order_only_among_matching_memories(tmp_path):
         lambda _: {"event": "surprise", "strength": 1, "quote": reply},
         now=now,
     )
-    assert [m.id for m in retriever.retrieve("backup", **options).selected] == ["arousal", "emphasis"]
+    # Unchanged: current physiology does not lift the high-arousal import.
+    assert [m.id for m in retriever.retrieve("backup", **options).selected] == ["emphasis", "arousal"]
 
 
 def test_shadow_excludes_active_source_tombstone(tmp_path):

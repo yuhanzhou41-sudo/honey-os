@@ -371,10 +371,18 @@ def test_physiology_decays_to_baseline_and_boost_is_zero_without_state(tmp_path)
 
 
 def test_recall_boost_is_bounded_by_epinephrine_and_arousal():
-    """State item 5: no unbounded reinforcement path."""
+    """State item 5: no unbounded reinforcement path.
+
+    S4.5 Task D update: external (DeepSeek) history is now retrieved by pure
+    relevance. Honey's current simulated physiology must NOT weight it, so
+    the runtime_shadow retriever must no longer read epinephrine at all.
+    """
     source = Path(runtime_shadow.__file__).read_text(encoding="utf-8")
-    assert 'signals.get("epinephrine", 0.05) - 0.05) * 0.20' in source
-    assert "min(1.0, float(row[\"arousal\"] or 0))" in source
+    # No current-physiology read in the external-history retriever.
+    assert "live_signals(self.repository" not in source
+    assert 'signals.get("epinephrine"' not in source
+    # Salience still reranks candidates but stays bounded to [0,1] per field.
+    assert "min(1.0, float(row[" in source
 
 
 def test_repeated_turn_appraisal_and_enqueue_are_idempotent(tmp_path):

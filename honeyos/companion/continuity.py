@@ -783,39 +783,48 @@ class StructuredMemoryStore:
             if explicit_recall:
                 items = self.list_managed(lane_key=lane_key)
 
-            # S4.5: bounded physiology boost for native continuity memories.
-            # This runs AFTER lexical admission (score >= 3 threshold above)
-            # so it can never promote an irrelevant memory on its own.
+            # S4.5 Task C: evidence-based bounded physiology rerank.
             #
-            # Per-kind gradient: episode (共同经历, highest arousal potential)
-            # > commitment (答应过的) > open_loop (待续) > temporary_state
-            # (用户临时状态, not an event Honey experienced).  epinephrine
-            # from physiology_shadow modulates the gradient's strength.
-            # Each candidate therefore receives a DIFFERENT boost, so the
-            # rerank can actually reorder items that were tied or nearly tied
-            # on lexical score alone.  No boost is larger than 0.12.
-            _KIND_GRADIENT = {
-                "episode": 1.0,
-                "commitment": 0.7,
-                "open_loop": 0.4,
-                "temporary_state": 0.0,
-                "conversation_chapters": 0.0,
-            }
+            # There is deliberately NO per-kind bias. A plain common
+            # experience (episode) is not assumed to be more emotionally
+            # loaded than a long-term fact just because of its kind. The
+            # only per-candidate difference factor allowed here is
+            # ACTUAL EVIDENCE: a memory earns a boost only when S4 holds a
+            # verified ``known`` emotional imprint for it (i.e. there is
+            # traceable evidence of Honey's own reaction at the time).
+            # Memories without such evidence keep their original order.
+            #
+            # The boost still runs only AFTER lexical admission
+            # (``_score >= 3``), is capped at 0.12, and decays to zero when
+            # current physiology is at rest — so strong emotion can never
+            # pull an off-topic memory past the relevance gate.
+            phys_factor = 0.0
             try:
                 from honeyos.companion.physiology_shadow import live_signals
                 signals = live_signals(self.home, now=now)
                 ep = max(0.0, float(signals.get("epinephrine", 0.05)))
-                # Center: 0 when ep == 0.05 (rest baseline), max ~0.12 * 1.0
                 phys_factor = min(0.12, max(0.0, (ep - 0.05)) * 0.18)
             except Exception:
                 phys_factor = 0.0
 
+            evidence_boost: dict[str, float] = {}
+            if phys_factor > 0.0:
+                try:
+                    from honeyos.companion.emotional_imprint import (
+                        STATUS_KNOWN, EmotionalImprintStore,
+                    )
+                    imprint_store = EmotionalImprintStore(self.home)
+                    for item in items:
+                        imprint = imprint_store.get(item.id)
+                        if imprint is not None and imprint.status == STATUS_KNOWN:
+                            evidence_boost[item.id] = 1.0
+                except Exception:
+                    evidence_boost = {}
+
             direct = sorted(
                 (
                     (
-                        score + phys_factor * _KIND_GRADIENT.get(
-                            str(item.kind or "").lower(), 0.0
-                        ),
+                        score + phys_factor * evidence_boost.get(item.id, 0.0),
                         item,
                     )
                     for item in items
@@ -850,9 +859,41 @@ class StructuredMemoryStore:
             "不得据此推断或升级用户的身份、感情、关系、依赖、诊断或长期边界。",
             "条目 ID 可用于完成、纠正或忘记记忆。]",
         ]
+        # S4.5 Task E: attach verified historical emotional imprints only.
+        # The imprint describes how Honey felt WHEN THE EVENT HAPPENED. It is
+        # explicitly labelled as historical and never overrides current state.
+        # unknown / neutral imprints add nothing (no fabricated emotion), and
+        # forgotten memories never reach here because they are filtered by
+        # list_active already.
+        imprint_by_id: dict[str, Any] = {}
+        try:
+            from honeyos.companion.emotional_imprint import (
+                STATUS_KNOWN, EmotionalImprintStore,
+            )
+            imprint_store = EmotionalImprintStore(self.home)
+            for item in items:
+                imprint = imprint_store.get(item.id)
+                if imprint is not None and imprint.status == STATUS_KNOWN:
+                    imprint_by_id[item.id] = imprint
+        except Exception:
+            imprint_by_id = {}
+
         remaining = self.max_chars
         for item in items:
-            line = f"- [{item.id}] {labels[item.kind]}：{item.content}"
+            base_line = f"- [{item.id}] {labels[item.kind]}：{item.content}"
+            line = base_line
+            imprint = imprint_by_id.get(item.id)
+            if imprint is not None:
+                descriptor = (
+                    imprint.dominant_label or imprint.dominant_axis or "有明确反应"
+                )
+                candidate = (
+                    base_line
+                    + f"（历史情绪印记：当时 Honey 自身{descriptor}；"
+                    "这是当时的状态，不代表此刻的感受）"
+                )
+                if len(candidate) <= remaining:
+                    line = candidate
             if len(line) > remaining:
                 break
             lines.append(line)

@@ -36,43 +36,90 @@ def _make_fake_physiology(home: Path, epinephrine: float) -> None:
     conn.close()
 
 
-def test_physiology_boost_diverges_by_kind_for_nearby_scores(tmp_path):
-    """Nearby lexical scores should be re-ranked when epinephrine is high
-    and the items differ in kind."""
+def test_physiology_does_not_fabricate_from_kind(tmp_path, monkeypatch):
+    """Evidence rule: memory kind alone must NOT change ranking.
+
+    With high epinephrine but NO S4 imprint evidence the order must be
+    identical to the resting baseline — a 共同经历 (episode) is not assumed
+    to be more emotional than a 临时状态 (temporary_state) purely by kind.
+    """
     store = StructuredMemoryStore(tmp_path)
-    # Two items with similar lexical content but different kind —
-    # should receive different boosts.
+    now = datetime(2026, 8, 7, tzinfo=timezone.utc)
     store.record(
         lane_key="chat", kind="temporary_state",
-        content="讨论了项目规划项目规划项目规划项目规划",
-        evidence="user_stated", created_by="distill", now=datetime(2026, 8, 6, tzinfo=timezone.utc),
+        content="项目规划项目规划项目规划方案细节",
+        evidence="user_stated", created_by="background",
+        now=datetime(2026, 8, 6, tzinfo=timezone.utc),
         source_session_id="s1", source_message_ids=[1],
     )
     store.record(
         lane_key="chat", kind="episode",
-        content="讨论了项目规划项目规划项目规划项目规划",
-        evidence="interaction_trace", created_by="distill", now=datetime(2026, 8, 7, tzinfo=timezone.utc),
+        content="项目规划项目规划项目规划方案细节",
+        evidence="conversation_event", created_by="background",
+        now=datetime(2026, 8, 5, tzinfo=timezone.utc),
         source_session_id="s1", source_message_ids=[2],
     )
-    store.record(
-        lane_key="chat", kind="commitment",
-        content="讨论了项目规划项目规划项目规划项目规划",
-        evidence="interaction_trace", created_by="distill", now=datetime(2026, 8, 7, 1, tzinfo=timezone.utc),
-        source_session_id="s1", source_message_ids=[3],
+    base = store.context_for_lane(lane_key="chat", now=now, query="项目规划")
+    assert base is not None
+    monkeypatch.setattr(
+        "honeyos.companion.physiology_shadow.live_signals",
+        lambda home, now=None: {"epinephrine": 0.95},
     )
-    # No physiology baseline
-    result_no_phys = store.context_for_lane(
-        lane_key="chat", now=datetime(2026, 8, 7, tzinfo=timezone.utc),
-        query="项目规划",
+    hot = store.context_for_lane(lane_key="chat", now=now, query="项目规划")
+    assert base == hot  # no imprint evidence -> no fabricated kind-based reorder
+
+
+def test_known_imprint_enables_bounded_boost(tmp_path, monkeypatch):
+    """A verified S4 ``known`` imprint IS evidence and may reorder tied items."""
+    import sqlite3
+
+    store = StructuredMemoryStore(tmp_path)
+    now = datetime(2026, 8, 7, tzinfo=timezone.utc)
+    a = store.record(
+        lane_key="chat", kind="episode", content="旅行计划旅行计划旅行计划安排",
+        evidence="conversation_event", created_by="background",
+        now=datetime(2026, 8, 4, tzinfo=timezone.utc),
+        source_session_id="s1", source_message_ids=[1],
     )
-    _make_fake_physiology(tmp_path, epinephrine=0.9)  # high arousal
-    result_high_phys = store.context_for_lane(
-        lane_key="chat", now=datetime(2026, 8, 7, tzinfo=timezone.utc),
-        query="项目规划",
+    b = store.record(
+        lane_key="chat", kind="commitment", content="旅行计划旅行计划旅行计划安排",
+        evidence="assistant_committed", created_by="background",
+        now=datetime(2026, 8, 5, tzinfo=timezone.utc),
+        source_session_id="s1", source_message_ids=[2],
     )
-    # With high epinephrine, highest-leverage kind (episode) should now lead
-    # regardless of content similarity.
-    assert "episode" in (result_high_phys or "") or "temporary_state" not in (result_high_phys or "")
+    before = store.context_for_lane(lane_key="chat", now=now, query="旅行计划")
+    assert before is not None
+    assert before.index(a.id) > before.index(b.id)  # b newer -> first
+
+    conn = sqlite3.connect(tmp_path / "continuity.db")
+    conn.execute("""CREATE TABLE IF NOT EXISTS structured_memory_emotional_imprints(
+        memory_id TEXT PRIMARY KEY, lane_key TEXT NOT NULL, kind TEXT NOT NULL,
+        status TEXT NOT NULL, dominant_axis TEXT, dominant_label TEXT,
+        basis_axes_json TEXT NOT NULL DEFAULT '[]',
+        basis_turn_ids_json TEXT NOT NULL DEFAULT '[]',
+        formed_at TEXT, recorded_at TEXT NOT NULL,
+        distillation_run_id TEXT, evidence_summary TEXT NOT NULL)""")
+    conn.execute(
+        "INSERT INTO structured_memory_emotional_imprints "
+        "(memory_id,lane_key,kind,status,dominant_axis,dominant_label,"
+        "basis_axes_json,basis_turn_ids_json,formed_at,recorded_at,evidence_summary)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (a.id, "chat", "episode", "known", "warmth", "温暖",
+         "[]", "[]", "2026-08-04T00:00:00+00:00",
+         "2026-08-04T00:00:00+00:00", "test"),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(
+        "honeyos.companion.physiology_shadow.live_signals",
+        lambda home, now=None: {"epinephrine": 0.95},
+    )
+    after = store.context_for_lane(lane_key="chat", now=now, query="旅行计划")
+    assert after is not None
+    assert after.index(a.id) < after.index(b.id)  # known imprint -> a leads
+    # implicit historical imprint hint is present, not fabricated as current state
+    assert "历史情绪印记" in after
 
 
 def test_u2_parse_understandings_rejects_unknown_categories():

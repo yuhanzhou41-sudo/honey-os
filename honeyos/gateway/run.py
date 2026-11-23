@@ -5881,98 +5881,128 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
         try:
             from honeyos.core.constants import get_honeyos_home
+            from honeyos.understanding.u2_contracts import ALLOWED_CATEGORIES, Proposal
+            from honeyos.understanding.u2_maintenance import apply_proposal
             from honeyos.understanding.u2_store import UnderstandingStore
 
             home = get_honeyos_home()
             store = UnderstandingStore(home / "understanding_v2.db")
             store.initialize()
-            now = datetime.now(timezone.utc).isoformat()
             owner = "local-owner"
             lane = str(getattr(job, "lane_key", "") or "")
             namespace = str(getattr(settings, "namespace", "general") or "general")
 
-            applied = 0
-            with store.connect() as db:
-                epoch_row = db.execute(
-                    "SELECT value FROM meta WHERE key='policy_epoch'").fetchone()
-                epoch = int(epoch_row[0]) if epoch_row else 0
+            # S4.5 Task A: resolve model-cited operation indices to real,
+            # still-active continuity memories and build the evidence
+            # metadata the existing business layer requires. Forgotten or
+            # U2-ineligible kinds (open_loop / temporary_state) are dropped
+            # here so a user forget can never be revived through U2.
+            evidence_meta = self._honeyos_u2_evidence_meta(
+                home, applied_indices, lane,
+            )
 
-                for item in understandings:
-                    text = str(item.get("text") or "").strip()[:360]
-                    cat = str(item.get("category_id") or "").strip().lower()
-                    scope = str(item.get("scope_key") or "general").strip()[:60] or "general"
-                    canon = str(item.get("canonical_key") or "").strip()[:80]
-                    op = str(item.get("operation") or "propose").strip().lower()
-                    indices = tuple(item.get("operation_indices") or ())
-                    if not text or not cat or not canon or not indices:
+            applied = skipped = failed = 0
+            for item in understandings:
+                text = str(item.get("text") or "").strip()[:360]
+                category = str(item.get("category_id") or "").strip().lower()
+                scope = str(item.get("scope_key") or "general").strip()[:60] or "general"
+                canonical = str(item.get("canonical_key") or "").strip()[:80]
+                operation = str(item.get("operation") or "propose").strip().lower()
+                indices = tuple(item.get("operation_indices") or ())
+                if (not text or not canonical or not indices
+                        or category not in ALLOWED_CATEGORIES):
+                    skipped += 1
+                    continue
+                refs: list[str] = []
+                for idx in indices:
+                    try:
+                        memory_id = applied_indices.get(int(idx))
+                    except (TypeError, ValueError):
                         continue
-                    evidence_memory_ids: list[str] = []
-                    for idx in indices:
-                        try:
-                            real_idx = int(idx)
-                        except (TypeError, ValueError):
-                            continue
-                        memory_id = applied_indices.get(real_idx)
-                        if memory_id:
-                            evidence_memory_ids.append(memory_id)
-                    if not evidence_memory_ids:
-                        continue
-                    # Tag ID mirrors labels.id: stable hash keyed by scope/canonical
-                    label_hash_input = f"{owner}\n{lane}\n{namespace}\n{cat}\n{scope}\n{canon}"
-                    label_id = hashlib.sha256(label_hash_input.encode("utf-8")).hexdigest()[:32]
-
-                    existing = db.execute("SELECT * FROM labels WHERE id=?", (label_id,)).fetchone()
-                    if existing and str(existing["state"]) == "user_suppressed":
-                        continue  # User explicitly banned this tag — skip silently
-                    if existing and str(existing["body"]) == text and str(existing["state"]) == "active":
-                        # Same content already active — just ensure all
-                        # evidence rows exist (INSERT OR IGNORE below).
-                        pass
-                    else:
-                        db.execute(
-                            """
-                            INSERT INTO labels (
-                                id, owner, lane, namespace, category, scope_key,
-                                canonical_key, body, state, grade, revision,
-                                policy_epoch, created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-                            ON CONFLICT(id) DO UPDATE SET
-                                body = excluded.body,
-                                state = 'active',
-                                updated_at = excluded.updated_at
-                            """,
-                            (label_id, owner, lane, namespace, cat, scope, canon, text,
-                             "active", "suggested", epoch, now, now),
-                        )
-
-                    relation = "support" if op != "counter" else "counter"
-                    for memory_id in evidence_memory_ids:
-                        # Evidence ref format: continuity:<memory_id>
-                        ref = f"continuity:{memory_id}"
-                        db.execute(
-                            """
-                            INSERT OR IGNORE INTO evidence (
-                                label_id, evidence_ref, event_group, session_ref,
-                                relation, occurred_at, source_revision
-                            ) VALUES (?, ?, ?, ?, ?, '', ?)
-                            """,
-                            (label_id, ref, "continuity", lane, relation, now),
-                        )
+                    ref = f"continuity:{memory_id}" if memory_id else ""
+                    if ref and ref in evidence_meta and ref not in refs:
+                        refs.append(ref)
+                if not refs:
+                    skipped += 1
+                    continue
+                support = tuple(refs) if operation != "counter" else ()
+                counter = tuple(refs) if operation == "counter" else ()
+                try:
+                    proposal = Proposal(
+                        operation=operation,
+                        category_id=category,
+                        scope_key=scope,
+                        canonical_key=canonical,
+                        text=text,
+                        support_refs=support,
+                        counter_refs=counter,
+                    )
+                    # Route through the SAME validated write path as the U2
+                    # policy pipeline: it enforces user_suppressed, evidence
+                    # metadata presence, idempotent replay, grade/state.
+                    apply_proposal(
+                        store, owner=owner, lane=lane, namespace=namespace,
+                        proposal=proposal,
+                        evidence_meta={ref: evidence_meta[ref] for ref in refs},
+                    )
                     applied += 1
-                db.execute(
-                    """
-                    INSERT INTO postings (term, label_id, owner, lane, namespace)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    (canon, label_id, owner, lane, namespace),
-                )
+                except PermissionError:
+                    skipped += 1  # user-suppressed label: never revive
+                except (ValueError, KeyError):
+                    failed += 1
             logger.debug(
-                "HoneyOS U2 same-batch: %d understandings applied for run %s",
-                applied, getattr(job, "run_id", "?"),
+                "HoneyOS U2 same-batch: applied=%d skipped=%d failed=%d run=%s",
+                applied, skipped, failed, getattr(job, "run_id", "?"),
             )
         except Exception:
             logger.debug("HoneyOS U2 same-batch apply failed", exc_info=True)
+
+    @staticmethod
+    def _honeyos_u2_evidence_meta(
+        home, applied_indices: dict[int, str], lane: str,
+    ) -> dict[str, tuple[str, str, str, str | None]]:
+        """Build evidence metadata for U2 from continuity memories.
+
+        Returns ``ref -> (event_group, session_ref, source_revision,
+        occurred_at)`` for memories that are still active and eligible to
+        serve as U2 evidence. Forgotten / non-eligible memories are omitted.
+        """
+        import sqlite3
+
+        meta: dict[str, tuple[str, str, str, str | None]] = {}
+        ids = [mid for mid in applied_indices.values() if mid]
+        db_path = Path(home) / "continuity.db"
+        if not ids or not db_path.exists():
+            return meta
+        eligible_kinds = {"episode", "commitment"}
+        try:
+            conn = sqlite3.connect(db_path, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            try:
+                placeholders = ",".join("?" for _ in ids)
+                rows = conn.execute(
+                    "SELECT id, kind, status, source_session_id, created_at "
+                    f"FROM structured_memories WHERE id IN ({placeholders})",
+                    ids,
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return meta
+        for row in rows:
+            if str(row["status"] or "") != "active":
+                continue
+            if str(row["kind"] or "").lower() not in eligible_kinds:
+                continue
+            ref = f"continuity:{row['id']}"
+            created = str(row["created_at"] or "")
+            meta[ref] = (
+                str(row["id"]),
+                str(row["source_session_id"] or lane),
+                created,
+                created or None,
+            )
+        return meta
 
     def _schedule_honeyos_memory_distillation(
         self,

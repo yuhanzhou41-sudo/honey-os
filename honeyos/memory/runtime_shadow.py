@@ -368,12 +368,11 @@ class CognitiveMemoryShadowRetriever:
         scored: list[tuple[float, Any, str, str]] = []
         rejected: list[ShadowCandidate] = []
         now = now or datetime.now(timezone.utc)
+        # S4.5 / Task D: external history (DeepSeek import) is user-owned
+        # material, not a native Honey episode. It must be retrieved by pure
+        # topical relevance only. Honey's *current* simulated physiology
+        # (epinephrine) is deliberately NOT used to weight it.
         attention = 0.0
-        if adaptive:
-            from honeyos.companion.physiology_shadow import live_signals
-
-            signals = live_signals(self.repository.memory_dir.parent, now=now)
-            attention = max(0.0, signals.get("epinephrine", 0.05) - 0.05) * 0.20
 
         for row in rows:
             if date_scope:
