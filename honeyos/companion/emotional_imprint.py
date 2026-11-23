@@ -430,7 +430,7 @@ def emotion_imprint_hook_factory(
     home_path = Path(home).expanduser().resolve()
     store = EmotionalImprintStore(home_path)
 
-    def _hook(*, job: Any, result: Any, main_runtime: Any = None, **_kwargs: Any) -> None:
+    def _hook(*, job: Any, result: Any, main_runtime: Any = None, **_kwargs: Any) -> Any:
         # Emotion imprint path — fail-open, runs before any downstream.
         try:
             if result is None or getattr(result, "status", None) != "completed":
@@ -460,12 +460,19 @@ def emotion_imprint_hook_factory(
         # Downstream — looked up fresh from the holder on every call so
         # the U2 producer can be hot-wired / unwired without replacing
         # the emotion hook closure.
+        #
+        # The downstream may be sync (legacy) or async (the U2 same-batch
+        # producer). Return whatever it produces so MemoryDistiller can await
+        # an awaitable; dropping a coroutine here would silently skip U2.
         if downstream_holder is not None and len(downstream_holder) >= 1:
             downstream = downstream_holder[0]
             if downstream is not None:
                 try:
-                    downstream(job=job, result=result, main_runtime=main_runtime, **_kwargs)
+                    return downstream(
+                        job=job, result=result, main_runtime=main_runtime, **_kwargs
+                    )
                 except Exception:
                     logger.exception("downstream hook failed after emotion")
+        return None
 
     return _hook
