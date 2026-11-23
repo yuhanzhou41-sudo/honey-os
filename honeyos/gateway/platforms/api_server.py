@@ -2691,6 +2691,10 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/api/companion/understanding/{label_id}", self._handle_companion_understanding_detail),
             ("PATCH", "/api/companion/understanding/{label_id}", self._handle_companion_understanding_edit),
             ("POST", "/api/companion/understanding/{label_id}/action", self._handle_companion_understanding_action),
+            ("GET", "/api/understanding/graph", self._handle_understanding_graph),
+            ("GET", "/api/understanding/labels/{label_id}", self._handle_understanding_label),
+            ("POST", "/api/understanding/labels/{label_id}/suppress", self._handle_understanding_suppress),
+            ("DELETE", "/api/understanding/labels/{label_id}/evidence", self._handle_understanding_detach),
             # === Cognitive Memory Library Phase A/B (read-only) ===
             ("GET", "/api/memory/library", self._handle_memory_library),
             ("GET", "/api/memory/library/{memory_id}", self._handle_memory_library_item),
@@ -3691,6 +3695,86 @@ class APIServerAdapter(BasePlatformAdapter):
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=409)
         return web.json_response({"success": True, "action": action, "policy_epoch": epoch})
+
+    # S4.5: the companion SPA's "Honey 对我的理解" page calls the dashboard
+    # contract (/api/understanding/...). The browser UI is served from this
+    # aiohttp server, so expose the same read model here by delegating to the
+    # single implementation in honeyos.runtime.web_routers.understanding.
+    async def _handle_understanding_graph(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            limit = max(1, min(int(request.query.get("limit", "50")), 200))
+            offset = max(0, int(request.query.get("offset", "0")))
+        except ValueError:
+            return web.json_response({"error": "invalid pagination"}, status=400)
+        from honeyos.runtime.web_routers.understanding import get_understanding_graph
+
+        result = await asyncio.to_thread(
+            get_understanding_graph,
+            lane=str(request.query.get("lane") or ""),
+            namespace=str(request.query.get("namespace") or ""),
+            limit=limit,
+            offset=offset,
+        )
+        return web.json_response(result)
+
+    async def _handle_understanding_label(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+        from honeyos.runtime.web_routers.understanding import get_understanding_label
+
+        try:
+            result = await asyncio.to_thread(
+                get_understanding_label, str(request.match_info["label_id"]))
+        except StarletteHTTPException as exc:
+            return web.json_response({"error": str(exc.detail)}, status=exc.status_code)
+        return web.json_response(result)
+
+    async def _handle_understanding_suppress(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        store = await asyncio.to_thread(self._understanding_store)
+        if store is None:
+            return web.json_response({"error": "understanding store not found"}, status=404)
+        from honeyos.understanding import u2_manage
+
+        label_id = str(request.match_info["label_id"])
+        try:
+            epoch = await asyncio.to_thread(
+                u2_manage.suppress, store, label_id, owner="local-owner",
+            )
+        except (KeyError, PermissionError):
+            return web.json_response({"error": "label not found"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(
+            {"ok": True, "label_id": label_id, "state": "user_suppressed",
+             "policy_epoch": epoch})
+
+    async def _handle_understanding_detach(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+        from honeyos.runtime.web_routers.understanding import detach_understanding_evidence
+
+        ref = str(request.query.get("ref") or "").strip()
+        if not ref:
+            return web.json_response({"error": "ref is required"}, status=400)
+        try:
+            result = await asyncio.to_thread(
+                detach_understanding_evidence,
+                str(request.match_info["label_id"]),
+                ref=ref,
+            )
+        except StarletteHTTPException as exc:
+            return web.json_response({"error": str(exc.detail)}, status=exc.status_code)
+        return web.json_response(result)
 
     async def _handle_memory_library(
         self, request: "web.Request"

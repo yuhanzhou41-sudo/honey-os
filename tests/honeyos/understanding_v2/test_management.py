@@ -65,6 +65,11 @@ def test_existing_gateway_registers_management_routes_once():
         ("GET", "/api/companion/understanding/{label_id}"),
         ("PATCH", "/api/companion/understanding/{label_id}"),
         ("POST", "/api/companion/understanding/{label_id}/action"),
+        # S4.5: the SPA's graph page is served from this same origin.
+        ("GET", "/api/understanding/graph"),
+        ("GET", "/api/understanding/labels/{label_id}"),
+        ("POST", "/api/understanding/labels/{label_id}/suppress"),
+        ("DELETE", "/api/understanding/labels/{label_id}/evidence"),
     )
     assert all(routes.count(route) == 1 for route in expected)
 
