@@ -25,6 +25,7 @@ move-and-name refactor with no semantic change.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -54,6 +55,85 @@ from honeyos.agent.model_metadata import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# S2.4: the companion system prompt already embeds memories/IDENTITY.md and
+# RELATIONSHIP.md, while the gateway stages the same confirmed fields again on
+# the user-message sidecar every turn so live edits apply without a prompt
+# rebuild. Map the rendered note labels back to their managed field keys so an
+# unchanged value can be dropped by stable identity (never by fuzzy text).
+_PROFILE_NOTE_FIELD_RE = re.compile(r"^- ([^:：]+)[:：]\s*(.+)$")
+_PROFILE_FIELD_SOURCES = {
+    "伴侣名字": "companion_name",
+    "伴侣人格": "personality",
+    "说话方式": "speaking_style",
+    "用户接受的称呼": "user_nickname",
+    "已确认关系": "relationship",
+    "长期边界": "boundaries",
+}
+# Continuity entries are rendered as `- [<item id>] <label>：<content>`; the id
+# is the stable source identity shared by the gateway note and the per-turn
+# structured recall.
+_CONTINUITY_ENTRY_RE = re.compile(r"^\s*- \[([^\]]+)\]", re.MULTILINE)
+
+
+def drop_profile_fields_already_in_system_prompt(
+    notes: str, system_prompt: str
+) -> str:
+    """Drop per-turn profile lines whose exact value is already in the prompt.
+
+    Only the label→managed-key match counts as duplicate evidence. A renamed
+    or newly confirmed value is absent from the prompt and is kept, so live
+    updates still take effect. Other notes (time, continuity, reset) are
+    untouched.
+    """
+    if not notes or not system_prompt:
+        return notes
+    kept_paragraphs: List[str] = []
+    for paragraph in notes.split("\n\n"):
+        lines = paragraph.splitlines()
+        has_field = False
+        kept_lines: List[str] = []
+        for line in lines:
+            match = _PROFILE_NOTE_FIELD_RE.match(line.strip())
+            if match:
+                has_field = True
+                label, value = match.group(1).strip(), match.group(2).strip()
+                key = _PROFILE_FIELD_SOURCES.get(label)
+                if key and value and f"- {key}: {value}" in system_prompt:
+                    continue
+            kept_lines.append(line)
+        if has_field and not any(
+            _PROFILE_NOTE_FIELD_RE.match(line.strip()) for line in kept_lines
+        ):
+            # Every field in this note is already in the system prompt.
+            continue
+        kept_paragraphs.append("\n".join(kept_lines))
+    return "\n\n".join(p for p in kept_paragraphs if p.strip())
+
+
+def drop_known_continuity_entries(block: str, known_text: str) -> str:
+    """Remove continuity lines whose stable item id already reached the model.
+
+    The gateway delivers the whole lane snapshot on the sidecar; the per-turn
+    query recall can overlap it. Matching on the rendered item id keeps two
+    similar-but-different memories separate. Returns ``""`` when nothing new
+    remains.
+    """
+    if not block or not known_text:
+        return block
+    known = set(_CONTINUITY_ENTRY_RE.findall(known_text))
+    if not known:
+        return block
+    kept_lines = []
+    for line in block.splitlines():
+        match = _CONTINUITY_ENTRY_RE.match(line)
+        if match and match.group(1) in known:
+            continue
+        kept_lines.append(line)
+    if not any(_CONTINUITY_ENTRY_RE.match(line) for line in kept_lines):
+        return ""
+    return "\n".join(kept_lines)
 
 
 def compose_user_api_content(
@@ -1184,6 +1264,13 @@ def build_turn_context(
                 else _gateway_notes
             )
 
+    # S2.4: the cached companion prompt already embeds IDENTITY.md and
+    # RELATIONSHIP.md. Drop the sidecar copy of a field only when the exact
+    # confirmed value is already there; changed values stay.
+    plugin_user_context = drop_profile_fields_already_in_system_prompt(
+        plugin_user_context, active_system_prompt or ""
+    )
+
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
@@ -1250,6 +1337,13 @@ def build_turn_context(
                 native_note = StructuredMemoryStore(get_honeyos_home()).context_for_lane(
                     lane_key=lane, query=_shadow_query,
                 )
+                # S2.2: the gateway sidecar may already carry the same lane
+                # snapshot. Dedupe by stable continuity item id so one source
+                # consumes one budget slot, while distinct memories survive.
+                if native_note:
+                    native_note = drop_known_continuity_entries(
+                        native_note, _gateway_notes
+                    )
                 if native_note and isinstance(ext_prefetch_cache, (str, type(None))):
                     ext_prefetch_cache = "\n\n".join(filter(None, (ext_prefetch_cache, native_note)))
             if _cognitive_context_mode != "off":
@@ -1284,7 +1378,9 @@ def build_turn_context(
                     session_id=str(getattr(agent, "session_id", "") or ""),
                     turn_id=str(turn_id or ""),
                     repository=_cognitive_repository,
-                    structured_context=native_note or "",
+                    structured_context="\n\n".join(
+                        part for part in (native_note, _gateway_notes) if part
+                    ),
                     **recall_options,
                 )
                 if _cognitive_context_mode == "active":

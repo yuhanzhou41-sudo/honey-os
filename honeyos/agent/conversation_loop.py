@@ -1422,12 +1422,23 @@ def run_conversation(
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
+        # S2.3: opt-in, bounded, S1-authorized memory block for the codex
+        # thread. Default off -> empty string -> historical request shape.
+        _codex_context_text = ""
+        try:
+            from honeyos.memory.codex_context import build_codex_context
+
+            _codex_context_text = build_codex_context(agent, original_user_message)
+        except Exception:
+            logger.debug("codex context build failed (non-fatal)", exc_info=True)
+            _codex_context_text = ""
         result = agent._run_codex_app_server_turn(
             user_message=user_message,
             original_user_message=original_user_message,
             messages=messages,
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
+            context_text=_codex_context_text,
         )
         if _ctx.post_reply_appraisal:
             from honeyos.companion.pre_reply_appraisal import schedule_reply_appraisal

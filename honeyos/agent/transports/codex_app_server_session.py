@@ -471,6 +471,7 @@ class CodexAppServerSession:
         self,
         user_input: Any,
         *,
+        context_text: str = "",
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
         post_tool_quiet_timeout: float = 90.0,
@@ -478,6 +479,11 @@ class CodexAppServerSession:
         """Send a user message and block until turn/completed, while
         forwarding server-initiated approval requests and projecting items
         into HoneyOS' messages shape.
+
+        ``context_text`` is an optional, already-authorized and bounded
+        background block (S2.3). It is sent as a separate leading text item
+        and never merged into the user's text or persisted transcript. Empty
+        keeps the historical single-item request byte-compatible.
 
         post_tool_quiet_timeout: if codex emits a tool completion and then
         goes quiet for this many seconds without emitting another item or
@@ -515,6 +521,10 @@ class CodexAppServerSession:
         projector = CodexEventProjector()
 
         user_input_text = _coerce_turn_input_text(user_input)
+        input_items: list[dict[str, Any]] = []
+        if isinstance(context_text, str) and context_text.strip():
+            input_items.append({"type": "text", "text": context_text.strip()})
+        input_items.append({"type": "text", "text": user_input_text})
 
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but HoneyOS' text path is the common case).
@@ -523,7 +533,7 @@ class CodexAppServerSession:
                 "turn/start",
                 {
                     "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
+                    "input": input_items,
                 },
                 timeout=10,
             )

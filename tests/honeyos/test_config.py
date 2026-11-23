@@ -58,7 +58,10 @@ def test_initialize_home_creates_companion_contract(tmp_path, monkeypatch):
     assert config["memory"]["user_profile_enabled"] is True
     assert config["memory"]["nudge_interval"] == 0
     assert config["memory"]["provider"] == ""
-    assert config["memory"]["cognitive"] == {"context_mode": "shadow"}
+    assert config["memory"]["cognitive"] == {
+        "context_mode": "shadow",
+        "codex_context_mode": "off",
+    }
     assert config["memory"]["distillation"] == {
         "enabled": True,
         "trigger_messages": 20,
@@ -185,8 +188,10 @@ def test_upgrade_adds_and_preserves_cognitive_context_mode(tmp_path):
     assert upgrade_companion_capabilities(tmp_path) is True
     upgraded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert upgraded["memory"]["cognitive"]["context_mode"] == "shadow"
+    assert upgraded["memory"]["cognitive"]["codex_context_mode"] == "off"
 
     upgraded["memory"]["cognitive"]["context_mode"] = "active"
+    upgraded["memory"]["cognitive"]["codex_context_mode"] = "scoped"
     config_path.write_text(
         yaml.safe_dump(upgraded, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
@@ -194,6 +199,7 @@ def test_upgrade_adds_and_preserves_cognitive_context_mode(tmp_path):
     assert upgrade_companion_capabilities(tmp_path) is False
     preserved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert preserved["memory"]["cognitive"]["context_mode"] == "active"
+    assert preserved["memory"]["cognitive"]["codex_context_mode"] == "scoped"
 
 
 def test_initialize_home_rejects_unsupported_platform(tmp_path):

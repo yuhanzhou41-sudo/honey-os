@@ -89,7 +89,8 @@ PYTHONPATH=/home/zyh20/projects/honey-os-integration \
 | --- | --- |
 | S0 基线与分支 | DONE / FROZEN |
 | S1 Cognitive 权限 | DONE / FROZEN |
-| S2–S10 | NOT_STARTED，未获本轮执行授权 |
+| S2 统一有界上下文与 Codex 通道 | DONE / FROZEN（详见 `S2_CONTEXT_TRANSPORT.md`） |
+| S3–S10 | NOT_STARTED，未获本轮执行授权 |
 
 ## S0/S1 冻结记录
 

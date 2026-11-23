@@ -623,6 +623,7 @@ def run_codex_app_server_turn(
     messages: List[Dict[str, Any]],
     effective_task_id: str,
     should_review_memory: bool = False,
+    context_text: str = "",
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into HoneyOS'
@@ -630,6 +631,9 @@ def run_codex_app_server_turn(
 
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
+
+    ``context_text`` is an opt-in, bounded, already-authorized S2.3 block.
+    Empty (the default) keeps the historical request shape.
     """
     from honeyos.agent.transports.codex_app_server_session import (
         CodexAppServerSession,
@@ -695,7 +699,9 @@ def run_codex_app_server_turn(
     # return reaches us. Do NOT append again — that would duplicate.
 
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(
+            user_input=user_message, context_text=context_text
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn

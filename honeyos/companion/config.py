@@ -313,6 +313,7 @@ def companion_config(
             "provider": "",
             "cognitive": {
                 "context_mode": "shadow",
+                "codex_context_mode": "off",
             },
             "distillation": {
                 "enabled": True,
@@ -586,6 +587,7 @@ def upgrade_companion_capabilities(home: Path) -> bool:
         cognitive = {}
         memory["cognitive"] = cognitive
     cognitive.setdefault("context_mode", "shadow")
+    cognitive.setdefault("codex_context_mode", "off")
     distillation = memory.setdefault("distillation", {})
     if not isinstance(distillation, dict):
         distillation = {}
