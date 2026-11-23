@@ -24,7 +24,6 @@ import sqlite3
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from .u2_context import wrap_understanding
 from .u2_runtime import RuntimeMode, expose
@@ -281,12 +280,3 @@ def recall_for_turn(*, home: Path, lane: str, query: str,
         estimated_tokens=result.estimated_tokens,
         reason="injected" if result.injected else "not_injected",
     )
-
-
-def recalled_blocks(ext_prefetch_cache: Any, u2_text: str) -> str:
-    """Merge the U2 block into the existing per-turn memory cache."""
-    if not u2_text:
-        return ext_prefetch_cache if isinstance(ext_prefetch_cache, str) else ""
-    if not isinstance(ext_prefetch_cache, (str, type(None))):
-        return ext_prefetch_cache
-    return "\n\n".join(part for part in (ext_prefetch_cache, u2_text) if part)
