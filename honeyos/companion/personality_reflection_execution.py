@@ -22,7 +22,21 @@ from honeyos.companion.personality_reflection import PersonalityReflectionRunner
 
 logger = logging.getLogger(__name__)
 
-_THREAD_LOCK = threading.Lock()
+# Per-home thread locks: each companion home gets its own lock so multiple
+# tmp_path test fixtures (or multiple production homes) never contend for
+# the same global mutex.  A tiny guard lock protects the locks dict itself.
+_HOME_LOCKS: dict[Path, threading.Lock] = {}
+_HOME_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_lock_for_home(home: Path) -> threading.Lock:
+    key = Path(home)
+    with _HOME_LOCKS_GUARD:
+        lock = _HOME_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _HOME_LOCKS[key] = lock
+        return lock
 
 _REFLECTION_INSTRUCTIONS = """You are performing a private periodic self-reflection for a conversational companion.
 
@@ -199,10 +213,12 @@ class AuxiliaryPersonalityReflectionAdapter:
 @contextmanager
 def _reflection_process_lock(home: Path | str):
     """Cross-thread and best-effort cross-process lock for one reflection store."""
-    path = _home_path(home) / "companion" / "personality_reflection.lock"
+    home_path = Path(_home_path(home))
+    path = home_path / "companion" / "personality_reflection.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not _THREAD_LOCK.acquire(blocking=False):
+    thread_lock = _thread_lock_for_home(home_path)
+    if not thread_lock.acquire(blocking=False):
         yield False
         return
 
@@ -233,7 +249,7 @@ def _reflection_process_lock(home: Path | str):
                 except Exception:
                     pass
             handle.close()
-        _THREAD_LOCK.release()
+        thread_lock.release()
 
 
 def run_personality_reflection_once(

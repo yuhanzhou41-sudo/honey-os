@@ -5929,13 +5929,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if distiller is None:
             return False
         understanding = getattr(getattr(distiller, "settings", None), "understanding", None)
-        if understanding is not None and getattr(distiller, "post_completed_hook", None) is None:
-            # Bind the live producer to the actual resolved provider/model of
-            # the completed foreground turn. The hook runs only after the
-            # distillation transaction commits and can never change its result.
-            distiller.post_completed_hook = lambda **kwargs: self._honeyos_u2_post_completed(
-                settings=understanding, **kwargs
+        # S4: one-shot wire of emotion imprint hook; stable for distiller
+        # lifetime, downstream (U2) hot-wired via mutable holder below.
+        if not getattr(distiller, "_emotion_hook_wired", False):
+            from honeyos.companion.emotional_imprint import emotion_imprint_hook_factory
+            downstream_holder: list = [None]
+            distiller._emotion_hook_wired = True
+            distiller._emotion_downstream_holder = downstream_holder
+            distiller.post_completed_hook = emotion_imprint_hook_factory(
+                home=distiller.home, downstream_holder=downstream_holder,
             )
+        holder = getattr(distiller, "_emotion_downstream_holder", None)
+        if holder is not None:
+            if understanding is not None:
+                holder[0] = lambda **kw: self._honeyos_u2_post_completed(
+                    settings=understanding, **kw
+                )
+            else:
+                holder[0] = None
 
         async def _run() -> None:
             try:
