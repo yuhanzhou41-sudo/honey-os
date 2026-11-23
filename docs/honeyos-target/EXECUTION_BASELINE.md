@@ -91,12 +91,45 @@ PYTHONPATH=/home/zyh20/projects/honey-os-integration \
 | S1 Cognitive 权限 | DONE / FROZEN |
 | S2–S10 | NOT_STARTED，未获本轮执行授权 |
 
+## S0/S1 冻结记录
+
+| 项目 | 值 |
+| --- | --- |
+| 基线 HEAD（S0 冻结提交） | `dba87b94ad17377c78199fed88c248512768db1e` |
+| S1 实现提交 | `64089936705ded48758b335bf68b5280567bae1d` |
+| 最终提交（本冻结记录所在提交） | 用 `git log -1 --format=%H -- docs/honeyos-target/EXECUTION_BASELINE.md` 查询；该提交仅含本文件 |
+| 任务分支 | `feat/s1-cognitive-scope-gate` |
+| 提交范围 | 7 个修改文件 + 2 个新增文件，全部属于 S0/S1 |
+
+S1 实现提交 diff stat（基线 HEAD → `6408993`）：
+
+```text
+ honeyos/agent/turn_context.py                |  94 +++++---
+ honeyos/companion/config.py                  |   8 +
+ honeyos/gateway/platforms/api_server.py      |   2 +
+ honeyos/memory/runtime_context.py            | 329 +++++++++++++++++++++++++--
+ honeyos/memory/runtime_shadow.py             |   4 +
+ tests/honeyos/memory/test_runtime_context.py |  40 +++-
+ tests/honeyos/test_config.py                 |  26 +++
+ 7 files changed, 453 insertions(+), 50 deletions(-)
+```
+
+另有新增文件 `tests/honeyos/memory/test_cognitive_scope_gate.py`（17 个用例）与 `docs/honeyos-target/EXECUTION_BASELINE.md`。
+
+验收结论：
+
+- Cognitive 默认开关为 `shadow`，`off`/`shadow`/`active` 行为与 fail-closed 语义由定向测试覆盖。
+- `off` 不执行 Cognitive 检索/注入；`shadow` 不产生模型可见注入；`active` 必须通过 owner/lane/session/chat_type/purpose/namespace/tombstone 全部检查。
+- 未改动原生 Memory/Continuity、F1/F2 检索、Study salience 与归档语义（`runtime_shadow.py` 仅新增 `explicit_recall` 标志）。
+- `git diff --check` 无输出；工作区无无关 dirty/untracked 文件；测试未读写真实 `~/.honeyos`。
+
 ## 开销、残余限制与回滚
 
 - 新增模型调用：0；测试模型调用：0；token/付费调用费用：0。
 - 历史 episode 没有显式 `access` 时会在 `active` 下拒绝注入；这是 S1 的 fail-closed 设计，本轮不做历史数据迁移。
 - 未配置明确 owner/chat_type 的其他入口在 `active` 下同样拒绝注入，不在 S1 猜测或扩大授权。
-- 未运行全量测试；S0 的 6 个重复 basename 收集错误和上述 1 个 SOUL 断言失败未被掩盖或无关修复。
-- 所有改动仅存在于 `feat/s1-cognitive-scope-gate`；冻结 HEAD 仍为 `dba87b94ad17377c78199fed88c248512768db1e`，未创建提交。
+- 已知既有失败 1 项（SOUL 前缀断言），已在上节用冻结 HEAD worktree 对照证明非 S1 引入；未运行全量测试，S0 的 6 个重复 basename 收集错误同样保持原状。
+- 遗留风险：`active` 模式的真实会话覆盖面尚未接入新的鉴权数据，上线前需要单独评估（属于后续阶段，不在 S1 范围）。
 - 未修改生产数据库、systemd、live `PYTHONPATH` 或运行中服务；未 merge、push、部署。
-- 回滚：切回 `integration/u2-v2-off` 即可恢复冻结源码；如需仅移除本轮未提交改动，应先审阅并仅针对上述 S1 文件执行精确还原，不使用宽泛清理命令。
+- 回滚：在 `feat/s1-cognitive-scope-gate` 上执行 `git revert 64089936705ded48758b335bf68b5280567bae1d` 并撤销本冻结记录提交；或直接切回 `integration/u2-v2-off`。不使用 `git reset --hard`/`git clean -fd`。
+
