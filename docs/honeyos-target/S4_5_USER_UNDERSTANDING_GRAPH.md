@@ -167,8 +167,9 @@ git checkout feat/s4-longterm-memory-emotional-imprint   # 回到 S4
 ## 11. Git
 
 ```
-<freeze2> docs(s4.5): final acceptance + emotion-hook U2 forwarding fix
-<freeze1> test(s4.5): isolated 8-scenario e2e, 6/40 thresholds, shared cap
+86a8110a  docs(s4.5): final acceptance report and DONE/FROZEN freeze
+093b656f  fix(s4.5): forward async U2 producer through emotion hook
+          (+ isolated 8-scenario e2e, 6/40 thresholds, shared cap tests)
 11081124  docs(s4.5): freeze graph page, API and memory-safety fixes
 cfd8e100  feat(s4.5): user-understanding graph page + graph API
 90b3370c  fix(s4.5): apply_proposal U2 writes; pure external history;

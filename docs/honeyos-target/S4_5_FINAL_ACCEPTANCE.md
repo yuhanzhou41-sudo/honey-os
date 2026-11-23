@@ -10,7 +10,7 @@
 | 项目 | 值 |
 |---|---|
 | 起始 HEAD | `11081124` |
-| 本轮新增提交 | 见 §13（本地冻结提交） |
+| 本轮新增提交 | `093b656f`（hook 修复 + 验收测试）→ `86a8110a`（最终验收文档冻结） |
 | S4 基线 | `dff89780` |
 | 分支 | `feat/s4-5-user-understanding-graph` |
 | push / merge / deploy | 均未执行 |
@@ -213,7 +213,7 @@ docs/honeyos-target/S4_5_USER_UNDERSTANDING_GRAPH.md       # 更新：冻结状�
 | 项目 | 值 |
 |---|---|
 | 分支 | `feat/s4-5-user-understanding-graph` |
-| 冻结提交 | 见本轮 `docs(s4.5): final acceptance + hook fix` 提交 |
+| 冻结提交 | `86a8110a`（文档）；生产修复 `093b656f` |
 | 工作树 | clean |
 | push / merge / deploy | 未执行 |
 
