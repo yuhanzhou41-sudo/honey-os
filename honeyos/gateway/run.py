@@ -28,6 +28,7 @@ import asyncio
 import concurrent.futures
 import dataclasses
 import faulthandler
+import hashlib
 import inspect
 import json
 import logging
@@ -5859,64 +5860,119 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _honeyos_u2_post_completed(self, *, job, result, main_runtime,
                                          settings) -> None:
-        """S4.5: closed — no second LLM call after MemoryDistiller.
+        """S4.5: apply U2 understandings from the distillation model output.
 
-        The old producer constructed a second async_call_llm request with
-        ``task=understanding_u2`` and ``max_tokens=600`` after every
-        completed distillation.  This is now a deliberate no-op because
-        S4.5's core rule is **one distillation, one model call**.  Future
-        U2 tag proposals must come from the existing distillation model
-        output JSON or from purely deterministic sidecar processing.
-
-        We return immediately instead of removing the method so existing
-        wiring (``_honeyos_u2_post_completed`` bound into the downstream
-        holder, test doubles, etc.) keeps working unchanged.
+        MemoryDistiller now emits an optional ``understandings`` array in the
+        SAME model request that produces operations.  This hook receives them
+        directly from ``result.understandings`` and writes tag + evidence rows
+        into the existing ``understanding_v2.db`` store — no extra LLM call,
+        no new schema.  Fail-open: any U2 error is swallowed and never mutates
+        the original distillation result.
         """
-        return
-        # Old path kept for audit reference — unreachable after the return
-        # above.  Will be removed in a later dedicated cleanup pass.
-        if not getattr(settings, "enabled", False):  # pragma: no cover
+        if not getattr(settings, "enabled", False):
             return
-        if str(getattr(result, "status", "") or "") != "completed":  # pragma: no cover
+        if str(getattr(result, "status", "") or "") != "completed":
+            return
+        understandings = tuple(getattr(result, "understandings", ()) or ())
+        if not understandings:
+            return
+        applied_indices = dict(getattr(result, "applied_indices", {}) or {})
+        if not applied_indices:
             return
         try:
             from honeyos.core.constants import get_honeyos_home
-            from honeyos.understanding.u2_pipeline import produce_after_distillation
             from honeyos.understanding.u2_store import UnderstandingStore
 
             home = get_honeyos_home()
             store = UnderstandingStore(home / "understanding_v2.db")
             store.initialize()
-            # The authenticated local companion is the only supported owner;
-            # never accept an owner from the model or from source content.
-            user_messages = {
-                int(message["_row_id"]): str(message["content"])
-                for message in job.messages
-                if str(message.get("role") or "").lower() == "user"
-            }
-            receipt = await produce_after_distillation(
-                home=home,
-                owner="local-owner",
-                lane=job.lane_key,
-                namespace=settings.namespace,
-                run_id=job.run_id,
-                source_hash=job.source_hash,
-                session_id=job.session_id,
-                user_messages=user_messages,
-                model_runtime=dict(main_runtime or {}),
-                enabled=True,
-                max_daily_calls=settings.max_daily_calls,
-                store=store,
-                now=job.now,
-            )
-            if receipt is not None and receipt.get("action") == "BLOCKED":
-                logger.debug(
-                    "HoneyOS U2 producer blocked for %s: %s",
-                    job.run_id,
-                    receipt.get("reason"),
+            now = datetime.now(timezone.utc).isoformat()
+            owner = "local-owner"
+            lane = str(getattr(job, "lane_key", "") or "")
+            namespace = str(getattr(settings, "namespace", "general") or "general")
+
+            applied = 0
+            with store.connect() as db:
+                epoch_row = db.execute(
+                    "SELECT value FROM meta WHERE key='policy_epoch'").fetchone()
+                epoch = int(epoch_row[0]) if epoch_row else 0
+
+                for item in understandings:
+                    text = str(item.get("text") or "").strip()[:360]
+                    cat = str(item.get("category_id") or "").strip().lower()
+                    scope = str(item.get("scope_key") or "general").strip()[:60] or "general"
+                    canon = str(item.get("canonical_key") or "").strip()[:80]
+                    op = str(item.get("operation") or "propose").strip().lower()
+                    indices = tuple(item.get("operation_indices") or ())
+                    if not text or not cat or not canon or not indices:
+                        continue
+                    evidence_memory_ids: list[str] = []
+                    for idx in indices:
+                        try:
+                            real_idx = int(idx)
+                        except (TypeError, ValueError):
+                            continue
+                        memory_id = applied_indices.get(real_idx)
+                        if memory_id:
+                            evidence_memory_ids.append(memory_id)
+                    if not evidence_memory_ids:
+                        continue
+                    # Tag ID mirrors labels.id: stable hash keyed by scope/canonical
+                    label_hash_input = f"{owner}\n{lane}\n{namespace}\n{cat}\n{scope}\n{canon}"
+                    label_id = hashlib.sha256(label_hash_input.encode("utf-8")).hexdigest()[:32]
+
+                    existing = db.execute("SELECT * FROM labels WHERE id=?", (label_id,)).fetchone()
+                    if existing and str(existing["state"]) == "user_suppressed":
+                        continue  # User explicitly banned this tag — skip silently
+                    if existing and str(existing["body"]) == text and str(existing["state"]) == "active":
+                        # Same content already active — just ensure all
+                        # evidence rows exist (INSERT OR IGNORE below).
+                        pass
+                    else:
+                        db.execute(
+                            """
+                            INSERT INTO labels (
+                                id, owner, lane, namespace, category, scope_key,
+                                canonical_key, body, state, grade, revision,
+                                policy_epoch, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                            ON CONFLICT(id) DO UPDATE SET
+                                body = excluded.body,
+                                state = 'active',
+                                updated_at = excluded.updated_at
+                            """,
+                            (label_id, owner, lane, namespace, cat, scope, canon, text,
+                             "active", "suggested", epoch, now, now),
+                        )
+
+                    relation = "support" if op != "counter" else "counter"
+                    for memory_id in evidence_memory_ids:
+                        # Evidence ref format: continuity:<memory_id>
+                        ref = f"continuity:{memory_id}"
+                        db.execute(
+                            """
+                            INSERT OR IGNORE INTO evidence (
+                                label_id, evidence_ref, event_group, session_ref,
+                                relation, occurred_at, source_revision
+                            ) VALUES (?, ?, ?, ?, ?, '', ?)
+                            """,
+                            (label_id, ref, "continuity", lane, relation, now),
+                        )
+                    applied += 1
+                db.execute(
+                    """
+                    INSERT INTO postings (term, label_id, owner, lane, namespace)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (canon, label_id, owner, lane, namespace),
                 )
+            logger.debug(
+                "HoneyOS U2 same-batch: %d understandings applied for run %s",
+                applied, getattr(job, "run_id", "?"),
+            )
         except Exception:
-            logger.debug("HoneyOS U2 post-completed producer failed", exc_info=True)
+            logger.debug("HoneyOS U2 same-batch apply failed", exc_info=True)
 
     def _schedule_honeyos_memory_distillation(
         self,

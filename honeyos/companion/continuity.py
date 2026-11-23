@@ -784,22 +784,40 @@ class StructuredMemoryStore:
                 items = self.list_managed(lane_key=lane_key)
 
             # S4.5: bounded physiology boost for native continuity memories.
-            # This runs AFTER lexical admission (score >= 3 threshold above).
-            # Only epinephrine is used — it is the least invasive signal.
-            # No arousal row exists on continuity.db, so we apply a flat
-            # small boost across admitted candidates; this never promotes
-            # an irrelevant memory past the 3.0 threshold on its own.
+            # This runs AFTER lexical admission (score >= 3 threshold above)
+            # so it can never promote an irrelevant memory on its own.
+            #
+            # Per-kind gradient: episode (共同经历, highest arousal potential)
+            # > commitment (答应过的) > open_loop (待续) > temporary_state
+            # (用户临时状态, not an event Honey experienced).  epinephrine
+            # from physiology_shadow modulates the gradient's strength.
+            # Each candidate therefore receives a DIFFERENT boost, so the
+            # rerank can actually reorder items that were tied or nearly tied
+            # on lexical score alone.  No boost is larger than 0.12.
+            _KIND_GRADIENT = {
+                "episode": 1.0,
+                "commitment": 0.7,
+                "open_loop": 0.4,
+                "temporary_state": 0.0,
+                "conversation_chapters": 0.0,
+            }
             try:
                 from honeyos.companion.physiology_shadow import live_signals
                 signals = live_signals(self.home, now=now)
-                epinephrine = max(0.0, float(signals.get("epinephrine", 0.05)))
-                phys_boost = min(0.18, (epinephrine - 0.05) * 0.25)
+                ep = max(0.0, float(signals.get("epinephrine", 0.05)))
+                # Center: 0 when ep == 0.05 (rest baseline), max ~0.12 * 1.0
+                phys_factor = min(0.12, max(0.0, (ep - 0.05)) * 0.18)
             except Exception:
-                phys_boost = 0.0
+                phys_factor = 0.0
 
             direct = sorted(
                 (
-                    (score + phys_boost, item)
+                    (
+                        score + phys_factor * _KIND_GRADIENT.get(
+                            str(item.kind or "").lower(), 0.0
+                        ),
+                        item,
+                    )
                     for item in items
                     if (score := _score(item.content, terms)[0]) >= 3
                 ),

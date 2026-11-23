@@ -118,6 +118,9 @@ async def test_gateway_tracks_distillation_as_non_blocking_background_work(
     completed = []
 
     class FakeDistiller:
+        home = tmp_path
+        settings = type("S", (), {"understanding": None})()
+
         async def distill_if_due(self, **kwargs):
             completed.append(kwargs)
 

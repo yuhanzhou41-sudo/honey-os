@@ -86,6 +86,12 @@ class DistillationResult:
     rejected: int = 0
     error: str = ""
     chapter_id: str = ""
+    understandings: tuple[dict[str, Any], ...] = ()
+    applied_indices: dict[int, str] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.applied_indices is None:
+            object.__setattr__(self, "applied_indices", {})
 
 
 def load_distillation_settings(home: Path) -> DistillationSettings:
@@ -340,7 +346,34 @@ a named date, or an event deadline. Use an ISO-8601 timestamp. Omit expires_at o
 when the user supplied no time clue; the code then applies a conservative fallback.
 Resolve or update only IDs present in active_memories. Usually output 0-3 operations.
 Write the chapter and each operation in the dominant language of the transcript
-(use Chinese for a mainly Chinese conversation). Do not include prose or markdown."""
+(use Chinese for a mainly Chinese conversation). Do not include prose or markdown.
+
+Optionally include an "understandings" array with at most 4 items.
+Each understanding captures ONE revisable user-facing tendency you can
+ground in the transcript's operations. Output ONLY when you can point to
+a user's stable preference, habit, or behavior pattern — not a single
+emotion, not one request, not Honey's own feelings. Do not include
+understandings for open_loop or temporary_state operations (they describe
+ongoing tasks or transient states, not user properties).
+
+Each understanding object must have:
+  operation: "propose" | "support" | "counter" | "supersede"
+  category_id: "interest_preference" | "behavior_pattern" |
+               "learning_work_style" | "communication_style" |
+               "relationship_style" | "value_tendency"
+  scope_key: short stable scope (e.g. "workflow", "study", "food")
+  canonical_key: short snake_case stable key (e.g. "prefers_planning_first")
+  text: one understanding sentence, max 200 chars
+  operation_indices: array of operation array INDEX integers (0..n-1)
+                     that provide evidence. Cite only record-type
+                     operations (record/compress/reinforce/update for
+                     episode/commitment). Skip temporary_state/open_loop
+                     as evidence.
+
+Empty understandings array is valid and preferred when the transcript
+does not support any user tendency. A single request ("remind me tomorrow")
+is not enough to infer a stable reminder habit. Never infer identity,
+diagnosis, sexual orientation, or sensitive categories."""
     response = await async_call_llm(
         task="memory_distillation",
         messages=[
@@ -360,7 +393,7 @@ Write the chapter and each operation in the dominant language of the transcript
             },
         ],
         temperature=0,
-        max_tokens=1400,
+        max_tokens=2000,
         main_runtime=runtime,
         **call_overrides,
     )
@@ -673,6 +706,69 @@ class MemoryDistiller:
         return chapter if isinstance(chapter, dict) else {}
 
     @staticmethod
+    def _parse_understandings(raw: str, maximum: int = 4) -> tuple[dict[str, Any], ...]:
+        """Best-effort parse of the optional ``understandings`` array.
+
+        This is a safe complement to ``operations`` — missing, malformed,
+        or empty understandings leave the distillation result untouched.
+        The model must cite operation INDEX (0..n) via
+        ``operation_indices``; concrete memory IDs are resolved AFTER
+        operations are persisted.
+        """
+        try:
+            cleaned = str(raw or "").strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1]
+                cleaned = cleaned.rsplit("```", 1)[0].strip()
+            start, end = cleaned.find("{"), cleaned.rfind("}")
+            if start < 0 or end < start:
+                return ()
+            payload = json.loads(cleaned[start : end + 1])
+        except (ValueError, json.JSONDecodeError):
+            return ()
+        if not isinstance(payload, dict):
+            return ()
+        raw_list = payload.get("understandings")
+        if not isinstance(raw_list, list):
+            return ()
+        allowed_categories = frozenset({
+            "interest_preference", "behavior_pattern", "learning_work_style",
+            "communication_style", "relationship_style", "value_tendency",
+        })
+        allowed_ops = frozenset({"propose", "support", "counter", "supersede"})
+        result: list[dict[str, Any]] = []
+        for item in raw_list[:maximum]:
+            if not isinstance(item, dict):
+                continue
+            op = str(item.get("operation") or "").strip().lower()
+            cat = str(item.get("category_id") or "").strip().lower()
+            text = str(item.get("text") or "").strip()[:360]
+            scope = str(item.get("scope_key") or "general").strip()[:60] or "general"
+            canon = str(item.get("canonical_key") or "").strip()[:80]
+            indices = item.get("operation_indices") or []
+            if op not in allowed_ops or cat not in allowed_categories or not text:
+                continue
+            if not canon:
+                continue
+            if not isinstance(indices, list) or not indices:
+                continue
+            try:
+                int_indices = tuple(int(v) for v in indices if int(v) >= 0)
+            except (TypeError, ValueError):
+                continue
+            if not int_indices:
+                continue
+            result.append({
+                "operation": op,
+                "category_id": cat,
+                "scope_key": scope,
+                "canonical_key": canon,
+                "text": text,
+                "operation_indices": int_indices,
+            })
+        return tuple(result)
+
+    @staticmethod
     def _fallback_chapter(job: DistillationJob) -> dict[str, Any]:
         user_messages = [message for message in job.messages if message["role"] == "user"]
         assistant_messages = [
@@ -825,7 +921,7 @@ class MemoryDistiller:
     def _apply_operations(
         self, job: DistillationJob, operations: tuple[dict[str, Any], ...],
         active_items: tuple[StructuredMemoryItem, ...],
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, dict[int, str]]:
         valid_source_ids = {message["_row_id"] for message in job.messages}
         source_roles = {
             message["_row_id"]: str(message.get("role") or "").strip().lower()
@@ -834,7 +930,8 @@ class MemoryDistiller:
         source_text = {message["_row_id"]: message["content"] for message in job.messages}
         active = {item.id: item for item in active_items}
         applied = rejected = 0
-        for operation in operations:
+        applied_indices: dict[int, str] = {}
+        for op_index, operation in enumerate(operations):
             action = str(operation.get("action") or "").strip().lower()
             raw_ids = operation.get("evidence_message_ids")
             try:
@@ -874,6 +971,7 @@ class MemoryDistiller:
                     rejected += 1
                 else:
                     applied += 1
+                    applied_indices[op_index] = item.id
                 continue
             item_id = str(operation.get("item_id") or "")
             if item_id not in active:
@@ -944,10 +1042,11 @@ class MemoryDistiller:
                 success = False
             if success:
                 applied += 1
+                applied_indices[op_index] = item_id
             else:
                 rejected += 1
         self.memories.archive_background(lane_key=job.lane_key, now=job.now)
-        return applied, rejected
+        return applied, rejected, applied_indices
 
     async def distill_if_due(
         self,
@@ -999,6 +1098,7 @@ class MemoryDistiller:
                     raise ValueError("chat evidence changed during distillation")
             operations = self._parse_operations(raw, self.settings.max_operations)
             chapter = self._record_chapter(job, raw)
+            understandings = self._parse_understandings(raw)
             if chapter is None:
                 error = "recent conversation summary could not be persisted"
                 with self._connect() as connection:
@@ -1011,7 +1111,7 @@ class MemoryDistiller:
                     status="failed",
                     error=error,
                 )
-            applied, rejected = self._apply_operations(job, operations, active_items)
+            applied, rejected, applied_indices = self._apply_operations(job, operations, active_items)
             if operations and applied == 0 and rejected:
                 error = "validation rejected every proposed memory operation"
                 with self._connect() as connection:
@@ -1072,6 +1172,8 @@ class MemoryDistiller:
                             applied=applied,
                             rejected=rejected,
                             chapter_id=chapter.id,
+                            understandings=understandings,
+                            applied_indices=applied_indices,
                         ),
                         main_runtime=dict(main_runtime or {}),
                     )
@@ -1085,6 +1187,8 @@ class MemoryDistiller:
                 applied=applied,
                 rejected=rejected,
                 chapter_id=chapter.id,
+                understandings=understandings,
+                applied_indices=applied_indices,
             )
         except asyncio.CancelledError:
             try:
