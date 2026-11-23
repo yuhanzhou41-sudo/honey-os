@@ -118,7 +118,9 @@ def build_proposal_call(main_runtime: Mapping[str, Any] | None):
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             provider=provider, model=model, main_runtime=dict(runtime),
-            temperature=0, max_tokens=600,
+            # Up to 4 proposals at 360 CJK characters each do not fit in 600
+            # tokens; truncation would make the whole response unparseable.
+            temperature=0, max_tokens=1400,
         )
         return str(response.choices[0].message.content or "")
 

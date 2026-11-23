@@ -1371,6 +1371,30 @@ def build_turn_context(
                     )
                 if native_note and isinstance(ext_prefetch_cache, (str, type(None))):
                     ext_prefetch_cache = "\n\n".join(filter(None, (ext_prefetch_cache, native_note)))
+                # S4.5 Task A: bounded U2 understanding recall. Deterministic
+                # postings lookup + live-evidence recheck; no model call, no
+                # write. Off unless ``memory.distillation.understanding.enabled``;
+                # an empty result injects nothing. Deduped against the native
+                # memory text already staged for this turn.
+                try:
+                    from honeyos.understanding.u2_recall import recall_for_turn
+
+                    _u2_recall = recall_for_turn(
+                        home=get_honeyos_home(),
+                        lane=lane,
+                        query=_shadow_query,
+                        known_text="\n\n".join(
+                            filter(None, (native_note, _gateway_notes))
+                        ),
+                    )
+                    if _u2_recall.text:
+                        ext_prefetch_cache = "\n\n".join(
+                            filter(None, (ext_prefetch_cache, _u2_recall.text))
+                        )
+                except Exception:
+                    logger.debug(
+                        "U2 understanding recall failed (non-fatal)", exc_info=True
+                    )
             if _cognitive_context_mode != "off":
                 from honeyos.memory.runtime_shadow import requests_broad_recall, run_cognitive_memory_shadow
                 expanded_recall = (

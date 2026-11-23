@@ -28,10 +28,14 @@ def terms(text: str, *, limit: int = 12) -> tuple[str, ...]:
 
 def index_label(store: UnderstandingStore, label_id: str, owner: str, lane: str,
                 namespace: str, text: str) -> None:
+    # Index the whole label text, not just its first 12 terms: the canonical
+    # key prefix alone used to consume the budget, hiding the meaningful words
+    # of the understanding body from topic lookup.
     with store.connect() as db:
         db.execute("DELETE FROM postings WHERE label_id=?", (label_id,))
         db.executemany("INSERT OR IGNORE INTO postings VALUES(?,?,?,?,?)",
-                       ((term, label_id, owner, lane, namespace) for term in terms(text)))
+                       ((term, label_id, owner, lane, namespace)
+                        for term in terms(text, limit=48)))
 
 
 def lookup_label_ids(store: UnderstandingStore, *, owner: str, lane: str,

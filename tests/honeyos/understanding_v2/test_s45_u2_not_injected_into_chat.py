@@ -1,17 +1,15 @@
-"""S4.5 verification: U2 labels do NOT reach the chat prompt (fail-closed).
+"""S4.5 boundary: native lane context and the runtime gate stay fail-closed.
 
-Task 2 requires proving the *actual* read path from the U2 store into chat
-context — not just that labels are generated and graphed. The production chat
-context is assembled in ``honeyos.agent.turn_context.build_turn_context``, which
-calls ``StructuredMemoryStore.context_for_lane``. This test asserts that even
-when a valid, supported U2 label exists in the store, its body never appears in
-the assembled lane context, and that the runtime ``expose`` gate stays
-fail-closed without an authorized switch.
+U2 injection into chat is now an explicit, opt-in read path
+(``u2_recall.recall_for_turn``, gated by
+``memory.distillation.understanding.enabled`` and exercised in
+``test_s45_u2_chat_recall.py``).  Two guarantees must still hold here:
 
-This is an intentional safety boundary, NOT a defect being "fixed": enabling
-injection requires the recall-pipeline wiring recorded as deferred in the S4
-scope doc and an explicit authorization decision. This test locks the current
-fail-closed contract so it cannot silently change.
+* ``StructuredMemoryStore.context_for_lane`` returns native memories only —
+  the derived U2 body never leaks through that path, so the same fact is not
+  injected twice.
+* ``u2_runtime.expose`` remains fail-closed: OFF/SHADOW never inject and
+  ACTIVE requires explicit authorization.
 """
 
 from __future__ import annotations
