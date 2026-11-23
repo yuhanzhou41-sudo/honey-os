@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from honeyos.companion.affect_evidence import strip_quoted_evidence
+
 _SIGNAL_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "preference": (
         re.compile(r"\bI prefer\b", re.I),
@@ -89,12 +91,17 @@ def detect_observation_signals(
     if not assistant:
         return ObservationSignals(False, ())
 
+    # Only Honey's own speech may supply self signals. Quoted user words,
+    # role-play dialogue inside quotation marks and code spans are excluded so
+    # a quoted "I prefer ..." never becomes Honey's trait evidence.
+    own_text = strip_quoted_evidence(assistant)
+
     # Skip obvious command/status/code-dump turns unless another explicit
     # personality-relevant signal is present.
     flags: list[str] = []
 
     for signal, patterns in _SIGNAL_PATTERNS.items():
-        if any(pattern.search(assistant) for pattern in patterns):
+        if any(pattern.search(own_text) for pattern in patterns):
             flags.append(signal)
 
     if any(pattern.search(user) for pattern in _USER_FEEDBACK_PATTERNS):
@@ -106,13 +113,13 @@ def detect_observation_signals(
     if deduped:
         return ObservationSignals(True, deduped)
 
-    stripped = assistant.lstrip()
+    stripped = own_text.lstrip()
     if stripped.startswith(_LOW_SIGNAL_PREFIXES):
         return ObservationSignals(False, ())
 
     # Heuristic: fenced-code-heavy or shell-heavy responses are not eligible
     # without an explicit signal above.
-    code_fence_count = assistant.count("```")
+    code_fence_count = own_text.count("```")
     if code_fence_count >= 2:
         return ObservationSignals(False, ())
 

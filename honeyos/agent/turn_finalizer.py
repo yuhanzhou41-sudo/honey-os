@@ -590,12 +590,15 @@ def finalize_turn(
     )
     # Failure notices and recovered partial replies can contain apparent
     # personality signals. Only learn from a successful, persisted reply.
+    # Companion-scoped only: non-companion, work and codex turns must never
+    # write Honey's temporary state.
     if (
         final_response
         and completed
         and normal_text_response
         and not interrupted
         and not _personality_persist_failed
+        and getattr(agent, "_companion_input_budget", False) is True
     ):
         try:
             from honeyos.companion.personality_observation_hook import (

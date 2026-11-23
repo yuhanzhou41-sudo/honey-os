@@ -34,6 +34,10 @@ Important distinctions:
 - A one-off mood or reaction is temporary unless independently repeated.
 - Preserve contextual nuance and contradictions.
 - Prefer no operation over a weak personality conclusion.
+- Repetition is not independence: the same source event re-summarised, a retry of one reply, or a trait restated because it was already shown to the companion is not new evidence.
+- Different wording, or a different model describing the same event, is still one event.
+- A wish or intention the companion states is not evidence that it acted; do not treat it as observed behavior.
+- A task the user asked the companion to do is not the companion's autonomous interest or choice.
 - Do not infer or modify names, user identity, relationship labels, boundaries, tools, permissions, safety rules, credentials, or secrets.
 - Do not mention hidden reasoning or chain-of-thought.
 - Output JSON only.

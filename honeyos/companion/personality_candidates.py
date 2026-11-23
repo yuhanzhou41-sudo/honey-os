@@ -282,6 +282,35 @@ class PersonalityCandidateStore:
         )
         return evidence_id
 
+    @staticmethod
+    def _evidence_reference_exists(
+        conn: sqlite3.Connection,
+        *,
+        candidate_id: str,
+        reference: str,
+        evidence_type: str | None = None,
+    ) -> bool:
+        """True when this candidate already holds evidence from the same source.
+
+        The reference is the stable observation id. Reflection batches may
+        re-summarise the same observation, and a retry may replay a batch; the
+        source event must never be counted as independent support twice.
+        """
+        value = str(reference or "").strip()[:500]
+        if not value:
+            return False
+        sql = (
+            "SELECT 1 FROM personality_candidate_evidence "
+            "WHERE candidate_id = ? AND reference = ?"
+        )
+        params: list[object] = [candidate_id, value]
+        if evidence_type is not None:
+            sql += " AND evidence_type = ?"
+            params.append(evidence_type)
+        sql += " LIMIT 1"
+        row = conn.execute(sql, params).fetchone()
+        return row is not None
+
     def create_candidate(
         self,
         *,
@@ -383,6 +412,17 @@ class PersonalityCandidateStore:
                 round(max(existing.confidence, confidence_value) + 0.05, 6),
             )
             support_increment = 1 if evidence_summary else 0
+            duplicate_reference = bool(
+                evidence_summary
+                and self._evidence_reference_exists(
+                    conn,
+                    candidate_id=existing.candidate_id,
+                    reference=evidence_reference,
+                )
+            )
+            if duplicate_reference:
+                support_increment = 0
+                new_confidence = max(existing.confidence, confidence_value)
             conn.execute(
                 """
                 UPDATE personality_candidates
@@ -406,7 +446,7 @@ class PersonalityCandidateStore:
                     existing.candidate_id,
                 ),
             )
-            if evidence_summary:
+            if evidence_summary and not duplicate_reference:
                 self._insert_evidence(
                     conn,
                     candidate_id=existing.candidate_id,
@@ -457,31 +497,49 @@ class PersonalityCandidateStore:
             if candidate.status != "candidate":
                 raise ValueError(f"candidate status does not allow support: {candidate.status}")
 
-            self._insert_evidence(
+            duplicate_reference = self._evidence_reference_exists(
                 conn,
                 candidate_id=candidate_id,
-                evidence_type=evidence_type_clean,
                 reference=reference,
-                summary=summary,
-                observed_at=observed,
-                created_at=now,
             )
-            confidence = min(1.0, round(candidate.confidence + 0.05, 6))
-            conn.execute(
-                """
-                UPDATE personality_candidates
-                SET support_count = support_count + 1,
-                    confidence = ?,
-                    last_seen_at = ?,
-                    updated_at = ?
-                WHERE candidate_id = ?
-                """,
-                (confidence, observed, now, candidate_id),
-            )
-            conn.commit()
+            if duplicate_reference:
+                conn.commit()
+            else:
+                self._insert_evidence(
+                    conn,
+                    candidate_id=candidate_id,
+                    evidence_type=evidence_type_clean,
+                    reference=reference,
+                    summary=summary,
+                    observed_at=observed,
+                    created_at=now,
+                )
+                confidence = min(1.0, round(candidate.confidence + 0.05, 6))
+                conn.execute(
+                    """
+                    UPDATE personality_candidates
+                    SET support_count = support_count + 1,
+                        confidence = ?,
+                        last_seen_at = ?,
+                        updated_at = ?
+                    WHERE candidate_id = ?
+                    """,
+                    (confidence, observed, now, candidate_id),
+                )
+                conn.commit()
 
         updated = self.get_candidate(candidate_id)
         assert updated is not None
+        if duplicate_reference:
+            self._audit(
+                "evidence_duplicate_skipped",
+                {
+                    "candidate_id": candidate_id,
+                    "trait_key": updated.trait_key,
+                    "reference": str(reference or "")[:200],
+                },
+            )
+            return updated
         self._audit(
             "evidence_added",
             {
@@ -516,31 +574,50 @@ class PersonalityCandidateStore:
                     f"candidate status does not allow contradiction: {candidate.status}"
                 )
 
-            self._insert_evidence(
+            duplicate_reference = self._evidence_reference_exists(
                 conn,
                 candidate_id=candidate_id,
-                evidence_type="contradiction",
                 reference=reference,
-                summary=summary,
-                observed_at=observed,
-                created_at=now,
+                evidence_type="contradiction",
             )
-            confidence = max(0.0, round(candidate.confidence - 0.05, 6))
-            conn.execute(
-                """
-                UPDATE personality_candidates
-                SET contradiction_count = contradiction_count + 1,
-                    confidence = ?,
-                    last_seen_at = ?,
-                    updated_at = ?
-                WHERE candidate_id = ?
-                """,
-                (confidence, observed, now, candidate_id),
-            )
-            conn.commit()
+            if duplicate_reference:
+                conn.commit()
+            else:
+                self._insert_evidence(
+                    conn,
+                    candidate_id=candidate_id,
+                    evidence_type="contradiction",
+                    reference=reference,
+                    summary=summary,
+                    observed_at=observed,
+                    created_at=now,
+                )
+                confidence = max(0.0, round(candidate.confidence - 0.05, 6))
+                conn.execute(
+                    """
+                    UPDATE personality_candidates
+                    SET contradiction_count = contradiction_count + 1,
+                        confidence = ?,
+                        last_seen_at = ?,
+                        updated_at = ?
+                    WHERE candidate_id = ?
+                    """,
+                    (confidence, observed, now, candidate_id),
+                )
+                conn.commit()
 
         updated = self.get_candidate(candidate_id)
         assert updated is not None
+        if duplicate_reference:
+            self._audit(
+                "contradiction_duplicate_skipped",
+                {
+                    "candidate_id": candidate_id,
+                    "trait_key": updated.trait_key,
+                    "reference": str(reference or "")[:200],
+                },
+            )
+            return updated
         self._audit(
             "contradiction_added",
             {
@@ -665,17 +742,26 @@ class PersonalityCandidateStore:
 
         user_text = str(user_excerpt or "").strip()[:800]
         assistant_text = str(assistant_excerpt or "").strip()[:1200]
+        session_value = str(session_id or "").strip()[:160]
+        user_reference_value = str(user_reference or "").strip()[:200]
+        assistant_reference_value = str(assistant_reference or "").strip()[:200]
+        # One source event may surface as several reply rows (retries, model
+        # switches). The stable identity is the originating user row when we
+        # have one, otherwise the assistant row itself. Text is never used.
+        dedupe_key = user_reference_value or assistant_reference_value
 
         with self._connect() as conn:
-            if self.liked_only:
+            if self.liked_only or (session_value and dedupe_key):
                 conn.execute("BEGIN IMMEDIATE")
                 duplicate = conn.execute(
                     "SELECT observation_id, reflection_batch_id FROM personality_pending_observations "
-                    "WHERE session_id=? AND assistant_reference=? LIMIT 1",
-                    (session_id, assistant_reference),
+                    "WHERE session_id=? "
+                    "AND COALESCE(NULLIF(user_reference,''), assistant_reference)=? "
+                    "LIMIT 1",
+                    (session_value, dedupe_key),
                 ).fetchone()
                 if duplicate is not None:
-                    if duplicate["reflection_batch_id"] == "feedback_unavailable":
+                    if self.liked_only and duplicate["reflection_batch_id"] == "feedback_unavailable":
                         conn.execute(
                             "UPDATE personality_pending_observations "
                             "SET processed_at=NULL, reflection_batch_id='' WHERE observation_id=?",
@@ -700,9 +786,9 @@ class PersonalityCandidateStore:
                 """,
                 (
                     observation_id,
-                    str(session_id or "").strip()[:160],
-                    str(user_reference or "").strip()[:200],
-                    str(assistant_reference or "").strip()[:200],
+                    session_value,
+                    user_reference_value,
+                    assistant_reference_value,
                     observed,
                     json.dumps(flags, ensure_ascii=False),
                     user_text,

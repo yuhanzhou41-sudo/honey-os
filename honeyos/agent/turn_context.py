@@ -1241,6 +1241,31 @@ def build_turn_context(
                 else _time_context
             )
 
+    # G2 companion state note: promoted Relational Self / Stable Core traits
+    # and the temporary momentary state are companion-scoped context. The
+    # gateway TurnRunner path already stages them; the API-server companion
+    # turn previously received neither. Stage the same bounded note on the
+    # existing one-shot sidecar channel. Exact profile fields already embedded
+    # in the cached system prompt are dropped below, so no field is sent twice.
+    if getattr(agent, "_companion_input_budget", False) is True:
+        try:
+            from honeyos.companion.personality_observation_hook import (
+                _resolve_companion_home,
+            )
+            from honeyos.companion.profile import companion_profile_note
+
+            _companion_state_note = companion_profile_note(
+                _resolve_companion_home(agent)
+            )
+        except Exception:
+            logger.debug("companion state note load failed (non-fatal)", exc_info=True)
+            _companion_state_note = ""
+        if _companion_state_note:
+            _staged_notes = getattr(agent, "_gateway_turn_context_notes", "") or ""
+            agent._gateway_turn_context_notes = "\n\n".join(
+                part for part in (_staged_notes, _companion_state_note) if part
+            )
+
     # Gateway must-deliver notes (auto-reset note, first-contact intro,
     # voice-channel change) ride the same user-message injection channel as
     # plugin context so the ephemeral system prompt can stay byte-stable.

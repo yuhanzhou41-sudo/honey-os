@@ -28,6 +28,15 @@ _ABOUT_SOMEONE_ELSE = re.compile(
 )
 
 
+def strip_quoted_evidence(text: str) -> str:
+    """Remove quotations, code spans and quoted lines from *text*.
+
+    Personality/affect signals must come from Honey's own speech, never from
+    words it quotes or role-plays on the user's behalf.
+    """
+    return _CITATION.sub(" ", text or "")
+
+
 def assistant_self_clauses(reply: str) -> tuple[str, ...]:
     """Find direct first-person clauses outside quotations and reported speech."""
     cleaned = _CITATION.sub(" ", reply or "")

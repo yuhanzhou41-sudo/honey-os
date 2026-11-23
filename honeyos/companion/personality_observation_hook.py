@@ -31,6 +31,7 @@ def capture_liked_reply(home: Path | str, db, session_id: str, message_id: int) 
     signals = detect_observation_signals(user_text=excerpt, assistant_text=reply["content"])
     return PersonalityCandidateStore(home, liked_only=True).capture_observation(
         session_id=session_id, assistant_reference=f"liked:{message_id}",
+        user_reference=f"liked-user:{user['id']}" if user else "",
         user_excerpt=excerpt, assistant_excerpt=reply["content"], signal_flags=signals.flags,
     )
 

@@ -149,7 +149,6 @@ def _evidence_metrics(store: PersonalityCandidateStore, candidate_id: str) -> di
             "SELECT * FROM personality_candidate_evidence WHERE candidate_id = ?",
             (candidate_id,),
         ).fetchall()
-        result["evidence_count"] = len(rows)
 
         ref_col = next(
             (c for c in ("reference", "evidence_reference", "source_reference") if c in ev_cols),
@@ -160,16 +159,22 @@ def _evidence_metrics(store: PersonalityCandidateStore, candidate_id: str) -> di
             None,
         )
         refs: list[str] = []
+        ref_types: list[tuple[str, str]] = []
         for row in rows:
             evidence_type = str(row[type_col] or "") if type_col else ""
-            if evidence_type == "user_feedback":
-                result["user_feedback_count"] += 1
-            else:
-                result["non_feedback_count"] += 1
             if ref_col:
                 value = str(row[ref_col] or "").strip()
                 if value:
                     refs.append(value)
+                    ref_types.append((value, evidence_type))
+                    continue
+            # Evidence without a source reference cannot be tied to an event,
+            # so it counts once on its own.
+            result["evidence_count"] += 1
+            if evidence_type == "user_feedback":
+                result["user_feedback_count"] += 1
+            else:
+                result["non_feedback_count"] += 1
 
         if not refs or not obs_cols or "observation_id" not in obs_cols:
             return result
@@ -185,20 +190,39 @@ def _evidence_metrics(store: PersonalityCandidateStore, candidate_id: str) -> di
 
             result["all_evidence_liked"] = len(refs) == len(rows) and set(refs) == liked_observation_ids(store.home, obs_rows)
 
+        obs_by_id = {str(row["observation_id"]): row for row in obs_rows}
+        seen_events: set[str] = set()
         batches: set[str] = set()
         sessions: set[str] = set()
         times: list[datetime] = []
-        for row in obs_rows:
+        for reference, evidence_type in ref_types:
+            obs_row = obs_by_id.get(reference)
+            # One user event can surface as several reply rows (retries, model
+            # switches). Count the source event once, never its re-wordings.
+            event_key = ""
+            if obs_row is not None and "user_reference" in obs_cols:
+                event_key = str(obs_row["user_reference"] or "").strip()
+            event_key = event_key or reference
+            if event_key in seen_events:
+                continue
+            seen_events.add(event_key)
+            result["evidence_count"] += 1
+            if evidence_type == "user_feedback":
+                result["user_feedback_count"] += 1
+            else:
+                result["non_feedback_count"] += 1
+            if obs_row is None:
+                continue
             if "reflection_batch_id" in obs_cols:
-                value = str(row["reflection_batch_id"] or "").strip()
+                value = str(obs_row["reflection_batch_id"] or "").strip()
                 if value:
                     batches.add(value)
             if "session_id" in obs_cols:
-                value = str(row["session_id"] or "").strip()
+                value = str(obs_row["session_id"] or "").strip()
                 if value:
                     sessions.add(value)
             if "observed_at" in obs_cols:
-                value = str(row["observed_at"] or "").strip()
+                value = str(obs_row["observed_at"] or "").strip()
                 if value:
                     try:
                         times.append(datetime.fromisoformat(value))
