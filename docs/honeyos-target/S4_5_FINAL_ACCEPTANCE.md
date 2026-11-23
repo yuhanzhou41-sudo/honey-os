@@ -10,7 +10,7 @@
 | 项目 | 值 |
 |---|---|
 | 起始 HEAD | `11081124` |
-| 本轮新增提交 | `093b656f`（hook 修复 + 验收测试）→ `86a8110a`（验收文档冻结）→ `d22e7daf`（记录冻结哈希）→ `cded7b39`（Round 2 缺陷修复 + 功能补齐）→ 本提交（Round 2 文档冻结） |
+| 本轮新增提交 | `093b656f`（hook 修复 + 验收测试）→ `86a8110a`（验收文档冻结）→ `d22e7daf`（记录冻结哈希）→ `cded7b39`（Round 2 缺陷修复 + 功能补齐）→ `9731fc11`（Round 2 文档冻结） |
 | S4 基线 | `dff89780` |
 | 分支 | `feat/s4-5-user-understanding-graph` |
 | push / merge / deploy | 均未执行 |
@@ -370,7 +370,7 @@ docs/honeyos-target/S4_5_USER_UNDERSTANDING_GRAPH.md       # 更新：冻结状�
 | 项目 | 值 |
 |---|---|
 | 分支 | `feat/s4-5-user-understanding-graph` |
-| 冻结提交 | 本轮：`cded7b39`（生产+测试）→ 本提交（文档，最终冻结）；历史：`093b656f`→`86a8110a`→`d22e7daf` |
+| 冻结提交 | 本轮：`cded7b39`（生产+测试）→ `9731fc11`（文档，最终冻结）；历史：`093b656f`→`86a8110a`→`d22e7daf` |
 | 工作树 | clean |
 | push / merge / deploy | 未执行 |
 

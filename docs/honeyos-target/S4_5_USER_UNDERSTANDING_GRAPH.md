@@ -12,7 +12,7 @@
 |---|---|
 | 分支 | feat/s4-5-user-understanding-graph |
 | 起始 HEAD | ffb36b0f |
-| 本轮提交 | 90b3370c (安全+A/C/D/E) → cfd8e100 (图谱 API+页面) → 11081124 (graph page/API freeze) → 093b656f (hook 修复) → 86a8110a (验收冻结) → d22e7daf (记录哈希) → cded7b39 (Round 2 缺陷修复+功能补齐) → 本提交 (Round 2 文档冻结) |
+| 本轮提交 | 90b3370c (安全+A/C/D/E) → cfd8e100 (图谱 API+页面) → 11081124 (graph page/API freeze) → 093b656f (hook 修复) → 86a8110a (验收冻结) → d22e7daf (记录哈希) → cded7b39 (Round 2 缺陷修复+功能补齐) → `9731fc11` (Round 2 文档冻结) |
 | S4 基线 | dff89780 |
 | push / merge / deploy | 未执行 |
 
@@ -189,7 +189,7 @@ git checkout feat/s4-longterm-memory-emotional-imprint   # 回到 S4
 ## 11. Git
 
 ```
-本提交    docs(s4.5): round 2 acceptance update and refreeze
+9731fc11  docs(s4.5): round 2 acceptance update and refreeze
 cded7b39  fix(s4.5): recompute label state on evidence/source change; complete graph interactions
 d22e7daf  docs(s4.5): record freeze commit hashes
 86a8110a  docs(s4.5): final acceptance report and DONE/FROZEN freeze
