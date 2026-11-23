@@ -782,27 +782,8 @@ class StructuredMemoryStore:
             explicit_recall = requests_broad_recall(query)
             if explicit_recall:
                 items = self.list_managed(lane_key=lane_key)
-
-            # S4.5: bounded physiology boost for native continuity memories.
-            # This runs AFTER lexical admission (score >= 3 threshold above).
-            # Only epinephrine is used — it is the least invasive signal.
-            # No arousal row exists on continuity.db, so we apply a flat
-            # small boost across admitted candidates; this never promotes
-            # an irrelevant memory past the 3.0 threshold on its own.
-            try:
-                from honeyos.companion.physiology_shadow import live_signals
-                signals = live_signals(self.home, now=now)
-                epinephrine = max(0.0, float(signals.get("epinephrine", 0.05)))
-                phys_boost = min(0.18, (epinephrine - 0.05) * 0.25)
-            except Exception:
-                phys_boost = 0.0
-
             direct = sorted(
-                (
-                    (score + phys_boost, item)
-                    for item in items
-                    if (score := _score(item.content, terms)[0]) >= 3
-                ),
+                ((score, item) for item in items if (score := _score(item.content, terms)[0]) >= 3),
                 key=lambda pair: (-pair[0], -pair[1].updated_at.timestamp()),
             )
             if not direct:

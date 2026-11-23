@@ -5859,25 +5859,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _honeyos_u2_post_completed(self, *, job, result, main_runtime,
                                          settings) -> None:
-        """S4.5: closed — no second LLM call after MemoryDistiller.
+        """Live U2 producer bound to the completed distillation lifecycle.
 
-        The old producer constructed a second async_call_llm request with
-        ``task=understanding_u2`` and ``max_tokens=600`` after every
-        completed distillation.  This is now a deliberate no-op because
-        S4.5's core rule is **one distillation, one model call**.  Future
-        U2 tag proposals must come from the existing distillation model
-        output JSON or from purely deterministic sidecar processing.
-
-        We return immediately instead of removing the method so existing
-        wiring (``_honeyos_u2_post_completed`` bound into the downstream
-        holder, test doubles, etc.) keeps working unchanged.
+        This is strictly additive: the distillation transaction has already
+        committed, and any U2 error is swallowed here so chat and the original
+        DistillationResult are never changed. The producer is off unless the
+        explicit ``memory.distillation.understanding.enabled`` gate is set.
         """
-        return
-        # Old path kept for audit reference — unreachable after the return
-        # above.  Will be removed in a later dedicated cleanup pass.
-        if not getattr(settings, "enabled", False):  # pragma: no cover
+        if not getattr(settings, "enabled", False):
             return
-        if str(getattr(result, "status", "") or "") != "completed":  # pragma: no cover
+        if str(getattr(result, "status", "") or "") != "completed":
             return
         try:
             from honeyos.core.constants import get_honeyos_home
