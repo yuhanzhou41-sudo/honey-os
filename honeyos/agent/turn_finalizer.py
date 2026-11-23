@@ -591,7 +591,7 @@ def finalize_turn(
     # Failure notices and recovered partial replies can contain apparent
     # personality signals. Only learn from a successful, persisted reply.
     # Companion-scoped only: non-companion, work and codex turns must never
-    # write Honey's temporary state.
+    # write Honey's temporary state or personality observations.
     if (
         final_response
         and completed
@@ -603,20 +603,56 @@ def finalize_turn(
         try:
             from honeyos.companion.personality_observation_hook import (
                 _resolve_companion_home,
+                capture_completed_agent_turn_observation,
             )
             from honeyos.companion.momentary_state import (
                 update_momentary_state_from_turn,
             )
 
+            _home = _resolve_companion_home(agent)
+
+            # S3: momentary nine-item state update.
             update_momentary_state_from_turn(
-                _resolve_companion_home(agent),
+                _home,
                 assistant_response=final_response,
                 turn_id=turn_id,
             )
-        except Exception as _momentary_state_err:
+
+            # S3.1: autonomous personality observation capture.
+            # Model-free detect_observation_signals gates eligibility; no
+            # extra LLM call is added per turn. Fail-open — capture failures
+            # are absorbed by the helper and never break chat.
+            _obs_result = capture_completed_agent_turn_observation(
+                agent,
+                turn_id=turn_id,
+                user_message=user_message,
+                assistant_response=final_response,
+            )
+            if _obs_result.get("captured"):
+                logger.debug(
+                    "autonomous personality observation captured: %s",
+                    _obs_result.get("observation_id"),
+                )
+        except Exception as _companion_state_err:
             logger.debug(
-                "momentary companion state update skipped: %s",
-                _momentary_state_err,
+                "companion state / personality observation skipped: %s",
+                _companion_state_err,
+            )
+
+        # S3.1: background personality reflection trigger.
+        # The helper cheaply checks should_reflect() first; no thread and no
+        # model call are created below threshold or during rate-limit.
+        try:
+            from honeyos.companion.personality_reflection_execution import (
+                maybe_start_background_personality_reflection,
+            )
+            maybe_start_background_personality_reflection(
+                _resolve_companion_home(agent),
+            )
+        except Exception as _reflect_trigger_err:
+            logger.debug(
+                "background personality reflection trigger skipped: %s",
+                _reflect_trigger_err,
             )
 
     # Context engine observation hook: notify the active engine that this

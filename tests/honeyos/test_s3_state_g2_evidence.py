@@ -388,12 +388,19 @@ def test_repeated_turn_appraisal_and_enqueue_are_idempotent(tmp_path):
 
 
 def test_momentary_state_is_companion_scoped_in_turn_finalizer():
-    """State item 6 / G2 item 14: no non-companion state pollution."""
+    """State item 6 / G2 item 14: no non-companion state pollution.
+
+    S3.1: autonomous personality observation capture now lives inside the
+    same companion-input-budget guard so it too is restricted to companion
+    turns. The guard is the single gate for momentary_state, observation
+    capture, and background reflection trigger.
+    """
     source = Path(turn_finalizer.__file__).read_text(encoding="utf-8")
     guard = 'and getattr(agent, "_companion_input_budget", False) is True'
     assert guard in source
     assert source.index(guard) < source.index("update_momentary_state_from_turn(")
-    assert "capture_completed_agent_turn_observation(" not in source
+    # S3.1: capture_completed_agent_turn_observation IS inside the same block.
+    assert "capture_completed_agent_turn_observation(" in source
 
 
 def test_companion_turn_context_stages_promoted_and_momentary_note():

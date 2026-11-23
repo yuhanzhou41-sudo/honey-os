@@ -5,7 +5,13 @@ from pathlib import Path
 import honeyos.agent.turn_finalizer as turn_finalizer
 
 
-def test_saved_reply_does_not_add_a_second_appraisal_or_personality_observation():
+def test_saved_reply_persist_precedes_companion_state_hooks():
+    """S3.1: autonomous personality observation is now wired after persist.
+
+    The companion state block (momentary_state + personality observation +
+    reflection trigger) runs after _persist_session so we never learn from an
+    unsaved or partially-persisted reply.
+    """
     source = Path(turn_finalizer.__file__).read_text(encoding="utf-8")
 
     persist_idx = source.index("agent._persist_session(messages, conversation_history)")
@@ -13,7 +19,11 @@ def test_saved_reply_does_not_add_a_second_appraisal_or_personality_observation(
     context_idx = source.index("# Context engine observation hook:")
 
     assert persist_idx < hook_idx < context_idx
-    assert "capture_completed_agent_turn_observation(" not in source
+    # S3.1: autonomous personality observation capture IS wired in the
+    # companion state block (model-free, no extra LLM per turn).
+    assert "capture_completed_agent_turn_observation(" in source
+    assert "maybe_start_background_personality_reflection(" in source
+    # Post-hoc physiology queue remains unwired in production (S3 decision).
     assert "enqueue_completed_reply(" not in source
 
 
