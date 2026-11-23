@@ -90,7 +90,8 @@ PYTHONPATH=/home/zyh20/projects/honey-os-integration \
 | S0 基线与分支 | DONE / FROZEN |
 | S1 Cognitive 权限 | DONE / FROZEN |
 | S2 统一有界上下文与 Codex 通道 | DONE / FROZEN（详见 `S2_CONTEXT_TRANSPORT.md`） |
-| S3–S10 | NOT_STARTED，未获本轮执行授权 |
+| S3 G2 证据独立性与内部状态作用域 | DONE / FROZEN（详见 `S3_STATE_G2_EVIDENCE.md`） |
+| S4–S10 | NOT_STARTED，未获本轮执行授权 |
 
 ## S0/S1 冻结记录
 
@@ -133,4 +134,17 @@ S1 实现提交 diff stat（基线 HEAD → `6408993`）：
 - 遗留风险：`active` 模式的真实会话覆盖面尚未接入新的鉴权数据，上线前需要单独评估（属于后续阶段，不在 S1 范围）。
 - 未修改生产数据库、systemd、live `PYTHONPATH` 或运行中服务；未 merge、push、部署。
 - 回滚：在 `feat/s1-cognitive-scope-gate` 上执行 `git revert 64089936705ded48758b335bf68b5280567bae1d` 并撤销本冻结记录提交；或直接切回 `integration/u2-v2-off`。不使用 `git reset --hard`/`git clean -fd`。
+
+## S3 冻结记录（摘要）
+
+| 项目 | 值 |
+| --- | --- |
+| 基线（S2 冻结） | `a656a8b6310454e7efd12b538fa2360e9d4851d4` |
+| S3 实现提交 | `0284ac69b05b2b256a0b0a47adbc33d8bda0a25b` |
+| 任务分支 | `feat/s3-state-g2-evidence` |
+| 定向与回归 | 211 passed, 9 skipped；`test_config` 14 passed / 1 已知既有失败 |
+| 模型调用 / token / 费用 | 0 / 0 / 0 |
+
+详细审计表、运行链、两套状态边界、遗留风险与回滚方式见 `S3_STATE_G2_EVIDENCE.md`。
+
 
