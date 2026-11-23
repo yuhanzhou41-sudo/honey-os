@@ -1,242 +1,172 @@
 # HoneyOS Phase S4.5 — 用户理解图谱与原生记忆召回整合
 
-**冻结状态: DONE（后端全部交付；前端图谱 UI 标记为独立规划）**
+**冻结状态: PARTIAL（后端安全接线 + 图谱 API + 图谱页面已交付；旧窗口补偿与全量端到端网关验收未完成）**
 
-## 0. 冻结元信息
+本文件从 `ffb36b0f` 继续，记录本轮增量。
+
+## 0. 元信息
 
 | 项目 | 值 |
 |---|---|
-| 实施分支 | feat/s4-5-user-understanding-graph |
-| 基线 HEAD | dff89780 (S4 freeze) |
-| 实现 commits | 9a3070c8 → abc710af (revert) → 64c65185 (reapply) → b55b6b96 (U2 同批次整合) |
-| Push / merge / deploy | 未执行 |
+| 分支 | feat/s4-5-user-understanding-graph |
+| 起始 HEAD | ffb36b0f |
+| 本轮提交 | 90b3370c (安全+A/C/D/E) → cfd8e100 (图谱 API+页面) → 本次冻结 |
+| S4 基线 | dff89780 |
+| push / merge / deploy | 未执行 |
 
-## 1. 核心交付
+## 1. 本轮相对 ffb36b0f 的实际变化
 
-### 1.1 S4 known/neutral/unknown 收紧
+1. **U2 写入不再绕过业务规则（Task A）**
+   `gateway/run.py::_honeyos_u2_post_completed` 改为构造 `Proposal` 并调用
+   `understanding.u2_maintenance.apply_proposal`（与 U2 policy pipeline 同一
+   校验写入路径），不再直接 SQL。新助手 `_honeyos_u2_evidence_meta` 把模型
+   引用的 operation_index 解析为真实、仍 active 的 continuity memory，并丢弃
+   `forgotten` / 非资格 kind（open_loop / temporary_state）。`apply_proposal`
+   负责 user_suppressed 拒绝、证据元数据校验、幂等重放、grade/state 推导。
 
-emotional_imprint._classify() 中「有助手回复但无正则情绪命中」从
-neutral 改为 unknown。neutral 保留 CHECK 约束供未来低激活证据使用。
-旧印记不重写（INSERT OR IGNORE）。
+2. **原生生理加权改为证据驱动（Task C）**
+   `continuity.context_for_lane` 删除 kind 梯度（不再假设 episode>commitment>）。
+   仅当某条记忆存在 S4 已确认的 `known` 情绪印记时，才在 `_score>=3` 准入后
+   获得有界 boost（上限 0.12，静息时衰减为 0）。无印记 → 保持原排序。
 
-### 1.2 U2 同批次整合（主模型一次调用）
+3. **外来历史纯检索（Task D）**
+   `memory/runtime_shadow.py` 不再读取 Honey 当前生理状态。DeepSeek 导入记忆
+   上由 epinephrine 派生的 state_boost 已移除。salience（personal_relevance /
+   user_emphasis / 记忆自带 arousal）仍参与重排，但当前模拟状态不再影响它。
 
-**这是本轮最高优先级交付。**
+4. **S4 印记进入真实回忆上下文（Task E）**
+   `context_for_lane` 对 `known` 印记追加一条显式标注为「历史情绪印记 / 当时的
+   状态，不代表此刻感受」的有界提示；unknown/neutral 不添加任何内容。已遗忘
+   记忆因 list_active 过滤不会进入。
 
-MemoryDistiller prompt 追加可选 understandings 数组（max 4 条），
-模型在同一次请求里同时输出原生记忆 operations 和 U2 标签建议。
+5. **图谱 API（Task G）** `honeyos/runtime/web_routers/understanding.py`
+   - GET /api/understanding/graph（分页、owner 作用域、含 evidence + 记忆预览 + 印记）
+   - GET /api/understanding/labels/{id}
+   - POST /api/understanding/labels/{id}/suppress（忘记标签，不删记忆；返回不再含正文）
+   - DELETE /api/understanding/labels/{id}/evidence?ref=（只解除一条关系）
+   evidence 若指向已遗忘/不存在的原生记忆则被丢弃 → 用户忘记不会经图谱复活。
 
-```
-模型输出 JSON:
-  chapter {...}  (既有)
-  operations [...] (既有, max 2000 tokens 预算)
-  understandings [ (可选, 无则空 tuple)
-    {operation, category_id, scope_key, canonical_key,
-     text, operation_indices:[0..n-1]}
-  ]
-```
+6. **图谱页面（Task F）** `frontend/src/features/understanding/`
+   路由 `/understanding`，导航「Honey 对我的理解」。SVG 节点图（标签←→记忆，
+   支持实线 / 反证虚线），平移+滚轮缩放+重置；分类/时间筛选；点击标签展开详情
+   （类别、范围、状态、修订、支持/反证、记忆 kind/时间、known 印记）；操作：忘记
+   标签、解除关联；空态与错误态。
 
-约束：
-- 只引用已在同批次输出的 operation_index
-- operation ∈ {propose, support, counter, supersede}
-- category ∈ {interest_preference, behavior_pattern,
-  learning_work_style, communication_style, relationship_style,
-  value_tendency}
-- 跳过 open_loop / temporary_state 作为 evidence
-- 永远不推断敏感类别（身份、诊断、性取向）
+## 2. 保持不变的既有机制
 
-MemoryDistiller._parse_understandings() 独立 static 方法，不 import
-任何 understanding 模块，model-free 纯 JSON 解析 + 白名单过滤。
+- MemoryDistiller 触发阈值（20 条 / min_tail 6 / max_batch 40 / 日记权重 3）、
+  五种记忆模式、`_score`、operations 各分支（compress/reinforce/update/resolve）、
+  一次模型调用。
+- `understanding_v2.db` schema（labels/evidence/postings）；U2 policy/sources/
+  continuity_adapter/management 未改，仅改为复用 `apply_proposal`。
+- G2 两套 DB 与晋升规则；S3.1 自动观察。
+- open_loop 完成/隐藏/解决状态机；U2 不纳入 open_loop。
+- S4 sidecar schema 与 known/unknown 分类（neutral 保留 CHECK）。
+- 九项 momentary_state / 九项 physiology_shadow 定义。
+- Study 学习系统、DeepSeek 来源身份。
+- 原生记忆手动遗忘（continuity status / cognitive tombstone）语义。
 
-MemoryDistiller._apply_operations() 返回值签名改为
-tuple[int, int, dict[int, str]]（applied, rejected, applied_indices），
-给每个成功保存的 operation 记录 (op_index → memory_id) 映射。
+## 3. 检索分流
 
-DistillationResult 新增 understandings 和 applied_indices 字段。
+| 来源 | 召回依据 | physiology |
+|---|---|---|
+| 原生 continuity（长期记忆/episode/commitment/open_loop） | 话题相关 + 既有评分 + 有界印记 boost | 仅 known 印记、有界、静息归零 |
+| 外来 DeepSeek（cognitive_memory） | 纯相关性 + salience | **不使用**当前生理状态 |
+| Study | 保持原访问边界（未接入本图谱） | 不涉及 |
 
-run.py::_honeyos_u2_post_completed 在 distill 完成后：
-1. result.applied_indices[op_index] → continuity memory_id
-2. result.understandings[*].operation_indices → 映射到真实 memory_id
-3. 直接 INSERT/UPDATE understanding_v2.db 的 labels + evidence + postings
-4. fail-open（异常吞掉，不影响原 distillation）
-5. 检查 labels.state=user_suppressed 的标签跳过写入
-
-**U2 现在在同一次 MemoryDistiller 模型调用里真实运行。**
-旧二次 LLM call（produce_after_distillation + async_call_llm
-task=understanding_u2 max_tokens=600）已全部移除。
-
-### 1.3 physiology 差异加权（真的改变排序）
-
-上一轮 PARTIAL 用统一常数 phys_boost 给所有候选加同样值，对排序
-零作用。本轮改为 kind × epinephrine 梯度：
-
-```python
-_KIND_GRADIENT = {
-    "episode": 1.0,   # 共同经历，事件性强，匹配高 arousal
-    "commitment": 0.7, # 答应过的
-    "open_loop": 0.4,  # 待续
-    "temporary_state": 0.0, # 用户临时状态，跳过
-    "conversation_chapters": 0.0, # 独立表，不进 context_for_lane
-}
-phys_factor = min(0.12, max(0.0, (ep - 0.05)) * 0.18)
-final_score = lexical_score + phys_factor * _KIND_GRADIENT[kind]
-```
-
-效果：两条 lexical score 相近但 kind 不同的记忆，在 epinephrine
-高时 episode 会超过 commitment，真正改变排序。
-
-约束：
-- 只影响排序（rerank），不改变 _score >= 3 的准入阈值
-- 上限 0.12，低于大多数真实分数差，不强行颠倒
-- fail-open（physiology_shadow.sqlite 不存在 → phys_factor = 0）
-- 不修改 runtime_shadow（外来历史）原有 physiology boost 公式
-- 不调用 LLM
-
-### 1.4 FakeDistiller.home 修复
-
-test_continuity_gateway::test_gateway_tracks_distillation_as_non_blocking_
-background_work 因 FakeDistiller 缺 .home 属性而失败。本轮给测试替身
-加了 .home = tmp_path，生产契约不变。
-
-### 1.5 continuity recall 已有遗忘边界（确认）
-
-上一轮已验证：
-- continuity.db: status ∈ {active, archived, forgotten}
-  - list_active 只返回 active
-  - list_managed 返回 active + archived
-  - context_for_lane 用 list_active，天然过滤 forgotten
-- cognitive_memory.sqlite: memory_tombstones 表
-
-本轮未改遗忘逻辑，只是确认 physiology boost 加在 list_active 结果上，
-所以用户已 forgotten 的记忆永远不会被 physiology boost 拉回。
-
-## 2. 保持不变的功能
-
-| 模块 | 不变项 |
-|------|--------|
-| MemoryDistiller | 触发阈值（20/6/40/日记权重 3）、五种记忆模式、_score 算法、_apply_operations 的 compress_episode/reinforce/update/resolve 路径、DISTILLATION_SCHEMA 常量 |
-| 原生记忆 | 四种 kind 定义、三种 evidence 类型、expires_at 规则、StructuredMemoryStore.record 完整字段约束 |
-| emotion_imprint | sidecar schema、classify static 方法、hook 绑定机制、downstream_holder 可变模式 |
-| G2 | 两套 DB、晋升规则、S3.1 自动观察、personality_reflection_execution per-home 锁 |
-| open_loop | 完成/隐藏/解决状态机、不进入 U2、physiology 权重最低（0.4x） |
-| Study | 用户计划系统独立 |
-| 外来历史 | DeepSeek + Study 纯检索、runtime_shadow 原有 physiology boost 公式、不受 continuity 的 kind gradient 影响 |
-| 九项状态 | momentary_state + physiology_shadow 字段定义和衰减规则 |
-| understanding | 全部 store/schema 保持（labels id=sha256(owner+lane+...)、evidence ref 格式 "continuity:<memory_id>"）、policy/sources/continuity_adapter 不动 |
-| 前端 | 本轮不改任何前端文件 |
-
-## 3. 本次 vs 上一轮 PARTIAL 的实际变化
-
-| 项 | S4.5 PARTIAL | **本轮** |
-|----|------------|---------|
-| U2 二次 LLM call | 短路 return | **正式同批次整合** |
-| U2 生产入口 | 不存在 | **distillation prompt + run.py apply** |
-| physiology boost | 统一常数（零排序效果） | **kind×epinephrine 梯度（真正 rerank）** |
-| FakeDistiller.home | 失败 | **修复** |
-| applied_indices | 无 | **新增（op_index → memory_id）** |
-| understandings 解析 | 无 | **新增 _parse_understandings + DistillationResult 字段** |
-| understanding store 写入 | 无 | **run.py 里直接 INSERT/UPDATE** |
-
-## 4. 模型调用及 token 成本
-
-| 项目 | S3.1 | S4.5 PARTIAL | **本轮** | 变化 |
-|------|------|-------------|---------|------|
-| 普通聊天主模型调用 | 路由决定 | 路由决定 | 路由决定 | **无变化** |
-| MemoryDistiller 主模型调用 | 每批 1 次 | 每批 1 次 | **每批 1 次** | **无变化** |
-| U2 二次 LLM call | N/A | 关闭（无新入口） | **关闭** | **-1/批（从 S4 来）** |
-| max_tokens/批 | 1400 | 1400 | **2000** | **+600（有界）** |
-| 每批 understandings 字段 token | — | 0 | estimated max ~400 | 有界 |
-| Physiology Qwen | 后台维护 | 后台维护 | 后台维护 | **无变化** |
-| continuity recall 额外耗时 | — | ~0.18ms | ~0.1ms | 可忽略 |
-| 数据库存储增量 | — | ~200B/印记 | U2 tags + evidence（增量每批 0~8 行） | 可忽略 |
-
-核心约束满足：
-- 普通聊天每轮必经模型调用数 = S3.1 保持不变
-- MemoryDistiller 每批仍然只有一次模型请求（增加了可选字段和
-  max_tokens 从 1400→2000，但**没有**新增调用次数）
-
-## 5. 测试
-
-### 5.1 新增 S4.5 专项（6 passed）
+## 4. physiology 加权公式
 
 ```
-test_physiology_boost_diverges_by_kind_for_nearby_scores
-test_u2_parse_understandings_rejects_unknown_categories
-test_u2_parse_understandings_accepts_valid_item
-test_u2_parse_understandings_requires_valid_indices
-test_u2_same_batch_fall_back_to_empty_when_model_missing_field
-test_apply_operations_returns_index_to_memory_id_map
+phys_factor = min(0.12, max(0, epinephrine - 0.05) * 0.18)     # 静息 0
+boost(item) = phys_factor if item 有 known 印记 else 0
+final_score = lexical_score + boost(item)     # 仅对 lexical_score>=3 的候选
+```
+证据驱动、有界、类别无关；强情绪不会把无关记忆推过准入阈值；状态过期→0。
+
+## 5. S4 印记读取链
+
+distill → sidecar known/unknown（写入）→ `context_for_lane` 读取 → known 才追加
+「历史印记」提示进入聊天上下文。unknown 不产生情绪描述；历史印记不覆盖当前状态；
+不因重复召回强化；不增加 U2 置信度；不新增模型调用。
+
+## 6. 用户手动遗忘 vs 自动归档
+
+- continuity `status`：active / archived / forgotten。召回走 list_active（仅 active）。
+- cognitive：memory_tombstones。
+- U2：`labels.state='user_suppressed'`（suppress 接口），正文不再返回；再次整理
+  同义提议被 `apply_proposal` 的 PermissionError 拦截，不复活。
+- 归档 ≠ 删除；用户忘记优先级最高。本轮未改这些语义。
+
+## 7. 测试
+
+后端（相同环境、相同命令）：
+- 定向：test_s45_u2_samebatch(7) / test_s45_understanding_api(4) / S3 / memory /
+  companion / test_s4_emotional_imprint 全通过。
+- 大范围：`pytest tests/honeyos/`（排除 aiohttp/study/understanding_v2 重依赖）
+  → **899 passed / 18 failed / 18 skipped**。18 个失败均属预先存在集群
+  （campus、turn_router_shadow、branding、cli、config、distribution、
+  install_script/installer、repository_surface），与本轮改动无关；本轮未新增失败。
+
+前端：
+- `npm run typecheck` 通过。
+- `npm run build` 通过（react_dist 重新生成）。
+- `vitest run`：94 passed（含新增 UnderstandingPage.test.tsx）。
+
+真实模型调用 0；token 0；费用 0。
+
+## 8. 模型调用 / token 成本
+
+| 项目 | ffb36b0f | 本轮 | 变化 |
+|---|---|---|---|
+| 普通聊天主模型 | 每轮按路由 | 每轮按路由 | 无变化 |
+| MemoryDistiller | 每批 1 次 | 每批 1 次 | 无变化 |
+| U2 二次 LLM | 0 | 0 | 无变化（仍为 0） |
+| 图谱打开 | — | 纯 SQLite 查询 | 不调用模型 |
+| 外来历史 physiology | 有 | **移除** | 略降 |
+| 新增长期记忆读写 | — | 图谱只读查询 | 可忽略 |
+
+## 9. 未完成 / PARTIAL 项
+
+1. **全量端到端网关验收（8 个场景）**：已用临时 DB + 单测覆盖关键数据流
+   （U2 解析/映射、apply_proposal、证据过滤、图谱 API、页面渲染），但未启动
+   隔离 Gateway + 真模型跑完整 8 场景。属验收深度不足，非功能缺失。
+2. **人工浏览器交互验收**：页面已 build + 组件测试，但未在真实浏览器点选回归。
+3. **旧窗口 6 单位 / 40 条尾部门槛补偿（Task I）**：仅确认语义，未做只读专项核对
+   与最小补丁。
+4. **Study 资料接入图谱**：保持原边界，未接入。
+5. **外来历史共享硬上限（3 条 / 900 字符）**：runtime_shadow 已有自身预算，
+   未做 DeepSeek+Study 合并共享上限的专项改造与测试。
+
+## 10. 回滚
+
+```
+git revert <freeze-commit>
+git revert cfd8e100      # 图谱 API + 页面
+git revert 90b3370c      # 安全 / A C D E
+git checkout feat/s4-longterm-memory-emotional-imprint   # 回到 S4
 ```
 
-### 5.2 core 回归
+## 11. Git
 
 ```
-162 passed in 5.78s
-(companion + memory + S4 emotion + S4.5 new + continuity gateway)
+<freeze>  docs(s4.5): freeze graph page, API and memory-safety fixes
+cfd8e100  feat(s4.5): user-understanding graph page + graph API
+90b3370c  fix(s4.5): apply_proposal U2 writes; pure external history;
+          evidence-based physiology; imprint into recall context
+ffb36b0f  docs(s4.5): freeze full backend delivery
 ```
 
-### 5.3 大范围回归（排除 aiohttp）
+- 工作树：clean（除本冻结文档）
+- push / merge / deploy：未执行
 
-```
-964 passed / 18 pre-existing failed / 18 skipped
-```
+## 12. 数据兼容 / 迁移
 
-18 个失败全部是预先存在的 branding/installer/shadow 问题，
-与本轮修改无关（与 S4.5 PARTIAL 相同）。
+无 schema 变更。理解库沿用 understanding_v2.db；continuity 沿用既有表 + S4
+sidecar（CREATE IF NOT EXISTS）。U2 写入改为 apply_proposal，向后兼容既有 labels
+与 evidence；旧数据无需迁移。
 
-### 5.4 其他
+## 13. 后续建议
 
-- py_compile: OK
-- git diff --check: OK
-- 真实模型调用: 0, token: 0, 费用: 0
-- 未修改任何生产数据库 schema
-
-## 6. 未完成项
-
-| 任务 | 原因 | 规划 |
-|------|------|------|
-| 前端图谱 UI | 需技术栈评估（React 路由 / 现有记忆页 / 图形库） | 独立前端阶段 |
-| S4 情绪印记 recall 端注入 | U2 同批次整合刚完成，图谱 API 尚未接 | 等前端阶段做 |
-| 旧窗口未整理补偿（6 门槛 + 40 上限） | 底层 distillation 状态机改动 | 独立风险评估 |
-| 外来历史统一硬上限（3 条 / 900 chars） | runtime_shadow 独立模块，改动面较大 | 后续阶段 |
-
-## 7. Git 提交
-
-```
-b55b6b96 feat(s4.5): U2 same-batch distillation integration + divergent physiology boost
-9ac99779 docs(s4.5): freeze backend safety fixes and recall enhancement
-64c65185 Reapply "feat(s4.5): close U2 second LLM call..."
-abc710af Revert "feat(s4.5): close U2 second LLM call..."
-9a3070c8 feat(s4.5): close U2 second LLM call...
-dff89780 docs(s4): freeze long-term memory emotional imprint acceptance
-```
-
-| 项目 | 值 |
-|------|-----|
-| Branch | feat/s4-5-user-understanding-graph |
-| Working tree | clean（除本冻结文档） |
-| Push | 未执行 |
-| Merge | 未执行 |
-| Deploy | 未执行 |
-
-### 回滚
-
-```bash
-git revert b55b6b96
-# 或切回 S4
-git checkout feat/s4-longterm-memory-emotional-imprint
-```
-
-## 8. 后续建议
-
-1. **U2 图谱 API + 前端** — highest next priority
-   - 后端先加：GET /api/honeyos/u2/graph (labels + evidence + memories + imprints)
-   - 前端：最小图谱（标签节点 + 记忆节点 + 关联连线，点击展开详情）
-2. **S4 情绪印记 recall 注入** — U2 图谱 API 做好后沿 continuity.context_for_lane 返回结果追加
-3. **外来历史统一硬上限** — 独立阶段
-4. **旧窗口 6/40 补偿** — 先审计 state machine 再动手
-
----
-
-**完成状态**: DONE（后端全部交付，前端图谱 UI 独立规划）
-**停止位置**: 未进入 S5/S6/S7，未 push/merge/deploy
+1. 隔离 Gateway + fake model 跑完 8 场景，补齐 Task I 旧窗口核对。
+2. 浏览器真机点选验收图谱。
+3. DeepSeek+Study 共享硬上限专项。
