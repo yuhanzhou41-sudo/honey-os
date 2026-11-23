@@ -153,8 +153,10 @@ def test_known_from_assistant_self_report(tmp_path):
 
 
 def test_neutral_from_factual_assistant_reply(tmp_path):
-    """Item A2: assistant reply is purely factual (no Honey-self emotion
-    markers) → neutral, not unknown."""
+    """S4.5 restricts neutral to a distinct, verifiable low-arousal
+    basis we do not yet emit.  Purely factual assistant replies now land
+    as ``unknown`` — absence of emotion markers does NOT imply neutrality.
+    """
     _init_continuity_db(tmp_path / "continuity.db")
     _insert_memory(tmp_path / "continuity.db", mid="m1", kind="episode",
                    content="We discussed the API spec.", run_id="run-1",
@@ -173,8 +175,10 @@ def test_neutral_from_factual_assistant_reply(tmp_path):
     assert created == 1
     imprint = store.get("m1")
     assert imprint is not None
-    assert imprint.status == STATUS_NEUTRAL
+    # S4.5: factual assistant reply → unknown (not neutral)
+    assert imprint.status == STATUS_UNKNOWN
     assert imprint.dominant_axis is None
+    assert "no Honey-self emotional or cognitive signal" in imprint.evidence_summary
 
 
 def test_unknown_when_no_assistant_message_cited(tmp_path):

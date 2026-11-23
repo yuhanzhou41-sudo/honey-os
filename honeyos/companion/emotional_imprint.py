@@ -266,6 +266,17 @@ class EmotionalImprintStore:
         basis_axes: tuple[str, ...],
         basis_turn_ids: tuple[int, ...],
     ) -> tuple[str, str | None, str | None, str]:
+        """Classify using S4.5 stricter evidence rules.
+
+        ``known`` requires Honey-self emotional/cognitive signals actually
+        matched in assistant text.  ``neutral`` is **not** the absence of
+        signals — it requires a distinct, verifiable low-arousal basis we
+        do not yet produce here.  This S4.5 refactor therefore returns
+        ``unknown`` whenever we lack concrete evidence, instead of
+        collapsing the "found assistant text but no emotion signal" case
+        into ``neutral``.  ``neutral`` remains a valid status in the
+        CHECK constraint so future versions can emit it safely.
+        """
         if basis_axes:
             for candidate in ("positive_valence", "negative_valence",
                               "warmth", "tension", "playfulness",
@@ -288,10 +299,13 @@ class EmotionalImprintStore:
                 STATUS_UNKNOWN, None, None,
                 "No assistant reply could be linked to this memory item."
             )
+        # S4.5: absence of matched emotion signal does NOT mean the event
+        # was neutral — it means we do not know.  Keep neutral reserved for
+        # a future version that can produce verifiable low-arousal evidence.
         return (
-            STATUS_NEUTRAL, None, None,
-            "Cited assistant text was factual without clear emotional "
-            "or cognitive self-report signals."
+            STATUS_UNKNOWN, None, None,
+            "Cited assistant text exists but no Honey-self emotional or "
+            "cognitive signal could be confirmed from the transcript."
         )
 
     def _insert_row(
