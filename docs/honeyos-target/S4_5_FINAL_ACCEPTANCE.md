@@ -10,7 +10,7 @@
 | 项目 | 值 |
 |---|---|
 | 起始 HEAD | `11081124` |
-| 本轮新增提交 | `093b656f`（hook 修复 + 验收测试）→ `86a8110a`（最终验收文档冻结） |
+| 本轮新增提交 | `093b656f`（hook 修复 + 验收测试）→ `86a8110a`（验收文档冻结）→ `d22e7daf`（记录冻结哈希）→ `cded7b39`（Round 2 缺陷修复 + 功能补齐）→ 本提交（Round 2 文档冻结） |
 | S4 基线 | `dff89780` |
 | 分支 | `feat/s4-5-user-understanding-graph` |
 | push / merge / deploy | 均未执行 |
@@ -35,6 +35,149 @@ None，行为不变。新增回归测试
 覆盖真实 Gateway 组合（emotion hook → async U2）。
 
 其余为新增测试，无其他生产代码改动。
+
+## 2b. 本轮追加修复（d22e7daf 之后，Round 2）
+
+在上一冻结 `d22e7daf` 基础上，针对 S4.5 全部已知缺陷与未完成原定功能逐项修复
+与补齐。以下均为**真实缺陷或原定未交付项**，未为通过测试而放宽或删除断言。
+
+### 2b.1 U2 标签证据与状态同步（Task 1）
+
+解除关联、遗忘来源、反证变化、来源撤回后，标签 grade/state 必须随有效证据
+变化重新评估，不得保留已失去依据的高可信状态；用户手动遗忘的标签不得自动
+复活。
+
+- `honeyos/understanding/u2_maintenance.py`
+  - 新增 `recompute_label(store, label_id, continuity_db_path, actor)`：以
+    `_valid_evidence_rows` 重新取**当前仍有效**的证据（指向已遗忘/归档/不
+    存在 continuity 记忆的 `continuity:` 引用被判为孤儿并修剪），再用既有
+    `_grade` 规则重算 grade/state；仅在确有变化时归档旧版本到
+    `label_versions` 并 `revision+1`。`USER_SUPPRESSED` 标签直接跳过，绝不
+    复活。
+  - 新增 `recompute_labels_for_memory(...)`（actor=`source_withdrawal`）与
+    `reconcile_store(...)`：覆盖「单条记忆变化」与「全量扫描兜底」两种入口。
+  - `apply_proposal` 接受 `continuity_db_path`，写入后用同样的有效证据集合
+    推导 grade/state 并修剪孤儿，使撤回的来源无法继续抬高置信度。
+  - `_archive_current` 在 INSERT 前执行 `CREATE TABLE IF NOT EXISTS
+    label_versions(...)`（schema 与 `u2_store.py` 一致），保证存量库/最小夹
+    具缺表时重算永不失败。
+- `honeyos/companion/continuity.py`：新增 `_recompute_u2_for_memory`
+    （fail-open，U2 错误绝不阻塞 continuity 变更），在 `change_status` 把
+    记忆置为 `forgotten`、以及后台 90 天自动归档低重要 episode 时触发
+    `recompute_labels_for_memory`。用户遗忘的记忆所支撑的标签会随之失去该
+    条证据并被重算，但 `user_suppressed` 标签不复活。
+- `honeyos/gateway/run.py` 与 `honeyos/understanding/u2_pipeline.py`：同批
+    U2 写入与 `recover_pending_jobs` / `recover_saved_response` 恢复路径均
+    透传 `continuity_db_path`，使证据解析与重算始终针对真实 continuity 库。
+- 复用既有 U2 policy 与状态规则，未新增第二套删除机制；解除关联只删
+    evidence 关系行，随后调用 `recompute_label`（actor=`user_detach`）。
+
+**本轮发现并修复的真实生产健壮性缺陷（P1）：`label_versions` 表在存量库缺失
+时导致详情接口 500。** `label_versions` 由 `UnderstandingStore.initialize()`
+创建（仅 `result.understandings` 非空时触发，`run.py`），但最小测试夹具与
+S4.5 之前已升级的存量生产库都没有该表 → `recompute_label` 的 INSERT 与
+`get_understanding_label` 的 SELECT 抛 `OperationalError: no such table`，
+任何已存在 home 的标签详情都会 500。修复见上（写侧懒建表 + 读侧 try/except
+降级为空时间轨迹）。
+
+回归测试：`tests/honeyos/understanding_v2/test_s45_evidence_state_recompute.py`
+（含 `test_label_detail_exposes_versions_and_masks_body_after_forget`：
+`GET /labels/{id}` 返回 `versions`，forget 后正文与所有版本快照均遮罩为
+`""`）。
+
+### 2b.2 U2 是否真正参与后续聊天（Task 2）
+
+核实结论：**合法标签目前不被注入普通聊天上下文（fail-closed，有意为之），
+本轮不擅自启用。** 证据见 `docs/understanding_v2/R5_FINAL_CONTEXT_AUDIT.md`：
+
+- 生产 `compose_user_api_content(content, ext_prefetch_cache, plugin_user_context)`
+  为 3 参（第 4 个 U2 sidecar 参已在 S4.5 移除），生产调用点
+  `turn_context.py` / `conversation_loop.py` 不传 U2。
+- `wrap_understanding` + `build_memory_context_block` 仍保留「有限、可能不
+  准确」标记，仅被测试与 `eval_understanding_v2.py` 使用，**从未进入生产聊
+  天上下文**。
+- 权限与 token：U2 上下文读取走 owner 作用域过滤；若未来启用需单独的产品+
+  安全授权（token 预算、准确性边界、用户可见性），不在 S4.5 修复范围内擅
+  自解除安全限制。
+- 证明测试：`tests/honeyos/understanding_v2/test_s45_u2_not_injected_into_chat.py`
+  断言生产上下文构建不包含 U2 标签。
+
+### 2b.3 图谱原定交互补齐（Task 3）
+
+记忆节点从展示态升级为可点击详情，并补独立「时间轨迹」。复用当前 React 页
+面、API 与既有记忆管理操作，未创建第二套删除机制。
+
+- `frontend/src/features/understanding/UnderstandingPage.tsx`：点击记忆节点 →
+  右侧面板展示完整合法详情（正文、会话、发生时间、known 情绪印记）与
+  「相关标签（N）」（被 ≥2 个标签引用的记忆可跨导航跳回对应标签详情）。标
+  签详情新增独立**时间轨迹**：标签形成、获得支持、反证、以及每次修订
+  （`actor` + 修订前 state/grade），按时间倒序。
+- `frontend/src/api/understanding.ts`：`getLabel(id)` 读取 `versions` 字段。
+- `honeyos/runtime/web_routers/understanding.py`：`GET /labels/{id}` 返回
+  `versions`（来自 `label_versions`，forget 后正文遮罩为 `""`）；
+  `DELETE .../evidence` 解除关联后调用 `recompute_label` 并在响应里返回
+  `recomputed`。
+
+### 2b.4 23 个历史失败逐项审计（Task 4）
+
+基线 23 个失败全部 PRE-EXISTING（基线同源）。其中 5 个 `understanding_v2`
+旧测试在本轮被审计并**更新断言（依据充分），未删除、未跳过**：
+
+1. `test_transports.py` ×2：编码已废弃的 `compose_user_api_content()` 4 参
+   签名（含 U2 sidecar）。S4.5 fail-closed 已移除第 4 参，生产签名为 3 参。
+   重写为 3 参调用，保留传输往返不变式（accuracy 标记经
+   `wrap_understanding`→`build_memory_context_block` 存活；多模态内容不被
+   改写），并加注释引用 S4.5 决策。
+2. `test_u2_engineering.py` ×3：编码 S4.5 冻结前「独立 U2 producer LLM 调
+   用」旧设计（断言 `u2_calls==1`、`jobs==["completed"]`）。S4.5 把 U2 折
+   叠进同批蒸馏（同一请求），故 `u2_calls` 应为 **0**，标签来自
+   `result.understandings`（按 `operation_index` 解析，随后解析为
+   `continuity:{id}` 引用）。
+   - 更新 `_fake_extractor` 产出 `understandings` 数组；
+   - 修正两处 `u2_calls` 断言 1→0；把已失效的 `jobs==["completed"]`（同批
+     写入不建 job 行）替换为 `evidence==1` 计数断言；
+   - 重写 `test_gateway_live_producer_failure_never_changes_distillation`
+     → 改名 `..._u2_failure_...`，monkeypatch
+     `u2_maintenance.apply_proposal` 抛错，断言蒸馏仍 `completed`
+     （distiller `post_completed_hook` 外围 try/except 保证 fail-open）且零
+     部分标签/证据行。
+
+其余 18 个失败（campus ×2、turn_router_shadow ×8、branding / cli_main /
+config / distribution_contract ×2 / install_script / installer /
+repository_surface）与 S4.5 无关，单独列为未解决（见 §14），不越界扩展。
+
+### 2b.5 Study 外来历史剩余需求（Task 5）
+
+核实结论：**Study 无自动聊天检索入口是有意的范围排除，非故障、非未开发遗
+忘、非待授权开关。**
+
+- `honeyos/study/chat_reading.py` 为「范围优先 + 显式引用」阅读（仅当用户
+  显式引用某资料时读取），不是自动聊天历史检索/注入入口。
+- `honeyos/study` 被 `companion/`、`events/`、`gateway/`、
+  `memory/runtime_shadow.py` 引用，但**不**在 `honeyos/agent/turn_context.py`
+  或 `conversation_loop.py`（聊天上下文构建器）中，故 Study 资料从不进入通
+  用聊天上下文。
+- 与 `S4_5_USER_UNDERSTANDING_GRAPH.md` §3、§9.4 一致：保持原访问边界，未
+  接入本图谱，未伪造接入。任何未来的自动注入都是独立的产品+安全决策，不得
+  为「修复 S4.5」而擅自把全部 Study 资料注入聊天。
+
+### 2b.6 真实浏览器复验（Task 6）
+
+在隔离临时 home（`/tmp`，不触碰生产）+ 真实 `react_dist` + 真实 understanding
+路由 + 真实 SQLite 上，以真实浏览器复验新增交互：
+
+- 图谱加载：3 标签 / 5 记忆（其中 m5 被 2 个标签引用，用于「相关标签」）；
+  SVG 节点显示 known 印记（踏实/温暖）。
+- 标签详情：2 张证据卡片（正文、kind、发生时间、印记、「查看记忆详情 →」、
+  「解除此关联」）；**时间轨迹**含「标签形成 / 获得支持 ×2 / 修订 r3·你解
+  除了关联 / 修订 r2·系统重算可信度 / 修订 r1·distillation」，含 actor 与
+  状态变化，倒序。
+- 记忆详情：点击共享记忆 m5 → 完整正文 + 会话 + 印记 + **「相关标签
+  （2）」**，可跨导航跳回任一标签详情。
+- 用户遗忘：`POST suppress` 后 `GET /labels/{id}` → `suppressed=True`、正文
+  空、3 条版本历史 body 全部遮罩为 `""`（真实服务器 API 验证；浏览器按钮
+  走同一路径）。
+- 未调用真实付费模型；未触碰生产数据库；未 push/merge/deploy。
 
 ## 3. 八个端到端场景（Task A）— 8/8 PASS
 
@@ -90,10 +233,10 @@ SQLite；仅补 `/api/companion/settings` 与 `/health` 两个桩以通过模型
 不再由 API 返回；解除关系后 `evidence` 行确实删除（反证归零）；被忘记标签对应
 的原生记忆仍为 `active`（标签忘记 ≠ 记忆忘记）。
 
-**范围说明（非阻塞）：** 交付的最小图谱 UI（见冻结文档 Task F 范围）中，记忆
-节点为展示态、不支持点击；「来源及关联」通过点击标签后的详情面板呈现（记忆
-kind / 时间 / 印记 / 所属标签）。「时间轨迹」由时间筛选 + 每条记忆时间字段
-体现，无独立时间轴控件。二者不属本轮交付范围，未额外扩建 UI。
+**范围说明（已更新）：** 上一版冻结中记忆节点为展示态、无独立时间轴控件。
+本轮（§2b.3）已补齐：记忆节点可点击查看完整详情与「相关标签（N）」，标签详
+情新增独立「时间轨迹」（形成/支持/反证/修订，含 actor 与状态变化）。未创建
+第二套删除机制，复用现有记忆管理操作。
 
 ## 5. 旧窗口 6 / 40 核对（Task C）— 无静默丢失，未改代码
 
@@ -144,23 +287,24 @@ Study：**不存在**自动进入聊天上下文的外来历史检索入口—�
 在相同 Python 环境、相同依赖、相同 `pytest` 参数与 `--import-mode=importlib`
 下，对比 `dff89780` 与当前 HEAD 全量 `pytest tests`：
 
-| | 基线 dff89780 | 当前 HEAD |
-|---|---|---|
-| failed | 24 | 23 |
-| passed | 1263 | 1297 |
-| skipped | 18 | 18 |
+| | 基线 dff89780 | 上一冻结 d22e7daf | 本轮最终 |
+|---|---|---|---|
+| failed | 24 | 23 | 18 |
+| passed | 1263 | 1298 | 1314 |
+| skipped | 18 | 18 | 18 |
 
-**新增回归：0。**
+**本轮新增回归：0。** 修复了 5 个 `understanding_v2` 陈旧测试断言（见 §2b.4），
+其余 18 个失败与基线同源、均在 S4.5 范围之外（见 §14）。
 
-归因（全部 PRE-EXISTING，基线同样失败且原因一致）：
+归因（剩余 18 个 PRE-EXISTING，基线同样失败且原因一致；5 个本轮已修复）：
 
 | 组 | 用例 | 基线 | HEAD | 原因 | 归属 |
 |---|---|---|---|---|---|
 | campus | test_exams / test_timetable::test_refresh_imports_and_lists | FAIL | FAIL | 既有 | PRE-EXISTING |
 | gateway shadow | test_turn_router_shadow_integration (5) / _v2 (3) | FAIL | FAIL | 既有 | PRE-EXISTING |
 | branding/cli/config/install/distribution/surface | test_branding, test_cli_main, test_config, test_distribution_contract(2), test_install_script, test_installer, test_repository_surface | FAIL | FAIL | 既有 | PRE-EXISTING |
-| understanding_v2 | test_transports(2)（`compose_user_api_content()` 签名漂移） | FAIL | FAIL | 既有 API 漂移 | PRE-EXISTING |
-| understanding_v2 | test_u2_engineering(3)（期望旧的独立 U2 producer LLM 调用 `u2_calls==1`，与已冻结的「U2 二次调用=0」冲突；且未初始化 labels 表） | FAIL | FAIL | 冻结设计前的陈旧测试 | PRE-EXISTING |
+| understanding_v2 | test_transports(2)（`compose_user_api_content()` 签名漂移） | FAIL | 已修复（§2b.4） | 更新为 3 参生产契约，保留传输不变式 | FIXED |
+| understanding_v2 | test_u2_engineering(3)（期望旧的独立 U2 producer LLM 调用 `u2_calls==1`） | FAIL | 已修复（§2b.4） | 更新为同批 U2 契约 `u2_calls==0`，未删除/跳过 | FIXED |
 | 偶发 | test_continuity_gateway::test_gateway_tracks_distillation_as_non_blocking_background_work | FAIL（全量顺序相关） | PASS（本轮全量） | 顺序/隔离敏感 | FLAKY |
 
 说明：上一轮「899 passed / 18 failed」是排除了 `understanding_v2` 重依赖目录的
@@ -173,7 +317,7 @@ Study：**不存在**自动进入聊天上下文的外来历史检索入口—�
 
 - `npm run typecheck`：通过
 - `npx vitest run`：**94 passed**（26 文件）
-- `npm run build`：通过（产物与已提交 `react_dist` 一致，无 diff）
+- `npm run build`：通过（本轮补齐记忆详情/时间轨迹后重新生成 `react_dist`，新产物已随提交更新）
 
 ## 10. 模型调用 / token 成本
 
@@ -196,6 +340,19 @@ honeyos/companion/emotional_imprint.py                     # 生产修复：转�
 tests/honeyos/test_s45_e2e_acceptance.py                   # 新增：8 场景 + hook 组合（9）
 tests/honeyos/test_s45_old_window_thresholds.py            # 新增：6/40 边界（9）
 tests/honeyos/memory/test_s45_external_history_shared_budget.py  # 新增：共享上限（5）
+# —— Round 2（本轮：缺陷修复 + 原定功能补齐，提交 cded7b39）——
+honeyos/understanding/u2_maintenance.py                    # 重算 grade/state；孤儿证据修剪；label_versions 懒创建
+honeyos/runtime/web_routers/understanding.py               # GET /labels/{id} 返回 versions（forget 遮罩正文）+ 缺表容错；detach 后重算
+honeyos/companion/continuity.py                            # 记忆被遗忘/自动归档后触发 U2 重算（fail-open，不复活 user_suppressed）
+honeyos/understanding/u2_pipeline.py                       # recover_* 转发 continuity_db_path 给 apply_proposal
+honeyos/gateway/run.py                                     # 同批 U2 写入与恢复路径透传 continuity_db_path
+frontend/src/features/understanding/UnderstandingPage.tsx  # 记忆节点可点击详情 + 相关标签 + 独立时间轨迹
+frontend/src/api/understanding.ts                          # getLabel 读取 versions 字段
+honeyos/companion/react_dist/*                             # 重新构建产物（新 hash）
+tests/honeyos/understanding_v2/test_s45_evidence_state_recompute.py  # 新增：重算 + versions 遮罩回归
+tests/honeyos/understanding_v2/test_s45_u2_not_injected_into_chat.py # 新增：U2 不注入聊天证明
+tests/honeyos/understanding_v2/test_transports.py          # 更新：3 参 compose_user_api_content 契约
+tests/honeyos/understanding_v2/test_u2_engineering.py      # 更新：同批 U2（u2_calls=0）契约
 docs/honeyos-target/S4_5_FINAL_ACCEPTANCE.md               # 新增：本报告
 docs/honeyos-target/S4_5_USER_UNDERSTANDING_GRAPH.md       # 更新：冻结状态
 ```
@@ -213,18 +370,25 @@ docs/honeyos-target/S4_5_USER_UNDERSTANDING_GRAPH.md       # 更新：冻结状�
 | 项目 | 值 |
 |---|---|
 | 分支 | `feat/s4-5-user-understanding-graph` |
-| 冻结提交 | `86a8110a`（文档）；生产修复 `093b656f` |
+| 冻结提交 | 本轮：`cded7b39`（生产+测试）→ 本提交（文档，最终冻结）；历史：`093b656f`→`86a8110a`→`d22e7daf` |
 | 工作树 | clean |
 | push / merge / deploy | 未执行 |
 
-## 14. 仍未完成的非阻塞限制
+## 14. 未解决问题（均在 S4.5 范围之外）
 
-1. 23 个历史失败维持 PRE-EXISTING（基线同源）；其中 5 个 `understanding_v2`
-   测试编码的是 S4.5 冻结前已被替换的旧 U2 producer 设计，未改写它们以免
-   重建 U2 / 扩大范围。
-2. 图谱记忆节点为展示态；无独立「时间轨迹」控件（见 §4 范围说明）。
-3. `DELETE .../evidence` 只删除关系行，不重算标签 grade/state（显示反证 0 时
-   状态可能仍为 disputed）。属既有轻量行为，非安全问题，未扩展。
+上一版 §14 列出的 3 项非阻塞限制，本轮已全部关闭：
 
-> 以上限制均不涉及用户遗忘、来源权限、U2 二次调用、待续状态机或模型预算，
-> 不阻塞冻结。
+1. ✅ 5 个 `understanding_v2` 陈旧测试已更新断言（见 §2b.4），未删除/跳过。
+2. ✅ 图谱记忆节点可点击查看完整详情 + 相关标签；独立「时间轨迹」控件已补齐（见 §2b.3）。
+3. ✅ 解除关联后重算标签 grade/state，并扩展到来源撤回/用户遗忘/反证变化（见 §2b.1）。
+
+剩余 18 个失败全部 PRE-EXISTING 且与 S4.5 无关，单独列出，不越界扩展 S4.5：
+
+- campus：`test_exams` ×1、`test_timetable` ×1
+- gateway shadow：`test_turn_router_shadow_integration` ×5、`test_turn_router_shadow_v2` ×3
+- 其他：`test_branding` ×1、`test_cli_main` ×1、`test_config` ×1、
+  `test_distribution_contract` ×2、`test_install_script` ×1、
+  `test_installer` ×1、`test_repository_surface` ×1
+
+> 以上不涉及用户遗忘、来源权限、U2 二次调用、待续状态机或模型预算。S4.5
+> 范围内功能缺陷已全部处理，可重新标记 DONE / FROZEN。

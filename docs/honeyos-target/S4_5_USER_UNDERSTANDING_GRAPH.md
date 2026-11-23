@@ -1,6 +1,6 @@
 # HoneyOS Phase S4.5 — 用户理解图谱与原生记忆召回整合
 
-**冻结状态: DONE / FROZEN（本地冻结；8 场景隔离网关端到端、真实浏览器交互、6/40 旧窗口核对、共享硬上限、历史失败归因均已完成；未 push / merge / deploy）**
+**冻结状态: DONE / FROZEN（本地冻结；8 场景隔离网关端到端、真实浏览器交互、6/40 旧窗口核对、共享硬上限、历史失败归因，以及 Round 2 的证据/状态同步、图谱记忆详情+时间轨迹、5 个陈旧测试修复均已完成；未 push / merge / deploy）**
 
 > 最终验收细节见 [S4_5_FINAL_ACCEPTANCE.md](./S4_5_FINAL_ACCEPTANCE.md)。
 
@@ -12,7 +12,7 @@
 |---|---|
 | 分支 | feat/s4-5-user-understanding-graph |
 | 起始 HEAD | ffb36b0f |
-| 本轮提交 | 90b3370c (安全+A/C/D/E) → cfd8e100 (图谱 API+页面) → 11081124 (graph page/API freeze) → 本次最终冻结 (hook 修复 + 验收) |
+| 本轮提交 | 90b3370c (安全+A/C/D/E) → cfd8e100 (图谱 API+页面) → 11081124 (graph page/API freeze) → 093b656f (hook 修复) → 86a8110a (验收冻结) → d22e7daf (记录哈希) → cded7b39 (Round 2 缺陷修复+功能补齐) → 本提交 (Round 2 文档冻结) |
 | S4 基线 | dff89780 |
 | push / merge / deploy | 未执行 |
 
@@ -60,6 +60,20 @@
    导致真实 Gateway 路径下 U2 同批次写入被静默跳过。现 hook 返回 downstream
    的返回值，由 `MemoryDistiller` 检测 awaitable 后 await；同步 downstream
    行为不变。回归测试 `test_s45_e2e_acceptance.py::test_scenario_1b_...` 覆盖。
+
+8. **Round 2：证据/状态同步 + 图谱交互补齐（缺陷修复，提交 `cded7b39`）**
+   - `u2_maintenance.recompute_label` 在解除关联、来源撤回（记忆被遗忘/归档）、
+     反证变化后，用当前仍有效的证据重算 grade/state，修剪指向失活来源的孤儿
+     证据；`user_suppressed` 标签绝不复活。`_archive_current` 懒创建
+     `label_versions`，存量库缺表不再 500；读侧对缺表降级为空时间轨迹。
+   - `continuity._recompute_u2_for_memory` 在记忆 forgotten / 自动归档时触发
+     重算（fail-open，不阻塞 continuity 变更）；`gateway/run.py` 与
+     `u2_pipeline` 透传 `continuity_db_path`，使写入与恢复路径都针对真实库。
+   - 图谱页面：记忆节点可点击查看完整详情与「相关标签（N）」；标签详情新增
+     独立「时间轨迹」（形成/支持/反证/修订，含 actor 与状态变化）。
+     `GET /labels/{id}` 返回 `versions`，forget 后正文与历史版本快照均遮罩。
+   - 5 个 `understanding_v2` 陈旧测试更新为现行契约（未删除/跳过）；新增回归
+     `test_s45_evidence_state_recompute`、`test_s45_u2_not_injected_into_chat`。
 
 ## 2. 保持不变的既有机制
 
@@ -114,17 +128,18 @@ distill → sidecar known/unknown（写入）→ `context_for_lane` 读取 → k
   `memory/test_s45_external_history_shared_budget.py`（共享上限，5 通过）。
 - 定向：test_s45_u2_samebatch(7) / test_s45_understanding_api(4) /
   test_s4_emotional_imprint / S3 / memory / companion 全通过。
-- **全量 `pytest tests`：23 failed / 1297 passed / 18 skipped。**
-  23 个失败全部 PRE-EXISTING：18 个既有集群（campus、turn_router_shadow ×8、
-  branding、cli、config、distribution ×2、install_script、installer、
-  repository_surface）+ 5 个 `understanding_v2`（2 个 `compose_user_api_content`
-  签名漂移、3 个期望已废止的独立 U2 producer LLM 调用）。基线 `dff89780` 全量
-  同样失败这 5 个（24 failed / 1263 passed），**新增回归 0**。详见
-  `S4_5_FINAL_ACCEPTANCE.md` §8。
+- **全量 `pytest tests`（本轮最终）：18 failed / 1314 passed / 18 skipped。**
+  剩余 18 个失败全部 PRE-EXISTING 且与 S4.5 无关：campus ×2、turn_router_shadow
+  ×8、branding / cli / config / distribution ×2 / install_script / installer /
+  repository_surface。基线 `dff89780` 全量为 24 failed / 1263 passed；上一冻结
+  `d22e7daf` 为 23 failed / 1298 passed；本轮修复 5 个 `understanding_v2` 陈旧
+  测试（2 个 `compose_user_api_content` 签名 → 3 参契约、3 个期望废止的独立
+  U2 producer 调用 → 同批 `u2_calls==0`），降至 18 failed / 1314 passed，
+  **新增回归 0**。详见 `S4_5_FINAL_ACCEPTANCE.md` §8 与 §2b.4。
 
 前端：
 - `npm run typecheck` 通过。
-- `npm run build` 通过（react_dist 与已提交产物一致，无 diff）。
+- `npm run build` 通过（Round 2 补齐记忆详情/时间轨迹后重新生成 react_dist，新产物已随 cded7b39 提交）。
 - `vitest run`：94 passed（含 UnderstandingPage.test.tsx）。
 
 真实模型调用 0；token 0；费用 0。真实浏览器验收见 §4（最终验收报告）。
@@ -150,9 +165,16 @@ distill → sidecar known/unknown（写入）→ `context_for_lane` 读取 → k
 3. **旧窗口 6/40**：只读核对无静默丢失，新增 9 个边界测试，未改 20/6/40。
 4. **外来历史共享硬上限**：来源无关检索器天然共享 3 条 / 900 字符，上下文
    3 / 700；Study 无自动聊天检索入口（如实记录，未伪造接入）。
-5. **历史失败归因**：23 个失败全部 PRE-EXISTING（基线同源），新增回归 0。
+5. **历史失败归因**：上一冻结 23 个失败全部 PRE-EXISTING（基线同源），新增回归 0。
+6. **Round 2 证据/状态同步**：解除关联 / 来源撤回 / 反证变化 / 用户遗忘后重算
+   grade/state；孤儿证据修剪；`user_suppressed` 不复活；`label_versions` 缺表
+   容错。回归 `test_s45_evidence_state_recompute` 通过。
+7. **Round 2 图谱交互**：记忆节点详情 + 相关标签 + 独立时间轨迹；forget 遮罩
+   正文与版本快照。真实浏览器复验通过（见验收报告 §2b.6）。
+8. **Round 2 陈旧测试修复**：5 个 `understanding_v2` 旧测试更新为现行契约
+   （未删除/跳过），全量从 23 failed 降至 18，新增回归 0。
 
-非阻塞限制（不涉及遗忘/权限/U2 二次调用/待续/预算）：见
+未解决项（均在 S4.5 范围之外，不涉及遗忘/权限/U2 二次调用/待续/预算）：见
 `S4_5_FINAL_ACCEPTANCE.md` §14。
 
 ## 10. 回滚
@@ -167,6 +189,9 @@ git checkout feat/s4-longterm-memory-emotional-imprint   # 回到 S4
 ## 11. Git
 
 ```
+本提交    docs(s4.5): round 2 acceptance update and refreeze
+cded7b39  fix(s4.5): recompute label state on evidence/source change; complete graph interactions
+d22e7daf  docs(s4.5): record freeze commit hashes
 86a8110a  docs(s4.5): final acceptance report and DONE/FROZEN freeze
 093b656f  fix(s4.5): forward async U2 producer through emotion hook
           (+ isolated 8-scenario e2e, 6/40 thresholds, shared cap tests)
@@ -184,12 +209,16 @@ ffb36b0f  docs(s4.5): freeze full backend delivery
 
 无 schema 变更。理解库沿用 understanding_v2.db；continuity 沿用既有表 + S4
 sidecar（CREATE IF NOT EXISTS）。U2 写入改为 apply_proposal，向后兼容既有 labels
-与 evidence；旧数据无需迁移。
+与 evidence；旧数据无需迁移。`label_versions`（标签版本时间轨迹）在首次重算时
+以 `CREATE TABLE IF NOT EXISTS` 懒创建，读侧对缺表降级为空时间轨迹，故 S4.5
+之前升级的存量库无需迁移、详情接口不会 500。
 
 ## 13. 后续建议（非阻塞）
 
-1. 清理/改写 `understanding_v2` 中反映旧 U2 producer 设计的陈旧测试（属 S4.5 前
-   遗留，非本轮引入）。
-2. 如产品需要，可为图谱补「记忆节点点击」与独立「时间轨迹」控件（本轮按冻结
-   范围未扩建）。
-3. 修复 `test_transports` 的 `compose_user_api_content()` 签名漂移。
+1. ~~清理/改写 `understanding_v2` 中反映旧 U2 producer 设计的陈旧测试~~ —— 本轮已完成（见验收报告 §2b.4）。
+2. ~~为图谱补「记忆节点点击」与独立「时间轨迹」控件~~ —— 本轮已完成（见验收报告 §2b.3）。
+3. ~~修复 `test_transports` 的 `compose_user_api_content()` 签名漂移~~ —— 本轮已完成（见验收报告 §2b.4）。
+4. （未来）若产品需要把合法 U2 标签注入聊天上下文，须单独的产品 + 安全授权：
+   准确性边界、token 预算、用户可见性与开关；当前保持 fail-closed（见验收报告 §2b.2）。
+5. （未来）若需要 Study 资料自动进入聊天检索，同样须单独授权并复用来源无关
+   检索器的共享硬上限；当前 Study 仅显式引用阅读（见验收报告 §2b.5）。
