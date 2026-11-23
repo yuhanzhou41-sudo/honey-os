@@ -15,6 +15,7 @@ import { useHoneyStore } from "../runtime/honey-store";
 const navigation = [
   { to: "/", label: "聊天", icon: ChatCircleIcon, end: true },
   { to: "/memories", label: "记得的事", icon: SparkleIcon },
+  { to: "/understanding", label: "Honey 对我的理解", icon: SparkleIcon },
   { to: "/diary", label: "日记", icon: BookOpenTextIcon },
   { to: "/study", label: "学习", icon: LeafIcon },
   { to: "/relationship", label: "我们", icon: HeartIcon },

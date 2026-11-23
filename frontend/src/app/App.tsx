@@ -11,6 +11,7 @@ import { MemoriesPage } from "../features/memories/MemoriesPage";
 import { OnboardingPage } from "../features/onboarding/OnboardingPage";
 import { RelationshipPage } from "../features/relationship/RelationshipPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import UnderstandingPage from "../features/understanding/UnderstandingPage";
 import { AppShell } from "./AppShell";
 
 export function App() {
@@ -23,6 +24,7 @@ export function App() {
           <Route element={<AppShell />}>
             <Route index element={<ChatPage />} />
             <Route path="memories" element={<MemoriesPage />} />
+            <Route path="understanding" element={<UnderstandingPage />} />
             <Route path="diary" element={<DiaryPage />} />
             <Route path="study" element={<StudyPage />} />
             <Route path="relationship" element={<RelationshipPage />} />

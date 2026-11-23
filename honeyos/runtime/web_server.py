@@ -13569,6 +13569,9 @@ def _config_profile_scope(profile: Optional[str]):
 
 
 app.include_router(_skills_routes.router)
+from honeyos.runtime.web_routers import understanding as _understanding_routes  # noqa: E402
+
+app.include_router(_understanding_routes.router)
 from honeyos.runtime.web_routers.skills import (  # noqa: E402,F401 — legacy re-exports; tests call these via web_server.<name>
     get_skills,
     toggle_skill,
