@@ -1,6 +1,8 @@
 # HoneyOS Phase S4.5 — 用户理解图谱与原生记忆召回整合
 
-**冻结状态: PARTIAL（后端安全接线 + 图谱 API + 图谱页面已交付；旧窗口补偿与全量端到端网关验收未完成）**
+**冻结状态: DONE / FROZEN（本地冻结；8 场景隔离网关端到端、真实浏览器交互、6/40 旧窗口核对、共享硬上限、历史失败归因均已完成；未 push / merge / deploy）**
+
+> 最终验收细节见 [S4_5_FINAL_ACCEPTANCE.md](./S4_5_FINAL_ACCEPTANCE.md)。
 
 本文件从 `ffb36b0f` 继续，记录本轮增量。
 
@@ -10,7 +12,7 @@
 |---|---|
 | 分支 | feat/s4-5-user-understanding-graph |
 | 起始 HEAD | ffb36b0f |
-| 本轮提交 | 90b3370c (安全+A/C/D/E) → cfd8e100 (图谱 API+页面) → 本次冻结 |
+| 本轮提交 | 90b3370c (安全+A/C/D/E) → cfd8e100 (图谱 API+页面) → 11081124 (graph page/API freeze) → 本次最终冻结 (hook 修复 + 验收) |
 | S4 基线 | dff89780 |
 | push / merge / deploy | 未执行 |
 
@@ -51,6 +53,13 @@
    支持实线 / 反证虚线），平移+滚轮缩放+重置；分类/时间筛选；点击标签展开详情
    （类别、范围、状态、修订、支持/反证、记忆 kind/时间、known 印记）；操作：忘记
    标签、解除关联；空态与错误态。
+
+7. **emotion hook → 异步 U2 转发修复（最终验收发现）**
+   `emotional_imprint.py::emotion_imprint_hook_factory` 的同步 hook 曾调用
+   （S4.5 已 async 的）`_honeyos_u2_post_completed` 却不 await，协程被丢弃，
+   导致真实 Gateway 路径下 U2 同批次写入被静默跳过。现 hook 返回 downstream
+   的返回值，由 `MemoryDistiller` 检测 awaitable 后 await；同步 downstream
+   行为不变。回归测试 `test_s45_e2e_acceptance.py::test_scenario_1b_...` 覆盖。
 
 ## 2. 保持不变的既有机制
 
@@ -99,20 +108,26 @@ distill → sidecar known/unknown（写入）→ `context_for_lane` 读取 → k
 
 ## 7. 测试
 
-后端（相同环境、相同命令）：
-- 定向：test_s45_u2_samebatch(7) / test_s45_understanding_api(4) / S3 / memory /
-  companion / test_s4_emotional_imprint 全通过。
-- 大范围：`pytest tests/honeyos/`（排除 aiohttp/study/understanding_v2 重依赖）
-  → **899 passed / 18 failed / 18 skipped**。18 个失败均属预先存在集群
-  （campus、turn_router_shadow、branding、cli、config、distribution、
-  install_script/installer、repository_surface），与本轮改动无关；本轮未新增失败。
+后端（相同环境、相同命令、`--import-mode=importlib`）：
+- 新增验收集合：`test_s45_e2e_acceptance.py`（8 场景 + hook 组合，9 通过）；
+  `test_s45_old_window_thresholds.py`（6/40 边界，9 通过）；
+  `memory/test_s45_external_history_shared_budget.py`（共享上限，5 通过）。
+- 定向：test_s45_u2_samebatch(7) / test_s45_understanding_api(4) /
+  test_s4_emotional_imprint / S3 / memory / companion 全通过。
+- **全量 `pytest tests`：23 failed / 1297 passed / 18 skipped。**
+  23 个失败全部 PRE-EXISTING：18 个既有集群（campus、turn_router_shadow ×8、
+  branding、cli、config、distribution ×2、install_script、installer、
+  repository_surface）+ 5 个 `understanding_v2`（2 个 `compose_user_api_content`
+  签名漂移、3 个期望已废止的独立 U2 producer LLM 调用）。基线 `dff89780` 全量
+  同样失败这 5 个（24 failed / 1263 passed），**新增回归 0**。详见
+  `S4_5_FINAL_ACCEPTANCE.md` §8。
 
 前端：
 - `npm run typecheck` 通过。
-- `npm run build` 通过（react_dist 重新生成）。
-- `vitest run`：94 passed（含新增 UnderstandingPage.test.tsx）。
+- `npm run build` 通过（react_dist 与已提交产物一致，无 diff）。
+- `vitest run`：94 passed（含 UnderstandingPage.test.tsx）。
 
-真实模型调用 0；token 0；费用 0。
+真实模型调用 0；token 0；费用 0。真实浏览器验收见 §4（最终验收报告）。
 
 ## 8. 模型调用 / token 成本
 
@@ -125,17 +140,20 @@ distill → sidecar known/unknown（写入）→ `context_for_lane` 读取 → k
 | 外来历史 physiology | 有 | **移除** | 略降 |
 | 新增长期记忆读写 | — | 图谱只读查询 | 可忽略 |
 
-## 9. 未完成 / PARTIAL 项
+## 9. 验收完成项（原 PARTIAL 已关闭）
 
-1. **全量端到端网关验收（8 个场景）**：已用临时 DB + 单测覆盖关键数据流
-   （U2 解析/映射、apply_proposal、证据过滤、图谱 API、页面渲染），但未启动
-   隔离 Gateway + 真模型跑完整 8 场景。属验收深度不足，非功能缺失。
-2. **人工浏览器交互验收**：页面已 build + 组件测试，但未在真实浏览器点选回归。
-3. **旧窗口 6 单位 / 40 条尾部门槛补偿（Task I）**：仅确认语义，未做只读专项核对
-   与最小补丁。
-4. **Study 资料接入图谱**：保持原边界，未接入。
-5. **外来历史共享硬上限（3 条 / 900 字符）**：runtime_shadow 已有自身预算，
-   未做 DeepSeek+Study 合并共享上限的专项改造与测试。
+1. **全量端到端网关验收（8 场景）**：隔离临时 home/DB + fake extractor，跑通
+   Gateway→Distiller→Continuity→U2→API，8/8 PASS（含真实 hook 组合）。
+2. **真实浏览器交互验收**：真实浏览器访问隔离服务器上的真实 SPA + 真实 API，
+   渲染/筛选/平移缩放重置/详情/印记/忘记标签/解除关联/刷新持久化/空态/错误态
+   全部 PASS，控制台无错误。
+3. **旧窗口 6/40**：只读核对无静默丢失，新增 9 个边界测试，未改 20/6/40。
+4. **外来历史共享硬上限**：来源无关检索器天然共享 3 条 / 900 字符，上下文
+   3 / 700；Study 无自动聊天检索入口（如实记录，未伪造接入）。
+5. **历史失败归因**：23 个失败全部 PRE-EXISTING（基线同源），新增回归 0。
+
+非阻塞限制（不涉及遗忘/权限/U2 二次调用/待续/预算）：见
+`S4_5_FINAL_ACCEPTANCE.md` §14。
 
 ## 10. 回滚
 
@@ -149,14 +167,16 @@ git checkout feat/s4-longterm-memory-emotional-imprint   # 回到 S4
 ## 11. Git
 
 ```
-<freeze>  docs(s4.5): freeze graph page, API and memory-safety fixes
+<freeze2> docs(s4.5): final acceptance + emotion-hook U2 forwarding fix
+<freeze1> test(s4.5): isolated 8-scenario e2e, 6/40 thresholds, shared cap
+11081124  docs(s4.5): freeze graph page, API and memory-safety fixes
 cfd8e100  feat(s4.5): user-understanding graph page + graph API
 90b3370c  fix(s4.5): apply_proposal U2 writes; pure external history;
           evidence-based physiology; imprint into recall context
 ffb36b0f  docs(s4.5): freeze full backend delivery
 ```
 
-- 工作树：clean（除本冻结文档）
+- 工作树：clean
 - push / merge / deploy：未执行
 
 ## 12. 数据兼容 / 迁移
@@ -165,8 +185,10 @@ ffb36b0f  docs(s4.5): freeze full backend delivery
 sidecar（CREATE IF NOT EXISTS）。U2 写入改为 apply_proposal，向后兼容既有 labels
 与 evidence；旧数据无需迁移。
 
-## 13. 后续建议
+## 13. 后续建议（非阻塞）
 
-1. 隔离 Gateway + fake model 跑完 8 场景，补齐 Task I 旧窗口核对。
-2. 浏览器真机点选验收图谱。
-3. DeepSeek+Study 共享硬上限专项。
+1. 清理/改写 `understanding_v2` 中反映旧 U2 producer 设计的陈旧测试（属 S4.5 前
+   遗留，非本轮引入）。
+2. 如产品需要，可为图谱补「记忆节点点击」与独立「时间轨迹」控件（本轮按冻结
+   范围未扩建）。
+3. 修复 `test_transports` 的 `compose_user_api_content()` 签名漂移。
