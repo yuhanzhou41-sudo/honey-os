@@ -119,7 +119,7 @@ def _already_present(body: str, known_text: str) -> bool:
 
 def _candidate_labels(conn: sqlite3.Connection, *, lane: str, namespace: str,
                       query: str, limit: int = 40) -> list[_Label]:
-    query_terms = tuple(terms(query))
+    query_terms = tuple(terms(query, limit=48))
     if not query_terms:
         return []
     placeholders = ",".join("?" for _ in query_terms)

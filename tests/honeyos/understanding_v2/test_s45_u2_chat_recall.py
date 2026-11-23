@@ -176,3 +176,16 @@ def test_current_correction_outranks_stored_understanding(tmp_path):
         home=tmp_path, lane=LANE, query="其实我不是先理解原理，我更喜欢直接做题",
     )
     assert "以你此刻的说法为准" in recall.text
+
+
+def test_chinese_word_at_clause_end_is_still_retrievable(tmp_path):
+    """A 2-char word at the end of a CJK clause must reach the postings index."""
+    _enable(tmp_path)
+    body = "用户似乎喜欢亲自设计和制作娃娃，关注发丝材质、颜色搭配与烫卷效果"
+    _seed(tmp_path, body=body, sessions=1)
+    recall = recall_for_turn(
+        home=tmp_path, lane=LANE,
+        query="其实我现在不怎么给娃娃换发色了，发丝材质也不想折腾了。",
+    )
+    assert recall.text and "娃娃" in recall.text
+    assert "以你此刻的说法为准" in recall.text

@@ -9,15 +9,22 @@ from .u2_store import UnderstandingStore
 
 _STOP = {"我", "的", "了", "是", "一个", "这个", "that", "the", "and"}
 
+# CJK runs are matched whole (not in fixed 12-char windows) so two-character
+# words that straddle a window boundary (e.g. 娃娃 at the end of a clause)
+# still produce an indexable term.
+_WORD = re.compile(r"[a-z0-9][a-z0-9_-]{1,31}|[\u4e00-\u9fff]+")
+
 
 def terms(text: str, *, limit: int = 12) -> tuple[str, ...]:
     value = unicodedata.normalize("NFKC", text).casefold()
-    found = re.findall(r"[a-z0-9][a-z0-9_-]{1,31}|[\u4e00-\u9fff]{2,12}", value)
     result: list[str] = []
-    for token in found:
-        pieces = [token]
-        if re.fullmatch(r"[\u4e00-\u9fff]{4,12}", token):
-            pieces.extend(token[i:i + 2] for i in range(len(token) - 1))
+    for token in _WORD.findall(value):
+        if token[0].isascii():
+            pieces = [token]
+        else:
+            pieces = [token[i:i + 2] for i in range(len(token) - 1)]
+            if len(token) <= 12:
+                pieces.insert(0, token)
         for piece in pieces:
             if piece not in _STOP and piece not in result:
                 result.append(piece)
