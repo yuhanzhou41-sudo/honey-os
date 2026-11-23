@@ -178,6 +178,19 @@ def test_current_correction_outranks_stored_understanding(tmp_path):
     assert "以你此刻的说法为准" in recall.text
 
 
+def test_other_lane_or_namespace_is_isolated(tmp_path):
+    _enable(tmp_path)
+    _seed(tmp_path)
+    other_lane = recall_for_turn(
+        home=tmp_path, lane="agent:main:api_server:dm:someone-else",
+        query="mechanism 学习")
+    other_ns = recall_for_turn(
+        home=tmp_path, lane=LANE, namespace="roleplay",
+        query="mechanism 学习")
+    assert other_lane.text == ""
+    assert other_ns.text == ""
+
+
 def test_chinese_word_at_clause_end_is_still_retrievable(tmp_path):
     """A 2-char word at the end of a CJK clause must reach the postings index."""
     _enable(tmp_path)
