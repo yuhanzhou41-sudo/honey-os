@@ -10254,6 +10254,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         lane = str(gateway_session_key or "")
                         if lane.endswith(":api_server:dm:local-owner"):
                             agent._companion_memory_lane = lane
+                            agent._companion_memory_owner = "User"
+                            agent._companion_memory_chat_type = "dm"
                             from honeyos.companion.distillation import reviewed_history_rows
                             from honeyos.core.constants import get_honeyos_home
 

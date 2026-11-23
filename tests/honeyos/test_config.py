@@ -58,6 +58,7 @@ def test_initialize_home_creates_companion_contract(tmp_path, monkeypatch):
     assert config["memory"]["user_profile_enabled"] is True
     assert config["memory"]["nudge_interval"] == 0
     assert config["memory"]["provider"] == ""
+    assert config["memory"]["cognitive"] == {"context_mode": "shadow"}
     assert config["memory"]["distillation"] == {
         "enabled": True,
         "trigger_messages": 20,
@@ -171,6 +172,30 @@ def test_upgrade_quiets_managed_companion_progress_but_preserves_user_verbose_ch
     assert upgraded["display"]["platforms"]["weixin"]["interim_assistant_messages"] == "on"
 
 
+def test_upgrade_adds_and_preserves_cognitive_context_mode(tmp_path):
+    initialize_home(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    del config["memory"]["cognitive"]
+    config_path.write_text(
+        yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    assert upgrade_companion_capabilities(tmp_path) is True
+    upgraded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert upgraded["memory"]["cognitive"]["context_mode"] == "shadow"
+
+    upgraded["memory"]["cognitive"]["context_mode"] = "active"
+    config_path.write_text(
+        yaml.safe_dump(upgraded, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    assert upgrade_companion_capabilities(tmp_path) is False
+    preserved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert preserved["memory"]["cognitive"]["context_mode"] == "active"
+
+
 def test_initialize_home_rejects_unsupported_platform(tmp_path):
     try:
         initialize_home(tmp_path, platform="telegram")
@@ -239,6 +264,7 @@ def test_upgrade_companion_capabilities_is_idempotent_and_preserves_user_state(
     assert migrated["terminal"]["cwd"] == str(projects.resolve())
     assert migrated["approvals"]["mode"] == "manual"
     assert migrated["security"]["allow_proxy_fake_ips"] is True
+    assert migrated["memory"]["cognitive"]["context_mode"] == "shadow"
     assert migrated["memory"]["distillation"]["trigger_messages"] == 20
     assert migrated["memory"]["distillation"]["max_daily_runs"] == 12
     assert migrated["auxiliary"]["memory_distillation"]["provider"] == "auto"

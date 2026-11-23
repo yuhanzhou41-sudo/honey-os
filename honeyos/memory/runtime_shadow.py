@@ -180,6 +180,7 @@ class ShadowRetrievalResult:
     rejected: tuple[ShadowCandidate, ...]
     total_char_cost: int
     prompt_injection: bool = False
+    explicit_recall: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -189,6 +190,7 @@ class ShadowRetrievalResult:
             "rejected": [asdict(item) for item in self.rejected],
             "total_char_cost": self.total_char_cost,
             "prompt_injection": self.prompt_injection,
+            "explicit_recall": self.explicit_recall,
         }
 
 
@@ -325,6 +327,7 @@ class CognitiveMemoryShadowRetriever:
                 selected=(),
                 rejected=(),
                 total_char_cost=0,
+                explicit_recall=explicit_recall,
             )
             if write_audit:
                 self._write_audit(result, session_id=session_id, turn_id=turn_id)
@@ -546,6 +549,7 @@ class CognitiveMemoryShadowRetriever:
             selected=tuple(selected),
             rejected=tuple(rejected[:12]),
             total_char_cost=total,
+            explicit_recall=explicit_recall,
         )
         if write_audit:
             self._write_audit(result, session_id=session_id, turn_id=turn_id)

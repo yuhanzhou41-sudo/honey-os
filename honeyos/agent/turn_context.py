@@ -1228,12 +1228,16 @@ def build_turn_context(
             pass
 
     # COGNITIVE_MEMORY_SHADOW_F1
-    # Read-only shadow retrieval: audit candidates, but do NOT append them to
-    # ext_prefetch_cache, api_content, system prompt, or TurnContext.
+    # Native Continuity stays available in every mode. Cognitive retrieval is
+    # observational in shadow mode and model-visible only after active S1 gates.
     _cognitive_context = None
     _cognitive_shadow_result = None
+    _cognitive_scope = None
+    _cognitive_repository = None
     from honeyos.companion.work_mode import work_turn
+    from honeyos.memory.runtime_context import cognitive_memory_context_mode
 
+    _cognitive_context_mode = cognitive_memory_context_mode()
     try:
         _shadow_query = original_user_message if isinstance(original_user_message, str) else ""
         if _shadow_query and work_turn.get() is None and not is_trivial_prompt(_shadow_query):
@@ -1248,31 +1252,56 @@ def build_turn_context(
                 )
                 if native_note and isinstance(ext_prefetch_cache, (str, type(None))):
                     ext_prefetch_cache = "\n\n".join(filter(None, (ext_prefetch_cache, native_note)))
-            from honeyos.memory.runtime_shadow import requests_broad_recall, run_cognitive_memory_shadow
-            expanded_recall = (
-                getattr(agent, "_companion_input_budget", False) is True
-                and requests_broad_recall(_shadow_query)
-            )
-            recall_options = {"expanded": True} if expanded_recall else {}
-            adaptive_options = (
-                {"adaptive": True} if getattr(agent, "_companion_input_budget", False) is True else {}
-            )
-            _cognitive_shadow_result = run_cognitive_memory_shadow(
-                _shadow_query,
-                session_id=str(getattr(agent, "session_id", "") or ""),
-                turn_id=str(turn_id or ""),
-                **recall_options,
-                **adaptive_options,
-            )
-            # COGNITIVE_MEMORY_CONTEXT_SHADOW_F2_2
-            from honeyos.memory.runtime_context import run_silent_memory_context_shadow
-            _cognitive_context = run_silent_memory_context_shadow(
-                _cognitive_shadow_result,
-                session_id=str(getattr(agent, "session_id", "") or ""),
-                turn_id=str(turn_id or ""),
-                structured_context=native_note or "",
-                **recall_options,
-            )
+            if _cognitive_context_mode != "off":
+                from honeyos.memory.runtime_shadow import requests_broad_recall, run_cognitive_memory_shadow
+                expanded_recall = (
+                    getattr(agent, "_companion_input_budget", False) is True
+                    and requests_broad_recall(_shadow_query)
+                )
+                recall_options = {"expanded": True} if expanded_recall else {}
+                adaptive_options = (
+                    {"adaptive": True} if getattr(agent, "_companion_input_budget", False) is True else {}
+                )
+                _cognitive_shadow_result = run_cognitive_memory_shadow(
+                    _shadow_query,
+                    session_id=str(getattr(agent, "session_id", "") or ""),
+                    turn_id=str(turn_id or ""),
+                    **recall_options,
+                    **adaptive_options,
+                )
+                # COGNITIVE_MEMORY_CONTEXT_SHADOW_F2_2
+                from honeyos.memory.runtime_context import (
+                    MemoryRequestScope,
+                    authorize_silent_memory_context,
+                    run_silent_memory_context_shadow,
+                )
+                if _cognitive_context_mode == "active":
+                    from honeyos.memory.repository import CognitiveMemoryRepository
+
+                    _cognitive_repository = CognitiveMemoryRepository()
+                _cognitive_context = run_silent_memory_context_shadow(
+                    _cognitive_shadow_result,
+                    session_id=str(getattr(agent, "session_id", "") or ""),
+                    turn_id=str(turn_id or ""),
+                    repository=_cognitive_repository,
+                    structured_context=native_note or "",
+                    **recall_options,
+                )
+                if _cognitive_context_mode == "active":
+                    _cognitive_scope = MemoryRequestScope(
+                        owner=str(getattr(agent, "_companion_memory_owner", "") or ""),
+                        lane=str(getattr(agent, "_companion_memory_lane", "") or ""),
+                        session_id=str(getattr(agent, "session_id", "") or ""),
+                        chat_type=str(getattr(agent, "_companion_memory_chat_type", "") or ""),
+                    )
+                    _cognitive_context = authorize_silent_memory_context(
+                        _cognitive_context,
+                        _cognitive_shadow_result,
+                        scope=_cognitive_scope,
+                        repository=_cognitive_repository,
+                        session_id=str(getattr(agent, "session_id", "") or ""),
+                        turn_id=str(turn_id or ""),
+                    )
     except Exception:
         logger.debug("Cognitive Memory F1 shadow retrieval failed (non-fatal)", exc_info=True)
 
@@ -1288,7 +1317,11 @@ def build_turn_context(
         agent._companion_turn_appraisal = current_state_note(values) if values else ""
         if _shadow_query and not is_trivial_prompt(_shadow_query):
             recalled = ext_prefetch_cache if isinstance(ext_prefetch_cache, str) else ""
-            if _cognitive_context is not None and _cognitive_context.would_inject:
+            if (
+                _cognitive_context_mode == "active"
+                and _cognitive_context is not None
+                and _cognitive_context.would_inject
+            ):
                 recalled = "\n".join(filter(None, (recalled, _cognitive_context.text or "")))
             recent = tuple(
                 dict(row) for row in messages[max(0, current_turn_user_idx - 10):current_turn_user_idx]
@@ -1324,13 +1357,16 @@ def build_turn_context(
         _turn_user_msg = messages[current_turn_user_idx]
         # COGNITIVE_MEMORY_CONTEXT_INJECTION_F2_3
         native_memory_context = ext_prefetch_cache
-        if _cognitive_context is not None:
+        if _cognitive_context is not None and _cognitive_context_mode == "active":
             from honeyos.memory.runtime_context import inject_silent_memory_context
 
             ext_prefetch_cache = inject_silent_memory_context(
                 ext_prefetch_cache,
                 _cognitive_context,
                 _cognitive_shadow_result,
+                mode=_cognitive_context_mode,
+                scope=_cognitive_scope,
+                repository=_cognitive_repository,
                 session_id=str(getattr(agent, "session_id", "") or ""),
                 turn_id=str(turn_id or ""),
             )

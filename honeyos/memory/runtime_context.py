@@ -60,6 +60,31 @@ class SilentMemoryContext:
         return bool(self.text and self.included)
 
 
+@dataclass(frozen=True)
+class MemoryRequestScope:
+    owner: str
+    lane: str
+    session_id: str
+    chat_type: str
+    purpose: str = "chat"
+
+
+def cognitive_memory_context_mode(config: dict[str, Any] | None = None) -> str:
+    """Return the explicit Cognitive context gate; unknown values stay safe."""
+    if config is None:
+        try:
+            from honeyos.runtime.config import load_config_readonly
+
+            config = load_config_readonly()
+        except Exception:
+            return "shadow"
+    memory = config.get("memory", {}) if isinstance(config, dict) else {}
+    cognitive = memory.get("cognitive", {}) if isinstance(memory, dict) else {}
+    raw = cognitive.get("context_mode", "shadow") if isinstance(cognitive, dict) else "shadow"
+    mode = _clean_text(raw).lower()
+    return mode if mode in {"off", "shadow", "active"} else "shadow"
+
+
 def _value(obj: Any, *names: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         for name in names:
@@ -612,40 +637,306 @@ def _write_context_injection_audit(
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _reject_silent_context(
+    silent_context: SilentMemoryContext,
+    *,
+    reason: str,
+) -> SilentMemoryContext:
+    rejected = list(silent_context.rejected)
+    rejected.extend(
+        _candidate_item(item, reason=reason) for item in silent_context.included
+    )
+    return SilentMemoryContext(
+        text="",
+        included=(),
+        rejected=tuple(rejected),
+        memory_chars=0,
+        total_chars=0,
+        prompt_injection=False,
+    )
+
+
+def _request_scope_denial(scope: MemoryRequestScope | None) -> str | None:
+    if not isinstance(scope, MemoryRequestScope):
+        return "request_scope_missing"
+    if any(
+        not _clean_text(value)
+        for value in (
+            scope.owner,
+            scope.lane,
+            scope.session_id,
+            scope.chat_type,
+            scope.purpose,
+        )
+    ):
+        return "request_scope_incomplete"
+    if _clean_text(scope.owner).casefold() not in {"user", "honey", "shared"}:
+        return "request_scope_invalid"
+    return None
+
+
+def _access_denial_reason(
+    record: dict[str, Any],
+    item: MemoryContextItem,
+    *,
+    scope: MemoryRequestScope,
+    namespace: str,
+    explicit_recall: bool,
+) -> str | None:
+    status = _clean_text(record.get("status")).lower()
+    if status == "dormant" and not explicit_recall:
+        return "dormant_without_explicit_recall"
+    if status not in {"active", "dormant"}:
+        return "status_not_injectable"
+
+    partition = _clean_text(record.get("partition") or item.runtime_namespace)
+    if not _namespace_allowed(namespace, partition):
+        return "namespace_mismatch"
+
+    metadata = record.get("metadata")
+    access = metadata.get("access") if isinstance(metadata, dict) else None
+    if not isinstance(access, dict):
+        return "access_missing"
+
+    required = ("owner", "lane", "session_scope", "chat_type", "purposes")
+    if any(key not in access for key in required):
+        return "access_incomplete"
+    session_scope = _clean_text(access.get("session_scope")).lower()
+    if session_scope not in {"lane", "session"}:
+        return "access_incomplete"
+    if session_scope == "session" and not _clean_text(access.get("session_id")):
+        return "access_incomplete"
+    purposes = access.get("purposes")
+    if not isinstance(purposes, list) or not any(_clean_text(p) for p in purposes):
+        return "access_incomplete"
+
+    comparisons = (
+        ("owner_mismatch", access.get("owner"), scope.owner, True),
+        ("lane_mismatch", access.get("lane"), scope.lane, False),
+        ("chat_type_mismatch", access.get("chat_type"), scope.chat_type, True),
+    )
+    for reason, granted, requested, fold in comparisons:
+        left = _clean_text(granted)
+        right = _clean_text(requested)
+        if fold:
+            left = left.casefold()
+            right = right.casefold()
+        if not left or left != right:
+            return reason
+
+    granted_purposes = {
+        _clean_text(value).casefold() for value in purposes if _clean_text(value)
+    }
+    if _clean_text(scope.purpose).casefold() not in granted_purposes:
+        return "purpose_mismatch"
+    if (
+        session_scope == "session"
+        and _clean_text(access.get("session_id")) != _clean_text(scope.session_id)
+    ):
+        return "session_mismatch"
+    return None
+
+
+def _current_tombstone_reason(repository: Any, record: dict[str, Any]) -> str | None:
+    memory_id = _clean_text(record.get("id"))
+    with repository.connect() as db:
+        row = db.execute(
+            """
+            SELECT t.scope
+            FROM memory_tombstones t
+            WHERE t.active=1
+              AND (
+                  (
+                      t.scope='memory' AND t.memory_kind='episode'
+                      AND t.memory_id=?
+                  )
+                  OR (
+                      t.scope='source'
+                      AND (
+                          (t.source_system=? AND t.source_id=?)
+                          OR EXISTS (
+                              SELECT 1 FROM memory_provenance p
+                              WHERE p.memory_kind='episode' AND p.memory_id=?
+                                AND p.source_system=t.source_system
+                                AND p.source_id=t.source_id
+                          )
+                      )
+                  )
+              )
+            ORDER BY CASE WHEN t.scope='memory' THEN 0 ELSE 1 END, t.created_at DESC
+            LIMIT 1
+            """,
+            (
+                memory_id,
+                record.get("source_system"),
+                record.get("source_key"),
+                memory_id,
+            ),
+        ).fetchone()
+    if row is None:
+        return None
+    return "memory_tombstoned" if row["scope"] == "memory" else "source_tombstoned"
+
+
+def _write_context_scope_audit(
+    *,
+    result: SilentMemoryContext,
+    shadow_result: Any,
+    session_id: str | None,
+    turn_id: str | None,
+    audit_path: Path | None,
+) -> None:
+    path = audit_path or _context_audit_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "timestamp": datetime.now().astimezone().isoformat(),
+        "phase": "S1",
+        "mode": "cognitive_scope_gate",
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "namespace": _clean_text(
+            getattr(shadow_result, "namespace", "general")
+        ).lower() or "general",
+        "would_inject": result.would_inject,
+        "prompt_injection": False,
+        "included_ids": [item.memory_id for item in result.included],
+        "rejected": [
+            {"id": item.memory_id, "reason": item.reason}
+            for item in result.rejected
+        ],
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def authorize_silent_memory_context(
+    silent_context: SilentMemoryContext,
+    shadow_result: Any,
+    *,
+    scope: MemoryRequestScope | None,
+    repository: Any,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    audit_path: Path | None = None,
+) -> SilentMemoryContext:
+    """Re-read every selected episode and fail closed before model visibility."""
+    try:
+        if not silent_context.included:
+            return silent_context
+        scope_denial = _request_scope_denial(scope)
+        if scope_denial is not None:
+            result = _reject_silent_context(silent_context, reason=scope_denial)
+        elif repository is None:
+            result = _reject_silent_context(silent_context, reason="repository_unavailable")
+        else:
+            from .library import CognitiveMemoryLibrary
+            from .repository import MemoryNotFoundError
+
+            library = CognitiveMemoryLibrary(repository)
+            namespace = _clean_text(
+                getattr(shadow_result, "namespace", "general")
+            ).lower() or "general"
+            explicit_recall = bool(getattr(shadow_result, "explicit_recall", False))
+            authorized_items: list[MemoryContextItem] = []
+            rejected = list(silent_context.rejected)
+            for item in silent_context.included:
+                try:
+                    record = library.get_historical(item.memory_id)
+                except MemoryNotFoundError:
+                    rejected.append(_candidate_item(item, reason="source_unavailable"))
+                    continue
+                except Exception:
+                    rejected.append(_candidate_item(item, reason="repository_unavailable"))
+                    continue
+
+                try:
+                    reason = _current_tombstone_reason(repository, record)
+                except Exception:
+                    reason = "repository_unavailable"
+                if reason is None:
+                    reason = _access_denial_reason(
+                        record,
+                        item,
+                        scope=scope,
+                        namespace=namespace,
+                        explicit_recall=explicit_recall,
+                    )
+                if reason is not None:
+                    rejected.append(_candidate_item(item, reason=reason))
+                else:
+                    authorized_items.append(item)
+
+            rebuilt = build_silent_memory_context(
+                query=_clean_text(getattr(shadow_result, "query", "")),
+                selected_memories=authorized_items,
+                current_turn_text=_clean_text(getattr(shadow_result, "query", "")),
+                current_namespace=namespace,
+                max_items=EXPANDED_RECALL_ITEMS,
+                max_memory_chars=EXPANDED_RECALL_CHARS,
+            )
+            result = SilentMemoryContext(
+                text=rebuilt.text,
+                included=rebuilt.included,
+                rejected=tuple(rejected + list(rebuilt.rejected)),
+                memory_chars=rebuilt.memory_chars,
+                total_chars=rebuilt.total_chars,
+                prompt_injection=False,
+            )
+    except Exception:
+        result = _reject_silent_context(silent_context, reason="scope_check_failed")
+
+    try:
+        _write_context_scope_audit(
+            result=result,
+            shadow_result=shadow_result,
+            session_id=session_id,
+            turn_id=turn_id,
+            audit_path=audit_path,
+        )
+    except Exception:
+        # An audit failure must never turn a denial into an injection.
+        pass
+    return result
+
+
 def inject_silent_memory_context(
     existing_context: Any,
     silent_context: SilentMemoryContext,
     shadow_result: Any,
     *,
+    mode: str = "shadow",
+    scope: MemoryRequestScope | None = None,
+    repository: Any = None,
     session_id: str | None = None,
     turn_id: str | None = None,
     audit_path: Path | None = None,
 ) -> Any:
-    """F2.3 guarded attachment into the existing internal memory channel.
-
-    This function never modifies the visible user message. It only augments
-    an existing model-side memory-context string. Unknown context types are
-    left untouched (fail-open).
-    """
+    """Attach only actively enabled, currently authorized Cognitive context."""
     try:
-        if not silent_context.would_inject:
+        if not silent_context.would_inject or _clean_text(mode).lower() != "active":
+            return existing_context
+        if existing_context is not None and not isinstance(existing_context, str):
             return existing_context
 
-        if existing_context is None:
-            merged = silent_context.text
-        elif isinstance(existing_context, str):
-            base = existing_context.rstrip()
-            merged = (
-                f"{base}\n\n{silent_context.text}"
-                if base
-                else silent_context.text
-            )
-        else:
-            # Do not guess how to serialize an unfamiliar provider context.
+        authorized = authorize_silent_memory_context(
+            silent_context,
+            shadow_result,
+            scope=scope,
+            repository=repository,
+            session_id=session_id,
+            turn_id=turn_id,
+            audit_path=audit_path,
+        )
+        if not authorized.would_inject:
             return existing_context
+        if existing_context is None:
+            merged = authorized.text
+        else:
+            base = existing_context.rstrip()
+            merged = f"{base}\n\n{authorized.text}" if base else authorized.text
 
         _write_context_injection_audit(
-            result=silent_context,
+            result=authorized,
             shadow_result=shadow_result,
             session_id=session_id,
             turn_id=turn_id,
@@ -653,5 +944,5 @@ def inject_silent_memory_context(
         )
         return merged
     except Exception:
-        # Model request must continue without Cognitive Memory if F2.3 fails.
+        # Model request must continue without Cognitive Memory if injection fails.
         return existing_context

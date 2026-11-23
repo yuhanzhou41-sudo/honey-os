@@ -311,6 +311,9 @@ def companion_config(
             "nudge_interval": 0,
             "write_approval": False,
             "provider": "",
+            "cognitive": {
+                "context_mode": "shadow",
+            },
             "distillation": {
                 "enabled": True,
                 "trigger_messages": 20,
@@ -578,6 +581,11 @@ def upgrade_companion_capabilities(home: Path) -> bool:
     if not isinstance(memory, dict):
         memory = {}
         config["memory"] = memory
+    cognitive = memory.setdefault("cognitive", {})
+    if not isinstance(cognitive, dict):
+        cognitive = {}
+        memory["cognitive"] = cognitive
+    cognitive.setdefault("context_mode", "shadow")
     distillation = memory.setdefault("distillation", {})
     if not isinstance(distillation, dict):
         distillation = {}

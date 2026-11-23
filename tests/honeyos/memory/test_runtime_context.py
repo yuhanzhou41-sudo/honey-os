@@ -33,6 +33,38 @@ def _build(items, *, ns="general", **kwargs) -> SilentMemoryContext:
     )
 
 
+def _active_gate(tmp_path, candidate):
+    from honeyos.memory.repository import CognitiveMemoryRepository
+    from honeyos.memory.runtime_context import MemoryRequestScope
+
+    repo = CognitiveMemoryRepository(db_path=tmp_path / "gate.sqlite")
+    repo.create_episode(
+        episode_id=candidate.id,
+        episode_type="historical_external",
+        summary=candidate.summary_preview,
+        memory_origin="external",
+        source_system="deepseek",
+        source_scope="historical_import",
+        source_key=candidate.source_key,
+        metadata={
+            "access": {
+                "owner": "User",
+                "lane": "lane-a",
+                "session_scope": "lane",
+                "chat_type": "dm",
+                "purposes": ["chat"],
+            }
+        },
+    )
+    return {
+        "mode": "active",
+        "repository": repo,
+        "scope": MemoryRequestScope(
+            owner="User", lane="lane-a", session_id="session-a", chat_type="dm"
+        ),
+    }
+
+
 def test_external_deepseek_defaults_to_historical():
     result = _build([Candidate("m1", "用户以前喜欢阅读。")])
     assert result.would_inject is True
@@ -366,6 +398,7 @@ def test_f2_3_injects_into_internal_string_and_marks_audit_true(tmp_path):
         prompt_injection=False,
     )
     audit = tmp_path / "runtime_context.jsonl"
+    gate = _active_gate(tmp_path, candidate)
 
     merged = inject_silent_memory_context(
         "NATIVE MEMORY CONTEXT",
@@ -374,6 +407,7 @@ def test_f2_3_injects_into_internal_string_and_marks_audit_true(tmp_path):
         session_id="s3",
         turn_id="t3",
         audit_path=audit,
+        **gate,
     )
 
     assert merged.startswith("NATIVE MEMORY CONTEXT")
@@ -381,7 +415,7 @@ def test_f2_3_injects_into_internal_string_and_marks_audit_true(tmp_path):
     assert "用户以前喜欢阅读。" in merged
 
     raw = audit.read_text(encoding="utf-8")
-    row = json.loads(raw.strip())
+    row = json.loads(raw.strip().splitlines()[-1])
     assert row["phase"] == "F2.3"
     assert row["prompt_injection"] is True
     assert row["included_ids"] == ["m1"]
@@ -393,7 +427,8 @@ def test_f2_3_none_existing_context_can_receive_silent_context(tmp_path):
     from honeyos.memory.runtime_context import inject_silent_memory_context
     from honeyos.memory.runtime_shadow import ShadowRetrievalResult
 
-    context = _build([Candidate("m1", "用户以前喜欢阅读。")])
+    candidate = Candidate("m1", "用户以前喜欢阅读。")
+    context = _build([candidate])
     shadow = ShadowRetrievalResult(
         query="测试",
         namespace="general",
@@ -408,6 +443,7 @@ def test_f2_3_none_existing_context_can_receive_silent_context(tmp_path):
         context,
         shadow,
         audit_path=tmp_path / "audit.jsonl",
+        **_active_gate(tmp_path, candidate),
     )
     assert isinstance(merged, str)
     assert "[Background memory — use silently]" in merged
